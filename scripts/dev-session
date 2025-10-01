@@ -1,0 +1,100 @@
+#!/bin/bash
+
+# dev-session - Launch tmux development session with AI tools, editor, and prompt buffer
+# Usage: dev-session [session_name] [directory] [ai_tool]
+
+TARGET_DIR="${2:-$(pwd)}"
+AI_TOOL="${3:-claude}"
+
+# Generate session name from directory if not provided
+if [ -z "$1" ]; then
+    # Use basename of directory and replace dots/spaces with underscores
+    DIR_NAME=$(basename "$TARGET_DIR" | sed 's/[. ]/_/g')
+    # Add a 'dev-' prefix to make it clear it's a dev session
+    SESSION_NAME="dev-${DIR_NAME}"
+else
+    SESSION_NAME="$1"
+fi
+
+# Check if tmux session already exists
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    echo "Session '$SESSION_NAME' already exists. Attaching..."
+    tmux attach-session -t "$SESSION_NAME"
+    exit 0
+fi
+
+echo "Creating session: $SESSION_NAME"
+echo "Directory: $TARGET_DIR"
+echo "AI Tool: $AI_TOOL"
+
+# Create new tmux session
+tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
+
+# Create the layout:
+# +------------------+------------------+
+# |                  |                  |
+# |    AI Tools      |      Neovim      |
+# |    (Pane 0)      |     (Pane 1)     |
+# |                  |                  |
+# +------------------+------------------+
+# |                                     |
+# |          Prompt Buffer              |
+# |             (Pane 2)                |
+# +-------------------------------------+
+
+# Split vertically first (top/bottom)
+tmux split-window -v -p 25 -t "$SESSION_NAME:0" -c "$TARGET_DIR"
+
+# Split the top pane horizontally (left/right)
+tmux select-pane -t "$SESSION_NAME:0.0"
+tmux split-window -h -p 50 -t "$SESSION_NAME:0.0" -c "$TARGET_DIR"
+
+# Now we have:
+# Pane 0: Top-left (AI tools)
+# Pane 1: Top-right (Neovim)
+# Pane 2: Bottom (Prompt buffer - spans full width)
+
+# Configure AI Tools pane (top-left)
+case "$AI_TOOL" in
+    claude)
+        tmux send-keys -t "$SESSION_NAME:0.0" "claude" C-m
+        ;;
+    gemini)
+        tmux send-keys -t "$SESSION_NAME:0.0" "gemini" C-m
+        ;;
+    aider)
+        tmux send-keys -t "$SESSION_NAME:0.0" "aider" C-m
+        ;;
+    *)
+        tmux send-keys -t "$SESSION_NAME:0.0" "# AI Tool: $AI_TOOL" C-m
+        tmux send-keys -t "$SESSION_NAME:0.0" "$AI_TOOL" C-m
+        ;;
+esac
+
+# Configure Neovim pane (top-right)
+tmux send-keys -t "$SESSION_NAME:0.1" "nvim ." C-m
+
+# Configure Prompt Buffer pane (bottom)
+# Check if prompt-buffer plugin exists
+if [ -f "$HOME/.config/nvim/lua/prompt-buffer.lua" ] || \
+   [ -f "$HOME/.config/nvim/lua/plugins/prompt-buffer.lua" ] || \
+   [ -d "$HOME/.config/nvim/lua/prompt-buffer" ]; then
+    tmux send-keys -t "$SESSION_NAME:0.2" "nvim -c 'lua require(\"prompt-buffer\").open()'" C-m
+else
+    # Fallback: Open nvim in a scratch buffer
+    tmux send-keys -t "$SESSION_NAME:0.2" "nvim -c 'enew | setlocal buftype=nofile bufhidden=hide noswapfile | set filetype=markdown'" C-m
+fi
+
+# Set pane titles if supported
+tmux select-pane -t "$SESSION_NAME:0.0" -T "AI: $AI_TOOL"
+tmux select-pane -t "$SESSION_NAME:0.1" -T "Editor"
+tmux select-pane -t "$SESSION_NAME:0.2" -T "Prompt"
+
+# Enable mouse support
+tmux set-option -t "$SESSION_NAME" mouse on
+
+# Set initial focus to AI tools pane
+tmux select-pane -t "$SESSION_NAME:0.0"
+
+# Attach to the session
+tmux attach-session -t "$SESSION_NAME"
