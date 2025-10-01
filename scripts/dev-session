@@ -1,19 +1,32 @@
 #!/bin/bash
 
 # dev-session - Launch tmux development session with AI tools, editor, and prompt buffer
-# Usage: dev-session [session_name] [directory] [ai_tool]
+# Usage: dev-session [-s session_name] [-d directory] [-t ai_tool]
 
-TARGET_DIR="${2:-$(pwd)}"
-AI_TOOL="${3:-claude}"
+# Default values
+SESSION_NAME=""
+TARGET_DIR="$(pwd)"
+AI_TOOL="claude"
+
+# Parse named parameters
+while getopts "s:d:t:h" opt; do
+  case $opt in
+    s) SESSION_NAME="$OPTARG" ;;
+    d) TARGET_DIR="$OPTARG" ;;
+    t) AI_TOOL="$OPTARG" ;;
+    h) echo "Usage: dev-session [-s session_name] [-d directory] [-t ai_tool]"
+       exit 0 ;;
+    *) echo "Invalid option: -$OPTARG" >&2
+       exit 1 ;;
+  esac
+done
 
 # Generate session name from directory if not provided
-if [ -z "$1" ]; then
+if [ -z "$SESSION_NAME" ]; then
     # Use basename of directory and replace dots/spaces with underscores
     DIR_NAME=$(basename "$TARGET_DIR" | sed 's/[. ]/_/g')
     # Add a 'dev-' prefix to make it clear it's a dev session
     SESSION_NAME="dev-${DIR_NAME}"
-else
-    SESSION_NAME="$1"
 fi
 
 # Check if tmux session already exists
