@@ -1,4 +1,10 @@
 -- /nvim_config/lua/plugins/llm-send.lua
+
+-- Configuration
+local config = {
+	clear_on_send = true, -- Clear buffer after sending (default: true)
+}
+
 return {
 	{
 		"LazyVim/LazyVim",
@@ -10,6 +16,9 @@ return {
 					vim.cmd("write")
 					local file = vim.fn.expand("%:p")
 					vim.fn.jobstart({ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(file) }, { detach = true })
+					if config.clear_on_send then
+						vim.cmd([[%delete _]])
+					end
 				end,
 				mode = "n",
 				desc = "LLM: Send Buffer",
