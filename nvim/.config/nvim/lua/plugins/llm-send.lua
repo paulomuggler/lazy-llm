@@ -13,9 +13,24 @@ return {
 			{
 				"<leader>llms",
 				function()
-					vim.cmd("write")
-					local file = vim.fn.expand("%:p")
-					vim.fn.jobstart({ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(file) }, { detach = true })
+					local bufnr = vim.api.nvim_get_current_buf()
+					local bufname = vim.api.nvim_buf_get_name(bufnr)
+
+					if bufname == "" then
+						-- Scratch buffer: write to temp file
+						local tmp = vim.fn.tempname() .. ".md"
+						vim.cmd("write! " .. tmp)
+						vim.fn.jobstart(
+							{ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp) },
+							{ detach = true }
+						)
+					else
+						-- Named file: save and send
+						vim.cmd("write")
+						local file = vim.fn.expand("%:p")
+						vim.fn.jobstart({ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(file) }, { detach = true })
+					end
+
 					if config.clear_on_send then
 						vim.cmd([[%delete _]])
 					end
