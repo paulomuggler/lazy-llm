@@ -3,9 +3,9 @@ set -euo pipefail
 TARGET="${CLAUDE_PANE:-:.+}" # default to the nxt pane if not set
 # read from file arg or stdin
 if [[ $# -gt 0 ]]; then
-  tmux load-buffer - <"$1"
+  cat "$1" | tmux load-buffer -
 else
-  tmux load-buffer - # reads stdin
+  tmux load-buffer -
 fi
 # Optional: wrap wiith visible delimiters so big prompts are obvious in chat
 tmux send-keys -t "$TARGET" "### PROMPT $(date +'%F %T')" Enter
