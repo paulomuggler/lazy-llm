@@ -99,6 +99,9 @@ tmux select-pane -t "$SESSION_NAME:0.2" -T "Prompt"
 # Enable mouse support
 tmux set-option -t "$SESSION_NAME" mouse on
 
+# Set AI_PANE environment variable for all panes
+tmux set-environment -t "$SESSION_NAME" AI_PANE "$SESSION_NAME:0.0"
+
 # Set initial focus to AI tools pane
 tmux select-pane -t "$SESSION_NAME:0.0"
 

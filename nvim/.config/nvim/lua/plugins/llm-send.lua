@@ -63,6 +63,18 @@ return {
 				mode = "n",
 				desc = "LLM: Delete Buffer Content",
 			},
+			{
+				"<leader>llmk",
+				function()
+					local char = vim.fn.getcharstr()
+					vim.fn.jobstart(
+						{ "bash", "-c", "tmux send-keys -t \"${AI_PANE:-:.0}\" " .. vim.fn.shellescape(char) },
+						{ detach = true }
+					)
+				end,
+				mode = "n",
+				desc = "LLM: Send Next Keypress",
+			},
 		},
 	},
 }
