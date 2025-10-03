@@ -43,11 +43,12 @@ for package in "${STOW_PACKAGES[@]}"; do
     target_file="$HOME/$(echo "$file_to_stow" | sed -e "s#^$package/##")"
 
     if [ -e "$target_file" ]; then
-      source_file_abs="$(pwd)/$file_to_stow"
-      if [ -L "$target_file" ] && [ "$(readlink "$target_file")" == "$source_file_abs" ]; then
-        continue # It's our own link, stow will handle it.
+      # Skip symlinks - stow will handle them with --restow
+      if [ -L "$target_file" ]; then
+        continue
       fi
 
+      # Only prompt for actual files (not symlinks)
       CONFLICT_FOUND=true
       echo -e "${YELLOW}Conflict: File already exists at $target_file${NC}"
       read -p "    Overwrite and create a backup (.bak)? (y/n) " -n 1 -r
