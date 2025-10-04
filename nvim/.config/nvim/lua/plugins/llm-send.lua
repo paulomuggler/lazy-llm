@@ -5,6 +5,14 @@ local config = {
 	clear_on_send = true, -- Clear buffer after sending (default: true)
 }
 
+-- Helper function to get tmux pane_base_index
+local function get_pane_base_index()
+	local handle = io.popen("tmux show-options -g | grep pane-base-index | awk '{print $2}'")
+	local result = handle:read("*a")
+	handle:close()
+	return tonumber(result) or 0
+end
+
 return {
 	{
 		"LazyVim/LazyVim",
@@ -21,11 +29,7 @@ return {
 						local tmp = vim.fn.tempname() .. ".md"
 						vim.cmd("write! " .. tmp)
 						vim.fn.jobstart(
-							{
-								"bash",
-								"-lc",
-								"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-							},
+							{ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp) },
 							{ detach = true }
 						)
 					else
@@ -46,12 +50,17 @@ return {
 				"<leader>llms",
 				function()
 					local tmp = vim.fn.tempname() .. ".md"
-					vim.cmd([[<,'>write! ]] .. tmp)
-					vim.fn.jobstart({
-						"bash",
-						"-lc",
-						"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-					}, { detach = true })
+					vim.cmd([[
+					<,'>write! 
+					]] .. tmp)
+					vim.fn.jobstart(
+						{
+							"bash",
+							"-lc",
+							"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
+						},
+						{ detach = true }
+					)
 				end,
 				mode = "v",
 				desc = "LLM: Send Selection",
@@ -68,10 +77,9 @@ return {
 				"<leader>llmk",
 				function()
 					local char = vim.fn.getcharstr()
-					vim.fn.jobstart(
-						{ "bash", "-c", 'tmux send-keys -t "${AI_PANE:-:.1}" ' .. vim.fn.shellescape(char) },
-						{ detach = true }
-					)
+					local pane_base_index = get_pane_base_index()
+					local cmd = string.format("tmux send-keys -t \"${AI_PANE:-:.%d}\" %s", pane_base_index, vim.fn.shellescape(char))
+					vim.fn.jobstart({ "bash", "-c", cmd }, { detach = true })
 				end,
 				mode = "n",
 				desc = "LLM: Send Next Keypress",
