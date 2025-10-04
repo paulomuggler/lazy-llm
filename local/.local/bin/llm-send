@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-TARGET="${CLAUDE_PANE:-:.+}" # default to the nxt pane if not set
+TARGET="${AI_PANE:-:.+}" # default to the nxt pane if not set
 # read from file arg or stdin
 if [[ $# -gt 0 ]]; then
   cat "$1" | tmux load-buffer -
