@@ -7,7 +7,7 @@ local config = {
 
 -- Helper function to get tmux pane_base_index
 local function get_pane_base_index()
-	local handle = io.popen("tmux show-options -g | grep pane-base-index | awk '{print $2}'")
+	local handle = io.popen("tmux show-options -gw | grep pane-base-index | awk '{print $2}'")
 	local result = handle:read("*a")
 	handle:close()
 	return tonumber(result) or 0
@@ -29,7 +29,11 @@ return {
 						local tmp = vim.fn.tempname() .. ".md"
 						vim.cmd("write! " .. tmp)
 						vim.fn.jobstart(
-							{ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp) },
+							{
+								"bash",
+								"-lc",
+								"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
+							},
 							{ detach = true }
 						)
 					else
@@ -53,14 +57,11 @@ return {
 					vim.cmd([[
 					<,'>write! 
 					]] .. tmp)
-					vim.fn.jobstart(
-						{
-							"bash",
-							"-lc",
-							"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-						},
-						{ detach = true }
-					)
+					vim.fn.jobstart({
+						"bash",
+						"-lc",
+						"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
+					}, { detach = true })
 				end,
 				mode = "v",
 				desc = "LLM: Send Selection",
@@ -78,7 +79,11 @@ return {
 				function()
 					local char = vim.fn.getcharstr()
 					local pane_base_index = get_pane_base_index()
-					local cmd = string.format("tmux send-keys -t \"${AI_PANE:-:.%d}\" %s", pane_base_index, vim.fn.shellescape(char))
+					local cmd = string.format(
+						'tmux send-keys -t "${AI_PANE:-:.%d}" %s',
+						pane_base_index,
+						vim.fn.shellescape(char)
+					)
 					vim.fn.jobstart({ "bash", "-c", cmd }, { detach = true })
 				end,
 				mode = "n",
