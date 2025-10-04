@@ -21,7 +21,11 @@ return {
 						local tmp = vim.fn.tempname() .. ".md"
 						vim.cmd("write! " .. tmp)
 						vim.fn.jobstart(
-							{ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp) },
+							{
+								"bash",
+								"-lc",
+								"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
+							},
 							{ detach = true }
 						)
 					else
@@ -43,14 +47,11 @@ return {
 				function()
 					local tmp = vim.fn.tempname() .. ".md"
 					vim.cmd([[<,'>write! ]] .. tmp)
-					vim.fn.jobstart(
-						{
-							"bash",
-							"-lc",
-							"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-						},
-						{ detach = true }
-					)
+					vim.fn.jobstart({
+						"bash",
+						"-lc",
+						"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
+					}, { detach = true })
 				end,
 				mode = "v",
 				desc = "LLM: Send Selection",
@@ -68,7 +69,7 @@ return {
 				function()
 					local char = vim.fn.getcharstr()
 					vim.fn.jobstart(
-						{ "bash", "-c", "tmux send-keys -t \"${AI_PANE:-:.0}\" " .. vim.fn.shellescape(char) },
+						{ "bash", "-c", 'tmux send-keys -t "${AI_PANE:-:.1}" ' .. vim.fn.shellescape(char) },
 						{ detach = true }
 					)
 				end,
@@ -78,4 +79,3 @@ return {
 		},
 	},
 }
-

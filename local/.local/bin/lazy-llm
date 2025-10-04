@@ -40,6 +40,10 @@ echo "Creating session: $SESSION_NAME"
 echo "Directory: $TARGET_DIR"
 echo "AI Tool: $AI_TOOL"
 
+# Get tmux base indexes
+BASE_INDEX=$(tmux show-options -g | grep base-index | awk '{print $2}')
+PANE_BASE_INDEX=$(tmux show-options -g | grep pane-base-index | awk '{print $2}')
+
 # Create new tmux session
 tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
 
@@ -56,54 +60,60 @@ tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
 # +-------------------------------------+
 
 # Split vertically first (top/bottom)
-tmux split-window -v -p 25 -t "$SESSION_NAME:0" -c "$TARGET_DIR"
 
 # Split the top pane horizontally (left/right)
-tmux select-pane -t "$SESSION_NAME:0.0"
-tmux split-window -h -p 50 -t "$SESSION_NAME:0.0" -c "$TARGET_DIR"
 
 # Now we have:
 # Pane 0: Top-left (AI tools)
 # Pane 1: Top-right (Neovim)
 # Pane 2: Bottom (Prompt buffer - spans full width)
+# Define pane variables
+WIN_INDEX=$BASE_INDEX
+AI_PANE=$PANE_BASE_INDEX
+NEOVIM_PANE=$((PANE_BASE_INDEX + 1))
+PROMPT_PANE=$((PANE_BASE_INDEX + 2))
 
-# Configure AI Tools pane (top-left)
+# Create the layout
+tmux split-window -v -p 25 -t "$SESSION_NAME:$WIN_INDEX" -c "$TARGET_DIR"
+tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE"
+tmux split-window -h -p 50 -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" -c "$TARGET_DIR"
+
+# Configure AI Tools pane
 case "$AI_TOOL" in
     claude)
-        tmux send-keys -t "$SESSION_NAME:0.0" "claude" C-m
+        tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "claude" C-m
         ;;
     gemini)
-        tmux send-keys -t "$SESSION_NAME:0.0" "gemini" C-m
+        tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "gemini" C-m
         ;;
     aider)
-        tmux send-keys -t "$SESSION_NAME:0.0" "aider" C-m
+        tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "aider" C-m
         ;;
     *)
-        tmux send-keys -t "$SESSION_NAME:0.0" "# AI Tool: $AI_TOOL" C-m
-        tmux send-keys -t "$SESSION_NAME:0.0" "$AI_TOOL" C-m
+        tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "# AI Tool: $AI_TOOL" C-m
+        tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "$AI_TOOL" C-m
         ;;
 esac
 
-# Configure Neovim pane (top-right)
-tmux send-keys -t "$SESSION_NAME:0.1" "nvim ." C-m
+# Configure Neovim pane
+tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$NEOVIM_PANE" "nvim ." C-m
 
-# Configure Prompt Buffer pane (bottom)
-# Open nvim with -n (no swap) and dummy argument to skip dashboard, then create scratch buffer and wipe dummy
-tmux send-keys -t "$SESSION_NAME:0.2" "nvim -n --cmd 'autocmd VimEnter * ++once enew | setlocal buftype=nofile bufhidden=wipe noswapfile | set filetype=markdown | set showtabline=0 | silent! bwipeout! /tmp/.dummy | startinsert' /tmp/.dummy" C-m
+# Configure Prompt Buffer pane
+tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" "nvim -n --cmd 'autocmd VimEnter * ++once enew | setlocal buftype=nofile bufhidden=wipe noswapfile | set filetype=markdown | set showtabline=0 | silent! bwipeout! /tmp/.dummy | startinsert' /tmp/.dummy" C-m
 
-# Set pane titles if supported
-tmux select-pane -t "$SESSION_NAME:0.0" -T "AI: $AI_TOOL"
-tmux select-pane -t "$SESSION_NAME:0.1" -T "Editor"
-tmux select-pane -t "$SESSION_NAME:0.2" -T "Prompt"
+# Set pane titles
+tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" -T "AI: $AI_TOOL"
+tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$NEOVIM_PANE" -T "Editor"
+tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" -T "Prompt"
 
 # Enable mouse support
 tmux set-option -t "$SESSION_NAME" mouse on
 
-# Set AI_PANE environment variable for all panes
-tmux set-environment -t "$SESSION_NAME" AI_PANE "$SESSION_NAME:0.0"
+# Set AI_PANE environment variable
+tmux set-environment -t "$SESSION_NAME" AI_PANE "$SESSION_NAME:$WIN_INDEX.$AI_PANE"
 
 # Set initial focus to prompt buffer pane
-tmux select-pane -t "$SESSION_NAME:0.2"
+tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE"
 
 # Attach to the session
 tmux attach-session -t "$SESSION_NAME"
