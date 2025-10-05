@@ -34,7 +34,7 @@ echo "    Checks passed."
 # --- 2. Conflict Resolution ---
 echo "--> Checking for conflicting files..."
 
-STOW_PACKAGES=("local" "nvim")
+STOW_PACKAGES=("llm-send-bin" "lazy-llm-bin" "nvim-git-plugin" "nvim-llm-send-plugin")
 CONFLICT_FOUND=false
 for package in "${STOW_PACKAGES[@]}"; do
   # Find every file within the package directory
@@ -70,8 +70,9 @@ fi
 
 # --- 3. Run Stow ---
 echo "--> Running stow to create symlinks..."
-stow --restow --target="$HOME" local
-stow --restow --target="$HOME" nvim
+for package in "${STOW_PACKAGES[@]}"; do
+  stow --restow --target="$HOME" "$package"
+done
 echo "    Symlinks created."
 
 # --- 4. Final Instructions ---
