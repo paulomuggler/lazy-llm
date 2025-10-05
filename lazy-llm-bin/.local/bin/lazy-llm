@@ -98,7 +98,7 @@ aider)
 esac
 
 # Configure Neovim pane (top-right)
-tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$NEOVIM_PANE" "nvim ." C-m
+tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$NEOVIM_PANE" "nvim" C-m
 
 # Configure Prompt Buffer pane (bottom)
 # Open nvim with -n (no swap) and dummy argument to skip dashboard, then create scratch buffer and wipe dummy
