@@ -85,6 +85,32 @@ All keymaps are under the `<leader>llm` prefix:
 - `<leader>llmd` - **Delete Buffer** - Clear prompt buffer content
 - `<leader>llmk` - **Send Keypress** - Send next keypress to AI pane (for responding to prompts)
 
+### File References with @ Autocomplete
+
+Reference workspace files in your prompts using the `@` symbol for path completion:
+
+**Method 1: Fuzzy Finder (Fast)**
+1. Type `@` in insert mode
+2. Fuzzy file picker opens showing all project files
+3. Type fragments to filter: `comp butt tsx`
+4. Select file → inserts: `@src/components/Button.tsx`
+
+**Method 2: Native File Completion (Traditional)**
+1. Type `@` followed by partial path: `@src/`
+2. Press `<Ctrl-f>` to trigger vim's native file completion
+3. Navigate directories level by level
+4. Select files/folders to complete the path
+
+**Example Prompt:**
+```markdown
+Please refactor @src/components/Button.tsx to use composition pattern.
+Also update the tests in @tests/Button.test.tsx accordingly.
+```
+
+The `@` prefix helps LLM tools identify workspace file references and can be parsed by your AI tool for context loading.
+
+**Tip**: For git-root-relative paths, ensure your nvim working directory is set to the repository root (use `:cd` or a rooter plugin).
+
 ### Workflow
 
 1. Start session: `lazy-llm`
