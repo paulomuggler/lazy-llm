@@ -28,7 +28,7 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Instant sending**: Send buffers or selections to your LLM with keymaps
 - **Keypress forwarding**: Respond to LLM prompts directly from the prompt buffer
 - **Git integration**: Editor pane includes vim-fugitive, gitsigns, and vgit for tracking changes
-- **Multiple AI tools**: Supports Claude, Gemini, or any of the agentic TUI tools, really
+- **Multiple AI tools**: Supports Claude, Gemini, Codex, Grok, or any of the agentic TUI tools, really
 
 ## Installation
 
@@ -66,6 +66,8 @@ lazy-llm
 
 # Specify a different tool
 lazy-llm -t gemini
+lazy-llm -t codex
+lazy-llm -t grok
 
 # Custom session name and directory
 lazy-llm -s my-project -d ~/projects/foo -t claude
@@ -74,7 +76,7 @@ lazy-llm -s my-project -d ~/projects/foo -t claude
 Options:
 - `-s session_name` - Custom tmux session name
 - `-d directory` - Working directory (defaults to current)
-- `-t ai_tool` - AI tool to launch (claude, gemini, etc.)
+- `-t ai_tool` - AI tool to launch (claude, gemini, codex, grok, aider, etc.)
 
 ### Keymaps
 

@@ -88,6 +88,12 @@ claude)
 gemini)
   tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "gemini" C-m
   ;;
+codex)
+  tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "codex" C-m
+  ;;
+grok)
+  tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "grok" C-m
+  ;;
 aider)
   tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "aider" C-m
   ;;
