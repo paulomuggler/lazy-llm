@@ -1,21 +1,34 @@
 #!/bin/bash
 
 # dev-session - Launch tmux development session with AI tools, editor, and prompt buffer
-# Usage: dev-session [-s session_name] [-d directory] [-t ai_tool]
+# Usage: dev-session [-s session_name] [-d directory] [-t ai_tool] [-w]
 
 # Default values
 SESSION_NAME=""
 TARGET_DIR="$(pwd)"
 AI_TOOL="claude"
+NEW_WINDOW=false
 
 # Parse named parameters
-while getopts "s:d:t:h" opt; do
+while getopts "s:d:t:wh" opt; do
   case $opt in
   s) SESSION_NAME="$OPTARG" ;;
   d) TARGET_DIR="$OPTARG" ;;
   t) AI_TOOL="$OPTARG" ;;
+  w) NEW_WINDOW=true ;;
   h)
-    echo "Usage: dev-session [-s session_name] [-d directory] [-t ai_tool]"
+    echo "Usage: lazy-llm [-s session_name] [-d directory] [-t ai_tool] [-w]"
+    echo ""
+    echo "Options:"
+    echo "  -s  Session name (auto-generated if not provided)"
+    echo "  -d  Working directory (default: current directory)"
+    echo "  -t  AI tool to launch (claude, gemini, codex, grok, etc.)"
+    echo "  -w  Force new window mode (otherwise auto-detected when in tmux)"
+    echo ""
+    echo "Behavior:"
+    echo "  - Outside tmux: Creates new session or attaches to existing one"
+    echo "  - Inside tmux: Adds new window to current session"
+    echo "  - With -s <existing>: Adds window to that session (attaches if needed)"
     exit 0
     ;;
   *)
@@ -33,7 +46,128 @@ if [ -z "$SESSION_NAME" ]; then
   SESSION_NAME="dev-${DIR_NAME}-${AI_TOOL}"
 fi
 
-# Check if tmux session already exists
+# Function to create a new window with 3-pane layout
+# Args: session_name, window_index, target_dir, ai_tool
+create_workspace_window() {
+  local session=$1
+  local win_idx=$2
+  local target_dir=$3
+  local ai_tool=$4
+
+  # Get tmux base indexes
+  local base_index=$(tmux show-options -g | grep base-index | awk '{print $2}')
+  local pane_base_index=$(tmux show-options -gw | grep pane-base-index | awk '{print $2}')
+
+  # Define pane variables
+  local ai_pane=$pane_base_index
+  local neovim_pane=$((pane_base_index + 1))
+  local prompt_pane=$((pane_base_index + 2))
+
+  # Split horizontally first (left/right)
+  tmux split-window -h -p 50 -t "$session:$win_idx" -c "$target_dir"
+
+  # Split vertically with -f flag to create full-width bottom pane
+  tmux split-window -v -f -p 25 -t "$session:$win_idx.$ai_pane" -c "$target_dir"
+
+  # Configure AI Tools pane (top-left)
+  case "$ai_tool" in
+  claude)
+    tmux send-keys -t "$session:$win_idx.$ai_pane" "claude" C-m
+    ;;
+  gemini)
+    tmux send-keys -t "$session:$win_idx.$ai_pane" "gemini" C-m
+    ;;
+  codex)
+    tmux send-keys -t "$session:$win_idx.$ai_pane" "codex" C-m
+    ;;
+  grok)
+    tmux send-keys -t "$session:$win_idx.$ai_pane" "grok" C-m
+    ;;
+  aider)
+    tmux send-keys -t "$session:$win_idx.$ai_pane" "aider" C-m
+    ;;
+  *)
+    tmux send-keys -t "$session:$win_idx.$ai_pane" "# AI Tool: $ai_tool" C-m
+    tmux send-keys -t "$session:$win_idx.$ai_pane" "$ai_tool" C-m
+    ;;
+  esac
+
+  # Configure Neovim pane (top-right)
+  tmux send-keys -t "$session:$win_idx.$neovim_pane" "nvim" C-m
+
+  # Configure Prompt Buffer pane (bottom)
+  tmux send-keys -t "$session:$win_idx.$prompt_pane" "nvim -n --cmd 'autocmd VimEnter * ++once enew | setlocal buftype=nofile bufhidden=wipe noswapfile | set filetype=markdown | set showtabline=0 | silent! bwipeout! /tmp/.dummy | startinsert' /tmp/.dummy" C-m
+
+  # Set pane titles if supported
+  tmux select-pane -t "$session:$win_idx.$ai_pane" -T "AI: $ai_tool"
+  tmux select-pane -t "$session:$win_idx.$neovim_pane" -T "Editor"
+  tmux select-pane -t "$session:$win_idx.$prompt_pane" -T "Prompt"
+
+  # Set AI_PANE environment variable for this window
+  tmux set-environment -t "$session" AI_PANE "$session:$win_idx.$ai_pane"
+
+  # Set initial focus to prompt buffer pane
+  tmux select-pane -t "$session:$win_idx.$prompt_pane"
+}
+
+# Auto-detect if we're inside tmux or if -w flag is set
+# If so, add a window to current/specified session instead of creating new session
+IN_TMUX=false
+if [ -n "$TMUX" ]; then
+  IN_TMUX=true
+fi
+
+# Determine target session for adding window
+TARGET_SESSION=""
+if [ "$NEW_WINDOW" = true ] || [ "$IN_TMUX" = true ]; then
+  # Check if user provided -s with an existing session name
+  SESSION_EXISTS=false
+  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    SESSION_EXISTS=true
+  fi
+
+  if [ "$SESSION_EXISTS" = true ]; then
+    # Use the specified existing session
+    TARGET_SESSION="$SESSION_NAME"
+  elif [ "$IN_TMUX" = true ]; then
+    # Use current session
+    TARGET_SESSION=$(tmux display-message -p '#S')
+  elif [ "$NEW_WINDOW" = true ]; then
+    # -w flag but not in tmux and session doesn't exist
+    echo "Error: -w flag requires you to be inside a tmux session or specify an existing session with -s"
+    exit 1
+  fi
+
+  # If we have a target session, add window to it
+  if [ -n "$TARGET_SESSION" ]; then
+    echo "Adding new window to session '$TARGET_SESSION'..."
+    echo "Directory: $TARGET_DIR"
+    echo "AI Tool: $AI_TOOL"
+
+    # Get the next window index
+    BASE_INDEX=$(tmux show-options -g | grep base-index | awk '{print $2}')
+    NEXT_WIN=$(tmux list-windows -t "$TARGET_SESSION" -F "#{window_index}" | sort -n | tail -1)
+    NEXT_WIN=$((NEXT_WIN + 1))
+
+    # Create new window
+    tmux new-window -t "$TARGET_SESSION:$NEXT_WIN" -n "dev" -c "$TARGET_DIR"
+
+    # Set up the 3-pane layout
+    create_workspace_window "$TARGET_SESSION" "$NEXT_WIN" "$TARGET_DIR" "$AI_TOOL"
+
+    # Switch to the new window
+    tmux select-window -t "$TARGET_SESSION:$NEXT_WIN"
+
+    # Attach if not already in tmux
+    if [ "$IN_TMUX" = false ]; then
+      tmux attach-session -t "$TARGET_SESSION"
+    fi
+
+    exit 0
+  fi
+fi
+
+# Check if tmux session already exists (and we're not in tmux)
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "Session '$SESSION_NAME' already exists. Attaching..."
   tmux attach-session -t "$SESSION_NAME"
