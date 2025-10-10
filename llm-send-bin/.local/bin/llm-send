@@ -1,14 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
-TARGET="${AI_PANE:-:.+}" # default to the nxt pane if not set
+
+# Get AI_PANE from tmux environment if not already set in shell
+if [ -z "${AI_PANE:-}" ]; then
+  AI_PANE=$(tmux show-environment -g AI_PANE 2>/dev/null | cut -d= -f2- || echo "")
+fi
+
+# Fallback to next pane if still not set
+TARGET="${AI_PANE:-:.+}"
+
+# Debug: log the target pane (comment out after debugging)
+# echo "Targeting pane: $TARGET" >&2
+
 # read from file arg or stdin
 if [[ $# -gt 0 ]]; then
   cat "$1" | tmux load-buffer -
 else
   tmux load-buffer -
 fi
-# Optional: wrap wiith visible delimiters so big prompts are obvious in chat
+
+# Get buffer size to determine if we need a delay
+BUFFER_SIZE=$(tmux show-buffer | wc -c)
+
+# Optional: wrap with visible delimiters so big prompts are obvious in chat
 tmux send-keys -t "$TARGET" "### PROMPT $(date +'%F %T')" Enter
-tmux paste-buffer -t "$TARGET" # Uncomment next line
-# if you want an automatic "Send" (Enter) after pasting:
+
+# Paste the buffer
+tmux paste-buffer -t "$TARGET"
+
+# For large pastes, add a delay before sending Enter
+# This gives the TUI time to process the pasted content
+if [ "$BUFFER_SIZE" -gt 1000 ]; then
+  sleep 0.3
+fi
+
+# Send Enter to submit
 tmux send-keys -t "$TARGET" Enter
