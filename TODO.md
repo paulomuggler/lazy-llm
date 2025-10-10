@@ -13,3 +13,9 @@
 [] I want to add a 'context picker' feature to lazy-llm. Goes like this: when perusing the workspace editor, you can call a binding to send a reference to a specific line or block of code into the scratch prompt buffer. This will be a sort of 'lightweight' version of the @file reference feature, where instead of referencing a whole file, you can reference a specific line or block of code. The reference will be in the form of a comment, e.g. `# See line 42 in src/main.py`. The LLM can then use this reference to understand the context of the prompt better. This will be especially useful for code reviews and debugging sessions.
 
 [] fix and improve panel navigation, tmux <-> nvim panel seamless navigation, alt+<^> shortcuts not working often in certain situations (i.e. moving out of the TUI panel int othe workspace editor panel)
+
+[x] create custom prompt tool 'implement prompts': reads through a file, and implements every note/comment starting with an # AI: in the file
+
+[] incorporate our claude 'implement-prompts' custom tool prompt into other LLM TUIs
+
+[] promote some of the LLM (claude, etc) local settings to global, versionable settings. For example, auto approval of commands with no side effects (ls, tree, pwd, etc.)
