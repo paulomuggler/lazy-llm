@@ -46,7 +46,7 @@ tmux paste-buffer -t "$TARGET"
 # For large pastes, add a delay before sending Enter
 # This gives the TUI time to process the pasted content
 if [ "$BUFFER_SIZE" -gt 1000 ]; then
-  sleep 0.3
+  sleep 0.5
 fi
 
 # Send Enter to submit
