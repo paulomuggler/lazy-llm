@@ -6,9 +6,9 @@
 
 [x] our leader bindings (llms) is clashing with Lazys own bindings sometimes, and sometimes doing weird TMUX stuff instead of what we want. We should investigate, and maybe change our leader bindings to something else, maybe <leader>la (for lazy-llm) or something like that. (WONT FIX, not actually a keybindings problem, skill issue and/or timing when first loading plugin?)
 
-[] sometimes our llms command is sending a bunch of weird commands to TMUX instead of piping, which result in a stack of TMUX command states I have to esc out of, here's the sequence after llms fails to work as intended: jump to backward -> (repeat) 5 -> (repeat) 1 -> (go to line) -> (repeat) 1 -> (go to line) -> (repeat) 8 , etc. ,the repeat sequences are not alweays the same... whats up?
+[x] sometimes our llms command is sending a bunch of weird commands to TMUX instead of piping, which result in a stack of TMUX command states I have to esc out of, here's the sequence after llms fails to work as intended: jump to backward -> (repeat) 5 -> (repeat) 1 -> (go to line) -> (repeat) 1 -> (go to line) -> (repeat) 8 , etc. ,the repeat sequences are not alweays the same... whats up?
 
-[] when piping in a large buffer into the LLM TUI prompt, the TUIs tend to receive it as pasted text, and the autosubmit that is sent afterwards fails to submit the prompt. We want to investigate and fix that.
+[x] when piping in a large buffer into the LLM TUI prompt, the TUIs tend to receive it as pasted text, and the autosubmit that is sent afterwards fails to submit the prompt. We want to investigate and fix that.
 
 [] make buffer piping even smarter; from nvim, add bindings to pull in the latest response into buffer (for email-style inline replies)
 
@@ -27,3 +27,5 @@
 [] incorporate our claude 'implement-prompts' custom tool prompt into other LLM TUIs
 
 [] promote some of the LLM (claude, etc) local settings to global, versionable settings. For example, auto approval of commands with no side effects (ls, tree, pwd, etc.)
+
+[] our @ workspace file reference picker is not allowing to insert folder paths, we need to have folder paths able to be inserted as a reference as well.

@@ -22,6 +22,10 @@ fi
 # Get buffer size to determine if we need a delay
 BUFFER_SIZE=$(tmux show-buffer | wc -c)
 
+# CRITICAL: Exit copy-mode if pane is scrolled up
+# This ensures send-keys go to the application, not copy-mode navigation
+tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
+
 # Optional: wrap with visible delimiters so big prompts are obvious in chat
 tmux send-keys -t "$TARGET" "### PROMPT $(date +'%F %T')" Enter
 
