@@ -28,4 +28,4 @@
 
 [] promote some of the LLM (claude, etc) local settings to global, versionable settings. For example, auto approval of commands with no side effects (ls, tree, pwd, etc.)
 
-[] our @ workspace file reference picker is not allowing to insert folder paths, we need to have folder paths able to be inserted as a reference as well.
+[x] our @ workspace file reference picker is not allowing to insert folder paths, we need to have folder paths able to be inserted as a reference as well.

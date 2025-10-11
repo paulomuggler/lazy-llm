@@ -90,7 +90,7 @@ return {
 				desc = "LLM: Send Next Keypress",
 			},
 			-- @ Path Completion for LLM Workspace References
-			-- Opens fuzzy file picker to insert file paths with @ prefix
+			-- Opens fuzzy picker to insert file or folder paths with @ prefix
 			{
 				"@",
 				function()
@@ -104,22 +104,33 @@ return {
 					local at_col = col -- Save the column where @ was inserted
 					vim.api.nvim_win_set_cursor(win, { row, col + 1 })
 
-					-- Get list of files using fd (fast file finder)
+					-- Get list of files AND directories using fd
 					vim.schedule(function()
 						local cwd = vim.fn.getcwd()
-						local fd_cmd = string.format("fd --type f . %s", vim.fn.shellescape(cwd))
-						local files = vim.fn.systemlist(fd_cmd)
+						-- Include both files and directories (no --type flag = all)
+						local fd_cmd = string.format("fd . %s", vim.fn.shellescape(cwd))
+						local paths = vim.fn.systemlist(fd_cmd)
 
-						-- Make paths relative to cwd
-						for i, file in ipairs(files) do
-							files[i] = vim.fn.fnamemodify(file, ":.")
+						-- Make paths relative to cwd and detect if directory
+						local items = {}
+						for _, path in ipairs(paths) do
+							local rel_path = vim.fn.fnamemodify(path, ":.")
+							-- Remove trailing slash if present (fd might add it)
+							rel_path = rel_path:gsub("/$", "")
+							-- Check if it's a directory
+							local is_dir = vim.fn.isdirectory(path) == 1
+							table.insert(items, {
+								path = rel_path,
+								is_dir = is_dir,
+							})
 						end
 
 						-- Use vim.ui.select which will use Snacks.picker if configured
-						vim.ui.select(files, {
-							prompt = "@ Workspace File",
+						vim.ui.select(items, {
+							prompt = "@ Workspace Path (file or folder)",
 							format_item = function(item)
-								return item
+								-- Add trailing / for directories to make them obvious
+								return item.is_dir and (item.path .. "/") or item.path
 							end,
 						}, function(selected)
 							if selected then
@@ -128,25 +139,28 @@ return {
 									vim.api.nvim_set_current_win(win)
 									vim.api.nvim_set_current_buf(buf)
 
-									-- Insert the file path right after the @ (at_col + 1)
+									-- Get the path to insert (add trailing / for directories)
+									local path_to_insert = selected.is_dir and (selected.path .. "/") or selected.path
+
+									-- Insert the file/folder path right after the @ (at_col + 1)
 									vim.api.nvim_buf_set_text(
 										buf,
 										row - 1,
 										at_col + 1,
 										row - 1,
 										at_col + 1,
-										{ selected }
+										{ path_to_insert }
 									)
 
 									-- Move cursor to end of inserted text (after @ and path)
-									vim.api.nvim_win_set_cursor(win, { row, at_col + 1 + #selected })
+									vim.api.nvim_win_set_cursor(win, { row, at_col + 1 + #path_to_insert })
 								end)
 							end
 						end)
 					end)
 				end,
 				mode = "i",
-				desc = "@ fuzzy file picker for workspace references",
+				desc = "@ fuzzy picker for workspace file/folder references",
 			},
 			-- <C-f> in insert mode triggers native vim file completion
 			{
