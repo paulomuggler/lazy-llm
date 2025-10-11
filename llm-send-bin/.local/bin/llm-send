@@ -3,7 +3,18 @@ set -euo pipefail
 
 # Get AI_PANE from tmux environment if not already set in shell
 if [ -z "${AI_PANE:-}" ]; then
-  AI_PANE=$(tmux show-environment -g AI_PANE 2>/dev/null | cut -d= -f2- || echo "")
+  # Get current tmux session
+  CURRENT_SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo "")
+
+  if [ -n "$CURRENT_SESSION" ]; then
+    # Try session-specific environment first
+    AI_PANE=$(tmux show-environment -t "$CURRENT_SESSION" AI_PANE 2>/dev/null | cut -d= -f2- || echo "")
+  fi
+
+  # Fallback to global environment
+  if [ -z "$AI_PANE" ]; then
+    AI_PANE=$(tmux show-environment -g AI_PANE 2>/dev/null | cut -d= -f2- || echo "")
+  fi
 fi
 
 # Fallback to next pane if still not set

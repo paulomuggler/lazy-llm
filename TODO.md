@@ -14,7 +14,7 @@
 
 [x] add option to lazy-llm tmux initialization to open a new workspace in a new window on existing session
 
-[] I want to add a 'context picker' feature to lazy-llm. Goes like this: when perusing the workspace editor, you can call a binding to send a reference to a specific line or block of code into the scratch prompt buffer. This will be a sort of 'lightweight' version of the @file reference feature, where instead of referencing a whole file, you can reference a specific line or block of code. The reference will be in the form of a comment, e.g. `# See line 42 in src/main.py`. The LLM can then use this reference to understand the context of the prompt better. This will be especially useful for code reviews and debugging sessions.
+[x] I want to add a 'context picker' feature to lazy-llm. Goes like this: when perusing the workspace editor, you can call a binding to send a reference to a specific line or block of code into the scratch prompt buffer. This will be a sort of 'lightweight' version of the @file reference feature, where instead of referencing a whole file, you can reference a specific line or block of code. The reference will be in the form of a comment, e.g. `# See line 42 in src/main.py`. The LLM can then use this reference to understand the context of the prompt better. This will be especially useful for code reviews and debugging sessions.
 
 [x] fix and improve panel navigation, tmux <-> nvim panel seamless navigation
     - Ctrl+hjkl works perfectly everywhere (shell, nvim, all tmux panes)
@@ -23,6 +23,12 @@
     - Inconsistent Alt behavior due to terminal/shell keybinding conflicts, but Ctrl+hjkl is reliable solution
 
 [x] create custom prompt tool 'implement prompts': reads through a file, and implements every note/comment starting with an # AI: in the file
+
+[x] Add raw mode variations for context reference insertion:
+   - <leader>llmr: raw mode (no extra newlines, inline insertion)
+   - <leader>llmR: wrapped mode (leading and trailing newlines for multiple refs)
+   - Allows flexibility when inserting single refs or inline refs
+   - Known issue: consecutive R insertions create double blank lines (cosmetic, low priority)
 
 [] incorporate our claude 'implement-prompts' custom tool prompt into other LLM TUIs
 

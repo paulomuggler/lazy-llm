@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# llm-append - Appends text to prompt pane without clearing or submitting
+# Usage: llm-append [--raw] "text to append"
+#   --raw: insert inline without extra newlines
+
+set -euo pipefail
+
+# Parse flags
+RAW_MODE=false
+if [[ "${1:-}" == "--raw" ]]; then
+  RAW_MODE=true
+  shift
+fi
+
+# Get PROMPT_PANE from tmux environment if not already set in shell
+if [ -z "${PROMPT_PANE:-}" ]; then
+  # Get current tmux session
+  CURRENT_SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo "")
+
+  if [ -n "$CURRENT_SESSION" ]; then
+    # Try session-specific environment first
+    PROMPT_PANE=$(tmux show-environment -t "$CURRENT_SESSION" PROMPT_PANE 2>/dev/null | cut -d= -f2- || echo "")
+  fi
+
+  # Fallback to global environment
+  if [ -z "$PROMPT_PANE" ]; then
+    PROMPT_PANE=$(tmux show-environment -g PROMPT_PANE 2>/dev/null | cut -d= -f2- || echo "")
+  fi
+fi
+
+# Fallback to pane 2 (bottom pane) if still not set
+TARGET="${PROMPT_PANE:-:.2}"
+
+# CRITICAL: Exit copy-mode if pane is scrolled up
+tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
+
+# Ensure nvim is in insert mode before sending text
+tmux send-keys -t "$TARGET" Escape
+
+if [[ "$RAW_MODE" == "true" ]]; then
+  # Raw mode: append at end of current line, insert text inline
+  tmux send-keys -t "$TARGET" A
+  tmux send-keys -t "$TARGET" "$1"
+else
+  # Wrapped mode: ensure we're on a new line with spacing
+  # 'A' to go to end of line, Enter to create new line, Enter for blank line
+  tmux send-keys -t "$TARGET" A
+  tmux send-keys -t "$TARGET" "" Enter
+  tmux send-keys -t "$TARGET" "" Enter
+  tmux send-keys -t "$TARGET" "$1"
+  tmux send-keys -t "$TARGET" "" Enter
+fi

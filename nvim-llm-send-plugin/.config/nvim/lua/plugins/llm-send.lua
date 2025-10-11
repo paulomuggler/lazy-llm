@@ -13,6 +13,48 @@ local function get_pane_base_index()
 	return tonumber(result) or 0
 end
 
+-- Helper function for code reference insertion
+-- raw_mode: if true, insert inline; if false, wrap with newlines
+local function add_code_reference(raw_mode)
+	-- Get file path (relative to git root or cwd)
+	local filepath = vim.fn.expand("%:.")
+
+	-- Get line number(s)
+	local mode = vim.fn.mode()
+	local line_ref
+
+	if mode == "v" or mode == "V" or mode == "\22" then -- \22 is visual block mode
+		-- Visual mode: read current visual selection using line('v') and line('.')
+		-- line('v') = start of visual selection, line('.') = cursor position (end)
+		local start_line = vim.fn.line("v")
+		local end_line = vim.fn.line(".")
+
+		-- Ensure start_line <= end_line (selection could go either direction)
+		if start_line > end_line then
+			start_line, end_line = end_line, start_line
+		end
+
+		if start_line == end_line then
+			line_ref = "line " .. start_line
+		else
+			line_ref = "lines " .. start_line .. "-" .. end_line
+		end
+	else
+		-- Normal mode: current line
+		line_ref = "line " .. vim.fn.line(".")
+	end
+
+	-- Format reference
+	local reference = string.format("# See %s in %s", line_ref, filepath)
+
+	-- Build command with --raw flag if needed
+	local cmd = raw_mode and "llm-append --raw " or "llm-append "
+	cmd = cmd .. vim.fn.shellescape(reference)
+
+	-- Send to prompt buffer
+	vim.fn.jobstart({ "bash", "-lc", cmd }, { detach = true })
+end
+
 return {
 	{
 		"LazyVim/LazyVim",
@@ -88,6 +130,22 @@ return {
 				end,
 				mode = "n",
 				desc = "LLM: Send Next Keypress",
+			},
+			{
+				"<leader>llmr",
+				function()
+					add_code_reference(true) -- raw mode
+				end,
+				mode = { "n", "v" },
+				desc = "LLM: Add Code Reference (raw/inline)",
+			},
+			{
+				"<leader>llmR",
+				function()
+					add_code_reference(false) -- wrapped mode
+				end,
+				mode = { "n", "v" },
+				desc = "LLM: Add Code Reference (wrapped/newlines)",
 			},
 			-- @ Path Completion for LLM Workspace References
 			-- Opens fuzzy picker to insert file or folder paths with @ prefix
