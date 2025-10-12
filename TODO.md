@@ -37,12 +37,19 @@
 [x] our @ workspace file reference picker is not allowing to insert folder paths, we need to have folder paths able to be inserted as a reference as well.
 
 [] the send prompt feature is still getting hiccups when sending the last enter in order to autosubmit the prompt in the LLM TUI. Sometimes the enter is not sent, and the prompt is not submitted. Then we need to submit it manually. Increasing delay before sending final enter helped somewhat.
+   UPDATE: Refactored to send single string with embedded newlines instead of multiple send-keys calls.
+   - Claude: ✅ Works perfectly
+   - Gemini: ✅ Works perfectly
+   - Codex: ⚠️ Receives prompt but autosubmit (final Enter) not working
+   - Grok: ❌ Mangles prompt string, ### END PROMPT marker not on own line (unofficial TUI, may not be worth fixing)
 
 [] the feature to open new lazy-llm in new window of existing session wont work unless we can differentiate env vars AI_PANE and PROMPT_PANE, others, between different windows of the same session. We need to investigate if this is possible, and if so, implement it.
 
 [] Remove the prompt box from the pulled lines in Response Pull
 
-[] Fix Prompt Send on Grok (appears to send prompt after first carriage return)
+[] Fix Codex autosubmit: Final Enter keypress not being received/processed. Need to investigate if Codex requires different submission mechanism (Ctrl+Enter?) or additional delay.
+
+[x] Fix Prompt Send on Grok (appears to send prompt after first carriage return) - WONT FIX: Grok TUI is unofficial implementation and mangles multi-line pastes. Wait for official Grok TUI or try alternative implementation.
 
 [x] Prompt Send and Response Pull tested on claude, gemini, codex, working, grok, Prompt Send broken, not possible to test Response Pull yet
 
