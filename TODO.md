@@ -38,3 +38,10 @@
 
 [] the send prompt feature is still getting hiccups when sending the last enter in order to autosubmit the prompt in the LLM TUI. Sometimes the enter is not sent, and the prompt is not submitted. Then we need to submit it manually. Increasing delay before sending final enter helped somewhat.
 
+[] the feature to open new lazy-llm in new window of existing session wont work unless we can differentiate env vars AI_PANE and PROMPT_PANE, others, between different windows of the same session. We need to investigate if this is possible, and if so, implement it.
+
+[] Remove the prompt box from the pulled lines in Response Pull
+
+[] Fix Prompt Send on Grok (appears to send prompt after first carriage return)
+
+[x] Prompt Send and Response Pull tested on claude, gemini, codex, working, grok, Prompt Send broken, not possible to test Response Pull yet
