@@ -1,8 +1,8 @@
 [] Write preliminary design and implementation plan for conversational branching model (based on git at first)
 
-[] Implement two-way buffer piping. Right now, we can only send from nvim buffer -> LLM TUI. There are situations when it's desirable to be able to also do the opposite; we should check feasibility of implementing the opposite, getting the contents of the prompt box in the TUI into the nvim scratch buffer. This can be useful also for responses, come to think of it; I often feel the inclination to copy the whole of the response text and add notes to it in the nvim buffer. If we can pipe the response text into the nvim buffer, that would be a nice-to-have feature.
+[x] Implement two-way buffer piping. Right now, we can only send from nvim buffer -> LLM TUI. There are situations when it's desirable to be able to also do the opposite; we should check feasibility of implementing the opposite, getting the contents of the prompt box in the TUI into the nvim scratch buffer. This can be useful also for responses, come to think of it; I often feel the inclination to copy the whole of the response text and add notes to it in the nvim buffer. If we can pipe the response text into the nvim buffer, that would be a nice-to-have feature.
 
-[] given the features above and the chat branching planned feature, we should probably look to refactor and streamline our cross-pane text piping, around an easy simple to use set of utility functions 'API' that can be used in various places. This will help us avoid code duplication and make future maintenance easier.
+[x] given the features above and the chat branching planned feature, we should probably look to refactor and streamline our cross-pane text piping, around an easy simple to use set of utility functions 'API' that can be used in various places. This will help us avoid code duplication and make future maintenance easier.
 
 [x] our leader bindings (llms) is clashing with Lazys own bindings sometimes, and sometimes doing weird TMUX stuff instead of what we want. We should investigate, and maybe change our leader bindings to something else, maybe <leader>la (for lazy-llm) or something like that. (WONT FIX, not actually a keybindings problem, skill issue and/or timing when first loading plugin?)
 
@@ -10,7 +10,7 @@
 
 [x] when piping in a large buffer into the LLM TUI prompt, the TUIs tend to receive it as pasted text, and the autosubmit that is sent afterwards fails to submit the prompt. We want to investigate and fix that.
 
-[] make buffer piping even smarter; from nvim, add bindings to pull in the latest response into buffer (for email-style inline replies)
+[x] make buffer piping even smarter; from nvim, add bindings to pull in the latest response into buffer (for email-style inline replies)
 
 [x] add option to lazy-llm tmux initialization to open a new workspace in a new window on existing session
 
@@ -35,3 +35,6 @@
 [] promote some of the LLM (claude, etc) local settings to global, versionable settings. For example, auto approval of commands with no side effects (ls, tree, pwd, etc.)
 
 [x] our @ workspace file reference picker is not allowing to insert folder paths, we need to have folder paths able to be inserted as a reference as well.
+
+[] the send prompt feature is still getting hiccups when sending the last enter in order to autosubmit the prompt in the LLM TUI. Sometimes the enter is not sent, and the prompt is not submitted. Then we need to submit it manually. Increasing delay before sending final enter helped somewhat.
+

@@ -29,33 +29,25 @@ tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 # Capture pane with history (last 2000 lines should be plenty)
 content=$(tmux capture-pane -t "$TARGET" -p -S -2000)
 
-# Extract everything after last "### END PROMPT" until next "### PROMPT" or end
-# This gets only the latest response, not old conversation
-response=$(echo "$content" | awk '
-  /### END PROMPT/ {
-    found=NR
-    delete buffer
-    idx=0
-    next
-  }
-  found && NR > found {
-    if (/^### PROMPT/) {
-      exit  # Stop at next prompt marker
-    }
-    buffer[idx++] = $0
-  }
-  END {
-    for (i=0; i<idx; i++) {
-      print buffer[i]
-    }
-  }
-')
+# Extract latest response - everything after the last ### END PROMPT marker
+# Strategy:
+# 1. Find line number of last ### END PROMPT (exact match only)
+# 2. Extract all lines after that line number
 
-# Check if we found anything
-if [ -z "$response" ]; then
-  echo "No response found (no ### END PROMPT marker in pane)" >&2
+# Find last ### END PROMPT line number (match only standalone lines to avoid false matches)
+# -x = match entire line, [[:space:]]* = optional whitespace
+last_end=$(echo "$content" | grep -nx "[[:space:]]*### END PROMPT[[:space:]]*" | tail -1 | cut -d: -f1)
+
+if [ -z "$last_end" ]; then
+  echo "No ### END PROMPT marker found in AI pane" >&2
   exit 1
 fi
+
+# Extract everything after that line (tail -n +N starts at line N)
+response=$(echo "$content" | tail -n +$((last_end + 1)))
+
+# Response might be empty if AI hasn't responded yet (just output empty string)
+# This is not an error - nvim plugin will handle empty responses appropriately
 
 # Optional: Strip ANSI escape codes for cleaner output
 # Uncomment if responses have color codes that interfere

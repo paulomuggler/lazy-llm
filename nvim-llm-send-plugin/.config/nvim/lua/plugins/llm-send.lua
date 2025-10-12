@@ -56,7 +56,16 @@ local function add_code_reference(raw_mode)
 end
 
 -- Create namespace for LLM response extmark tagging
-local llm_ns = vim.api.nvim_create_namespace('llm_response_lines')
+local llm_ns = vim.api.nvim_create_namespace("llm_response_lines")
+
+-- Define custom highlight group for LLM response lines (lighter gray, slightly transparent)
+vim.api.nvim_set_hl(0, "LLMResponse", {
+	--	fg = "#999999", -- Lighter gray text
+	bg = "#111111", -- Slightly darker gray background
+	italic = true, -- Subtle italic to distinguish
+	blend = 90, -- Slightly transparent to show through syntax
+	nocombine = false, -- Combine with other highlights
+})
 
 -- Helper function to get untagged lines (user annotations only)
 local function get_untagged_lines()
@@ -68,7 +77,7 @@ local function get_untagged_lines()
 	local marks = vim.api.nvim_buf_get_extmarks(bufnr, llm_ns, 0, -1, {})
 	local tagged_rows = {}
 	for _, mark in ipairs(marks) do
-		tagged_rows[mark[2]] = true  -- mark[2] is row (0-indexed)
+		tagged_rows[mark[2]] = true -- mark[2] is row (0-indexed)
 	end
 
 	-- Collect untagged lines only
@@ -110,7 +119,7 @@ local function pull_response()
 
 	-- Get current cursor position
 	local cursor = vim.api.nvim_win_get_cursor(0)
-	local row = cursor[1]  -- 1-indexed for buf_set_lines
+	local row = cursor[1] -- 1-indexed for buf_set_lines
 
 	-- Insert response lines into buffer
 	vim.api.nvim_buf_set_lines(bufnr, row, row, false, lines)
@@ -122,12 +131,16 @@ local function pull_response()
 		vim.api.nvim_buf_set_extmark(bufnr, llm_ns, row + i, 0, {
 			end_row = row + i,
 			end_col = line_len,
-			hl_group = "Comment",  -- Gray text
-			priority = 200,         -- Override syntax highlighting
+			hl_group = "LLMResponse", -- Custom lighter gray
+			priority = 200, -- Override syntax highlighting
+			hl_mode = "combine", -- Combine with existing syntax
 		})
 	end
 
-	vim.notify(string.format("Pulled %d response lines (gray=response, normal=annotations)", #lines), vim.log.levels.INFO)
+	vim.notify(
+		string.format("Pulled %d response lines (gray=response, normal=annotations)", #lines),
+		vim.log.levels.INFO
+	)
 end
 
 return {
@@ -151,14 +164,11 @@ return {
 						-- Write untagged lines to temp file
 						vim.fn.writefile(untagged_lines, tmp)
 
-						vim.fn.jobstart(
-							{
-								"bash",
-								"-lc",
-								"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-							},
-							{ detach = true }
-						)
+						vim.fn.jobstart({
+							"bash",
+							"-lc",
+							"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
+						}, { detach = true })
 					else
 						-- Named file: save and send
 						vim.cmd("write")
