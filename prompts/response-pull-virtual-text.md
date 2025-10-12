@@ -1,16 +1,28 @@
-# Response Pull with Virtual Text - Implementation Plan
+# Response Pull with Extmark Tagging - Implementation Plan
 
 ## Overview
 
-Enable pulling LLM responses back into nvim as virtual text, allowing inline annotation without context bloat. User can write comments/questions between response lines, then submit only their annotations (not the full response) for iterative refinement.
+Enable pulling LLM responses back into nvim as real buffer lines tagged with extmarks, allowing inline annotation without context bloat. Response lines are visually distinct (gray) but fully editable. User can insert new lines between any response lines to add annotations. When sending, only untagged lines (user annotations) are sent to the LLM, not the response text.
 
 ## Goals
 
-1. Pull latest LLM response from AI pane into nvim
-2. Display response as virtual text (gray, non-editable)
-3. User writes annotations as actual buffer content
-4. Send only annotations back to LLM (not the response text)
-5. Support iterative annotation workflow
+1. Pull latest LLM response from AI pane into nvim as real buffer lines
+2. Tag each response line with an extmark to identify it
+3. Highlight response lines as gray (visually distinct from user annotations)
+4. User can insert new lines between any response lines (normal editing)
+5. On send: filter out extmark-tagged lines, send only user annotations
+6. Support iterative annotation workflow with zero context bloat
+
+## Key Insight: Hybrid Approach
+
+**Problem with pure virtual text:** Virtual lines are render-only overlays - you can't insert "between" them because they don't create real line positions.
+
+**Solution:** Use real buffer lines + extmark tagging:
+- Response pulled as **real lines** (one line per response line)
+- Each response line **tagged with extmark** (metadata: "llm_response")
+- Response lines **highlighted gray** (looks like virtual text)
+- User **inserts lines normally** - new lines DON'T get tagged
+- **On send:** Filter out extmark-tagged lines, send only untagged lines
 
 ## Technical Design
 
@@ -84,26 +96,38 @@ echo "$response"
 - Uses awk to extract everything after last `### END PROMPT` marker
 - Outputs to stdout (nvim reads via system())
 
-### Component 3: Virtual Text Display in nvim
+### Component 3: Extmark-Tagged Response Lines in nvim
 
 **File:** `nvim-llm-send-plugin/.config/nvim/lua/plugins/llm-send.lua`
 
 **Add namespace at top level:**
 
 ```lua
--- Create namespace for LLM response virtual text (after other helper functions)
-local llm_ns = vim.api.nvim_create_namespace('llm_response_virtual')
+-- Create namespace for LLM response extmark tagging
+local llm_ns = vim.api.nvim_create_namespace('llm_response_lines')
 ```
 
-**Add function:**
+**Add function to pull and insert response:**
 
 ```lua
--- Function to pull response and display as virtual text
-local function pull_response_virtual()
+-- Function to pull response and insert as extmark-tagged lines
+local function pull_response()
   -- Get current buffer
   local bufnr = vim.api.nvim_get_current_buf()
 
-  -- Clear all existing virtual text in this buffer
+  -- Clear all existing response lines (delete lines with llm_response extmarks)
+  -- Get all extmarks in buffer
+  local marks = vim.api.nvim_buf_get_extmarks(bufnr, llm_ns, 0, -1, {})
+  -- Delete lines from bottom to top (avoid line number shifts)
+  for i = #marks, 1, -1 do
+    local mark = marks[i]
+    local row = mark[2]
+    -- Check if this extmark is a response line tag
+    local details = vim.api.nvim_buf_get_extmark_by_id(bufnr, llm_ns, mark[1], { details = true })
+    if details[3] and details[3].llm_response then
+      vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, {})
+    end
+  end
   vim.api.nvim_buf_clear_namespace(bufnr, llm_ns, 0, -1)
 
   -- Call llm-pull to get response
@@ -119,17 +143,75 @@ local function pull_response_virtual()
 
   -- Get current cursor position
   local cursor = vim.api.nvim_win_get_cursor(0)
-  local row = cursor[1] - 1  -- 0-indexed
+  local row = cursor[1]  -- 1-indexed for buf_set_lines
 
-  -- Insert virtual text lines BELOW cursor position
-  for i, line in ipairs(lines) do
-    vim.api.nvim_buf_set_extmark(bufnr, llm_ns, row, 0, {
-      virt_lines = {{{line, "Comment"}}},  -- Gray comment color
-      virt_lines_below = true,
+  -- Insert response lines into buffer
+  vim.api.nvim_buf_set_lines(bufnr, row, row, false, lines)
+
+  -- Tag each inserted line with extmark and highlight
+  for i = 0, #lines - 1 do
+    vim.api.nvim_buf_set_extmark(bufnr, llm_ns, row + i, 0, {
+      end_col = 0,
+      hl_group = "Comment",  -- Gray highlight
+      hl_eol = true,         -- Highlight entire line
+      llm_response = true,   -- Custom metadata tag
     })
   end
 
-  vim.notify(string.format("Pulled %d lines as virtual text", #lines), vim.log.levels.INFO)
+  vim.notify(string.format("Pulled %d response lines", #lines), vim.log.levels.INFO)
+end
+```
+
+**Add function to filter and send:**
+
+```lua
+-- Modify existing llms send function to filter out response lines
+-- Add this helper function:
+local function get_untagged_lines()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local total_lines = vim.api.nvim_buf_line_count(bufnr)
+  local untagged = {}
+
+  -- Get all extmarks
+  local marks = vim.api.nvim_buf_get_extmarks(bufnr, llm_ns, 0, -1, { details = true })
+  local tagged_rows = {}
+  for _, mark in ipairs(marks) do
+    if mark[4] and mark[4].llm_response then
+      tagged_rows[mark[2]] = true  -- mark[2] is row (0-indexed)
+    end
+  end
+
+  -- Collect untagged lines
+  for i = 0, total_lines - 1 do
+    if not tagged_rows[i] then
+      local line = vim.api.nvim_buf_get_lines(bufnr, i, i + 1, false)[1]
+      table.insert(untagged, line)
+    end
+  end
+
+  return untagged
+end
+```
+
+**Update llms keybinding to use filtered content:**
+
+```lua
+-- In the <leader>llms keybinding function, before writing to temp file:
+-- Instead of writing entire buffer, write only untagged lines:
+
+if bufname == "" then
+  local tmp = vim.fn.tempname() .. ".md"
+
+  -- Get untagged lines (user annotations only)
+  local untagged_lines = get_untagged_lines()
+
+  -- Write untagged lines to temp file
+  vim.fn.writefile(untagged_lines, tmp)
+
+  vim.fn.jobstart(
+    { "bash", "-lc", "llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp) },
+    { detach = true }
+  )
 end
 ```
 
@@ -138,18 +220,19 @@ end
 ```lua
 {
   "<leader>llmp",
-  pull_response_virtual,
+  pull_response,
   mode = "n",
-  desc = "LLM: Pull response as virtual text",
+  desc = "LLM: Pull response as tagged lines",
 }
 ```
 
 **Key Points:**
-- Creates dedicated namespace for virtual text markers
-- Clears ALL previous virtual text on each pull (fresh slate)
-- Displays below cursor position
-- Uses "Comment" highlight group (gray text)
-- Virtual text is NOT part of buffer content
+- Response lines are **real buffer lines** (fully editable, scrollable)
+- Each line tagged with **extmark containing metadata** `llm_response = true`
+- Lines highlighted with **"Comment" highlight group** (gray)
+- User can **insert lines between response lines** - new lines have no extmark
+- **On send:** Only lines without `llm_response` extmark are sent
+- Subsequent pulls **delete previous response lines** (clean slate)
 
 ## User Workflow
 
@@ -157,39 +240,46 @@ end
 
 1. **User writes prompt in prompt buffer (bottom pane)**
 2. **User presses `<leader>llms`**
-   - Prompt sent to AI pane with `### PROMPT timestamp ### END PROMPT` marker
+   - Prompt sent to AI pane with markers
    - LLM responds in AI pane
 3. **User presses `<leader>llmp` in prompt buffer**
-   - Previous virtual text cleared (if any)
+   - Previous response lines deleted (if any)
    - Latest response extracted (everything after last `### END PROMPT`)
-   - Response displayed as gray virtual text below cursor
-4. **User types annotations inline**
-   - Annotations are actual buffer content
-   - Can write between virtual text lines
-   - Virtual text provides context
+   - Response inserted as real buffer lines below cursor
+   - Each line tagged with extmark and highlighted gray
+4. **User inserts annotations between response lines**
+   - Press `o` on response line to insert new line below
+   - Press `O` on response line to insert new line above
+   - Type annotations - they appear in normal color (not gray)
+   - New lines DON'T get extmark tags
 5. **User presses `<leader>llms` again**
-   - Only buffer content (user's annotations) sent to LLM
-   - Virtual text NOT included (it's not in buffer)
-   - New marker added, cycle repeats
+   - Filter runs: only untagged lines (annotations) collected
+   - Only annotations sent to LLM
+   - Response lines stay in buffer (still tagged gray)
+   - Cycle repeats
 
 ### Example Buffer State After Pull:
 
 ```markdown
-[cursor here]
-⏺ Great feedback! Let me address each point...    ← virtual text (gray)
-                                                    ← virtual text
-### 1. Response Extraction                         ← virtual text
-                                                    ← virtual text
-You're right - we should...                        ← virtual text
-
-My inline question about extraction?               ← REAL buffer content (user typed)
-
-### 2. Virtual Text From The Start                 ← virtual text
-                                                    ← virtual text
-Actually simpler...                                ← virtual text
-
-What about performance with large responses?       ← REAL buffer content (user typed)
+[cursor here - line 1]
+⏺ Great feedback! Let me address each point...    ← gray (extmark tagged)
+                                                    ← gray (extmark tagged)
+### 1. Response Extraction                         ← gray (extmark tagged)
+                                                    ← gray (extmark tagged)
+You're right - we should...                        ← gray (extmark tagged)
+[user pressed 'o' and typed:]
+My inline question about extraction?               ← normal color (NO extmark)
+                                                    ← gray (extmark tagged)
+### 2. Virtual Text From The Start                 ← gray (extmark tagged)
+                                                    ← gray (extmark tagged)
+Actually simpler...                                ← gray (extmark tagged)
+[user pressed 'o' and typed:]
+What about performance with large responses?       ← normal color (NO extmark)
 ```
+
+**Visual Distinction:**
+- Gray lines = LLM response (extmark tagged, will be filtered out)
+- Normal color lines = User annotations (no extmark, will be sent)
 
 When `<leader>llms` is pressed, only:
 ```
@@ -197,7 +287,7 @@ My inline question about extraction?
 
 What about performance with large responses?
 ```
-is sent to the LLM (the actual buffer content).
+is sent to the LLM (the untagged lines).
 
 ## Implementation Order
 
@@ -237,49 +327,100 @@ is sent to the LLM (the actual buffer content).
 
 ## Technical Notes
 
-### Virtual Text vs Buffer Content
+### Extmark Tagging vs Traditional Markers
 
-**Virtual Text (extmarks with virt_lines):**
-- Not part of buffer content
-- Rendered visually by nvim
-- Cannot be edited or selected
-- Does not affect buffer line count
-- Cleared with `nvim_buf_clear_namespace()`
+**Why extmarks instead of comment markers:**
+- **Invisible metadata:** Extmarks are tags, not text in the file
+- **Precise filtering:** Can identify exact lines without regex/parsing
+- **Visual feedback:** Can highlight tagged lines automatically
+- **Robust:** Won't break if user edits response lines
 
-**Buffer Content:**
-- Actual text in buffer
-- Fully editable
-- Included in `:w` writes and yank operations
-- What gets sent via `<leader>llms`
-
-### Why This Works
-
-When `llm-send` reads the buffer to send:
+**Extmark Properties Used:**
 ```lua
--- From existing llm-send keybinding
-if bufname == "" then
-  local tmp = vim.fn.tempname() .. ".md"
-  vim.cmd("write! " .. tmp)  -- Writes ONLY buffer content, not virtual text
-  vim.fn.jobstart(...)
+vim.api.nvim_buf_set_extmark(bufnr, llm_ns, row, 0, {
+  end_col = 0,
+  hl_group = "Comment",  -- Makes line gray
+  hl_eol = true,         -- Highlight extends to end of line
+  llm_response = true,   -- Custom metadata for filtering
+})
+```
+
+**Key Insight:**
+- `llm_response = true` is **custom metadata** stored in the extmark
+- When filtering, we check: `if mark[4].llm_response then skip this line`
+- User's inserted lines have **no extmark** = included in send
+
+### How Filtering Works
+
+**On Pull:**
+1. Insert response as real lines
+2. Tag each line with extmark containing `llm_response = true`
+3. Highlight each line gray
+
+**On Send:**
+1. Get all extmarks in buffer
+2. Build set of tagged row numbers
+3. Iterate all buffer lines
+4. Collect only lines NOT in tagged set
+5. Send collected lines to LLM
+
+**Code flow:**
+```lua
+-- Filtering logic
+local tagged_rows = {}
+for _, mark in ipairs(marks) do
+  if mark[4] and mark[4].llm_response then
+    tagged_rows[mark[2]] = true  -- row is 0-indexed
+  end
+end
+
+-- Collect untagged
+for i = 0, total_lines - 1 do
+  if not tagged_rows[i] then
+    table.insert(untagged, line_at_row_i)
+  end
 end
 ```
 
-The `:write` command only writes actual buffer content, ignoring virtual text. Perfect for our use case!
+### Why This Works
+
+- **Response lines:** Real buffer content + extmark tag
+- **User annotations:** Real buffer content + NO extmark tag
+- **Visual distinction:** Gray highlight on tagged lines
+- **Editing freedom:** User can press o/O anywhere, edit anything
+- **Perfect filtering:** Only untagged lines sent
+
+**Benefits over virtual text:**
+- User can scroll, navigate, edit anywhere in the buffer
+- Can insert lines between any two response lines
+- Response provides full context while editing
+- Zero context bloat on send (filtered out)
 
 ## Testing Plan
 
-1. **Basic pull:** Send prompt, pull response, verify virtual text appears
-2. **Annotation workflow:** Add inline comments, verify they're real buffer content
-3. **Send annotations:** Verify only annotations sent, not virtual text
-4. **Multiple iterations:** Pull → annotate → send → pull → verify
-5. **Edge cases:** Empty response, very long response, scrolled pane
-6. **Cross-TUI:** Test with Claude, Gemini, Grok (all use same marker)
+1. **Basic pull:** Send prompt, pull response, verify lines appear gray with extmarks
+2. **Line insertion:** Press `o` on response line, type annotation, verify normal color (no extmark)
+3. **Send filtering:** Verify only untagged lines sent, check AI pane for confirmation
+4. **Multiple iterations:** Pull → annotate → send → pull → verify annotations remain untagged
+5. **Edge cases:**
+   - Empty response
+   - Very long response (500+ lines)
+   - Scrolled AI pane
+   - User edits response lines (tags should persist)
+6. **Extmark validation:**
+   - Check extmarks exist: `:lua vim.print(vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_get_namespaces()['llm_response_lines'], 0, -1, {details=true}))`
+   - Verify gray highlighting on response lines
+   - Verify no highlight on user lines
+7. **Cross-TUI:** Test with Claude, Gemini, Grok (all use same marker)
 
 ## Success Criteria
 
-- ✓ Response appears as gray virtual text below cursor
-- ✓ User can type annotations as normal buffer content
-- ✓ Sending buffer only includes annotations (not virtual text)
-- ✓ Subsequent pulls clear previous virtual text
+- ✓ Response appears as gray highlighted real buffer lines
+- ✓ Each response line has extmark with `llm_response = true`
+- ✓ User can insert lines (o/O) anywhere - new lines are normal color
+- ✓ User can edit, scroll, navigate freely
+- ✓ Send filters correctly: only untagged lines sent to LLM
+- ✓ Subsequent pulls delete previous response lines (clean slate)
 - ✓ Works regardless of AI pane scroll state
 - ✓ No context bloat (LLM doesn't receive its own response back)
+- ✓ Extmarks persist even if response lines edited
