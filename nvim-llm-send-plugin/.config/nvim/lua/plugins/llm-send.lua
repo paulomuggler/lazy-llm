@@ -55,6 +55,47 @@ local function add_code_reference(raw_mode)
 	vim.fn.jobstart({ "bash", "-lc", cmd }, { detach = true })
 end
 
+-- Create namespace for LLM response virtual text
+local llm_ns = vim.api.nvim_create_namespace('llm_response_virtual')
+
+-- Function to pull LLM response and display as virtual text
+local function pull_response_virtual()
+	-- Get current buffer
+	local bufnr = vim.api.nvim_get_current_buf()
+
+	-- Clear all existing virtual text in this buffer
+	vim.api.nvim_buf_clear_namespace(bufnr, llm_ns, 0, -1)
+
+	-- Call llm-pull to get response
+	local response = vim.fn.system("bash -lc 'llm-pull'")
+
+	if vim.v.shell_error ~= 0 or response == "" then
+		vim.notify("Failed to pull response or no response found", vim.log.levels.WARN)
+		return
+	end
+
+	-- Split into lines
+	local lines = vim.split(response, "\n", { trimempty = false })
+
+	-- Get current cursor position
+	local cursor = vim.api.nvim_win_get_cursor(0)
+	local row = cursor[1] - 1  -- Convert to 0-indexed
+
+	-- Insert virtual text lines BELOW cursor position
+	-- Place all virtual lines on a single extmark at the cursor line
+	-- They will render below the cursor line
+	local virt_lines_table = {}
+	for i, line in ipairs(lines) do
+		table.insert(virt_lines_table, {{line, "Comment"}})
+	end
+
+	vim.api.nvim_buf_set_extmark(bufnr, llm_ns, row, 0, {
+		virt_lines = virt_lines_table,  -- Gray comment color
+	})
+
+	vim.notify(string.format("Pulled %d lines as virtual text", #lines), vim.log.levels.INFO)
+end
+
 return {
 	{
 		"LazyVim/LazyVim",
@@ -146,6 +187,12 @@ return {
 				end,
 				mode = { "n", "v" },
 				desc = "LLM: Add Code Reference (wrapped/newlines)",
+			},
+			{
+				"<leader>llmp",
+				pull_response_virtual,
+				mode = "n",
+				desc = "LLM: Pull response as virtual text",
 			},
 			-- @ Path Completion for LLM Workspace References
 			-- Opens fuzzy picker to insert file or folder paths with @ prefix

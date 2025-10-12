@@ -37,11 +37,14 @@ BUFFER_SIZE=$(tmux show-buffer | wc -c)
 # This ensures send-keys go to the application, not copy-mode navigation
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 
-# Optional: wrap with visible delimiters so big prompts are obvious in chat
+# Send START marker for prompt
 tmux send-keys -t "$TARGET" "### PROMPT $(date +'%F %T')" Enter
 
-# Paste the buffer
+# Paste the buffer (user's prompt)
 tmux paste-buffer -t "$TARGET"
+
+# Send END PROMPT marker (marks end of user prompt, start of LLM response)
+tmux send-keys -t "$TARGET" Enter "### END PROMPT" Enter
 
 # For large pastes, add a delay before sending Enter
 # This gives the TUI time to process the pasted content

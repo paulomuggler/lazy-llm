@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# llm-pull - Extract latest LLM response from AI pane
+# Outputs response content to stdout for consumption by nvim
+
+set -euo pipefail
+
+# Get AI_PANE from tmux environment (session-specific, like llm-send/llm-append)
+if [ -z "${AI_PANE:-}" ]; then
+  # Get current tmux session
+  CURRENT_SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo "")
+
+  if [ -n "$CURRENT_SESSION" ]; then
+    # Try session-specific environment first
+    AI_PANE=$(tmux show-environment -t "$CURRENT_SESSION" AI_PANE 2>/dev/null | cut -d= -f2- || echo "")
+  fi
+
+  # Fallback to global environment
+  if [ -z "$AI_PANE" ]; then
+    AI_PANE=$(tmux show-environment -g AI_PANE 2>/dev/null | cut -d= -f2- || echo "")
+  fi
+fi
+
+# Fallback to pane 0 (AI pane) if still not set
+TARGET="${AI_PANE:-:.0}"
+
+# Exit copy-mode if active (handles scrolled-up pane)
+tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
+
+# Capture pane with history (last 2000 lines should be plenty)
+content=$(tmux capture-pane -t "$TARGET" -p -S -2000)
+
+# Extract everything after last "### END PROMPT"
+# Using awk to find last occurrence and print everything after
+response=$(echo "$content" | awk '
+  /### END PROMPT/ { found=NR; next }
+  found && NR > found { print }
+')
+
+# Check if we found anything
+if [ -z "$response" ]; then
+  echo "No response found (no ### END PROMPT marker in pane)" >&2
+  exit 1
+fi
+
+# Optional: Strip ANSI escape codes for cleaner output
+# Uncomment if responses have color codes that interfere
+# response=$(echo "$response" | sed 's/\x1b\[[0-9;]*m//g')
+
+# Output to stdout
+echo "$response"
