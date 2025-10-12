@@ -55,15 +55,46 @@ local function add_code_reference(raw_mode)
 	vim.fn.jobstart({ "bash", "-lc", cmd }, { detach = true })
 end
 
--- Create namespace for LLM response virtual text
-local llm_ns = vim.api.nvim_create_namespace('llm_response_virtual')
+-- Create namespace for LLM response extmark tagging
+local llm_ns = vim.api.nvim_create_namespace('llm_response_lines')
 
--- Function to pull LLM response and display as virtual text
-local function pull_response_virtual()
+-- Helper function to get untagged lines (user annotations only)
+local function get_untagged_lines()
+	local bufnr = vim.api.nvim_get_current_buf()
+	local total_lines = vim.api.nvim_buf_line_count(bufnr)
+	local untagged = {}
+
+	-- Get all extmarks and build set of tagged rows
+	local marks = vim.api.nvim_buf_get_extmarks(bufnr, llm_ns, 0, -1, {})
+	local tagged_rows = {}
+	for _, mark in ipairs(marks) do
+		tagged_rows[mark[2]] = true  -- mark[2] is row (0-indexed)
+	end
+
+	-- Collect untagged lines only
+	for i = 0, total_lines - 1 do
+		if not tagged_rows[i] then
+			local line = vim.api.nvim_buf_get_lines(bufnr, i, i + 1, false)[1]
+			table.insert(untagged, line)
+		end
+	end
+
+	return untagged
+end
+
+-- Function to pull response and insert as extmark-tagged lines
+local function pull_response()
 	-- Get current buffer
 	local bufnr = vim.api.nvim_get_current_buf()
 
-	-- Clear all existing virtual text in this buffer
+	-- Clear all existing response lines (delete lines with extmarks in our namespace)
+	local marks = vim.api.nvim_buf_get_extmarks(bufnr, llm_ns, 0, -1, {})
+	-- Delete lines from bottom to top (avoid line number shifts)
+	for i = #marks, 1, -1 do
+		local mark = marks[i]
+		local row = mark[2]
+		vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, {})
+	end
 	vim.api.nvim_buf_clear_namespace(bufnr, llm_ns, 0, -1)
 
 	-- Call llm-pull to get response
@@ -79,21 +110,22 @@ local function pull_response_virtual()
 
 	-- Get current cursor position
 	local cursor = vim.api.nvim_win_get_cursor(0)
-	local row = cursor[1] - 1  -- Convert to 0-indexed
+	local row = cursor[1]  -- 1-indexed for buf_set_lines
 
-	-- Insert virtual text lines BELOW cursor position
-	-- Place all virtual lines on a single extmark at the cursor line
-	-- They will render below the cursor line
-	local virt_lines_table = {}
-	for i, line in ipairs(lines) do
-		table.insert(virt_lines_table, {{line, "Comment"}})
+	-- Insert response lines into buffer
+	vim.api.nvim_buf_set_lines(bufnr, row, row, false, lines)
+
+	-- Tag each inserted line with extmark and highlight
+	-- Just the presence of extmark in our namespace = tagged as response
+	for i = 0, #lines - 1 do
+		vim.api.nvim_buf_set_extmark(bufnr, llm_ns, row + i, 0, {
+			end_col = 0,
+			hl_group = "Comment",  -- Gray highlight
+			hl_eol = true,         -- Highlight entire line
+		})
 	end
 
-	vim.api.nvim_buf_set_extmark(bufnr, llm_ns, row, 0, {
-		virt_lines = virt_lines_table,  -- Gray comment color
-	})
-
-	vim.notify(string.format("Pulled %d lines as virtual text", #lines), vim.log.levels.INFO)
+	vim.notify(string.format("Pulled %d response lines (gray=response, normal=annotations)", #lines), vim.log.levels.INFO)
 end
 
 return {
@@ -110,7 +142,13 @@ return {
 					if bufname == "" then
 						-- Scratch buffer: write to temp file
 						local tmp = vim.fn.tempname() .. ".md"
-						vim.cmd("write! " .. tmp)
+
+						-- Get untagged lines (user annotations only, filter out response lines)
+						local untagged_lines = get_untagged_lines()
+
+						-- Write untagged lines to temp file
+						vim.fn.writefile(untagged_lines, tmp)
+
 						vim.fn.jobstart(
 							{
 								"bash",
@@ -131,7 +169,7 @@ return {
 					end
 				end,
 				mode = "n",
-				desc = "LLM: Send Buffer",
+				desc = "LLM: Send Buffer (filters out response lines)",
 			},
 			{
 				"<leader>llms",
@@ -190,9 +228,9 @@ return {
 			},
 			{
 				"<leader>llmp",
-				pull_response_virtual,
+				pull_response,
 				mode = "n",
-				desc = "LLM: Pull response as virtual text",
+				desc = "LLM: Pull response as tagged lines",
 			},
 			-- @ Path Completion for LLM Workspace References
 			-- Opens fuzzy picker to insert file or folder paths with @ prefix

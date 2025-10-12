@@ -29,11 +29,26 @@ tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 # Capture pane with history (last 2000 lines should be plenty)
 content=$(tmux capture-pane -t "$TARGET" -p -S -2000)
 
-# Extract everything after last "### END PROMPT"
-# Using awk to find last occurrence and print everything after
+# Extract everything after last "### END PROMPT" until next "### PROMPT" or end
+# This gets only the latest response, not old conversation
 response=$(echo "$content" | awk '
-  /### END PROMPT/ { found=NR; next }
-  found && NR > found { print }
+  /### END PROMPT/ {
+    found=NR
+    delete buffer
+    idx=0
+    next
+  }
+  found && NR > found {
+    if (/^### PROMPT/) {
+      exit  # Stop at next prompt marker
+    }
+    buffer[idx++] = $0
+  }
+  END {
+    for (i=0; i<idx; i++) {
+      print buffer[i]
+    }
+  }
 ')
 
 # Check if we found anything
