@@ -23,12 +23,24 @@ TARGET="${AI_PANE:-:.+}"
 # Debug: log the target pane (comment out after debugging)
 # echo "Targeting pane: $TARGET" >&2
 
-# read from file arg or stdin
+# Read content from file arg or stdin
+CONTENT=""
 if [[ $# -gt 0 ]]; then
-  cat "$1" | tmux load-buffer -
+  CONTENT=$(cat "$1")
 else
-  tmux load-buffer -
+  CONTENT=$(cat -)
 fi
+
+# Construct complete message with markers and content as single string
+# This avoids sending intermediate Enter keypresses that might trigger submission
+TIMESTAMP=$(date +'%F %T')
+COMPLETE_MESSAGE="### PROMPT ${TIMESTAMP}
+${CONTENT}
+
+### END PROMPT"
+
+# Load the complete message into tmux buffer
+echo "$COMPLETE_MESSAGE" | tmux load-buffer -
 
 # Get buffer size to determine if we need a delay
 BUFFER_SIZE=$(tmux show-buffer | wc -c)
@@ -37,14 +49,8 @@ BUFFER_SIZE=$(tmux show-buffer | wc -c)
 # This ensures send-keys go to the application, not copy-mode navigation
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 
-# Send START marker for prompt
-tmux send-keys -t "$TARGET" "### PROMPT $(date +'%F %T')" Enter
-
-# Paste the buffer (user's prompt)
+# Paste the complete message (all newlines are part of the paste, not keypresses)
 tmux paste-buffer -t "$TARGET"
-
-# Send END PROMPT marker (marks end of user prompt, start of LLM response)
-tmux send-keys -t "$TARGET" Enter "### END PROMPT" Enter
 
 # For large pastes, add a delay before sending Enter
 # This gives the TUI time to process the pasted content
@@ -52,5 +58,5 @@ if [ "$BUFFER_SIZE" -gt 1000 ]; then
   sleep 0.5
 fi
 
-# Send Enter to submit
+# Send single Enter to submit the prompt
 tmux send-keys -t "$TARGET" Enter

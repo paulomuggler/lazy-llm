@@ -45,3 +45,5 @@
 [] Fix Prompt Send on Grok (appears to send prompt after first carriage return)
 
 [x] Prompt Send and Response Pull tested on claude, gemini, codex, working, grok, Prompt Send broken, not possible to test Response Pull yet
+
+[] Improve robustness rgarding use of env vars AI_PANE, PROMPT_PANE, etc., these seem to be flaky when having multiple sessions or windows in a session, I've seen the whole thinkg go a bit crazy. But could have been about old stale sessions and windows tmux-ressurrext was trying to restore, IDK. Investigate.

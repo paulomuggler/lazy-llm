@@ -61,10 +61,10 @@ local llm_ns = vim.api.nvim_create_namespace("llm_response_lines")
 -- Define custom highlight group for LLM response lines (lighter gray, slightly transparent)
 vim.api.nvim_set_hl(0, "LLMResponse", {
 	--	fg = "#999999", -- Lighter gray text
-	bg = "#111111", -- Slightly darker gray background
-	italic = true, -- Subtle italic to distinguish
-	blend = 90, -- Slightly transparent to show through syntax
-	nocombine = false, -- Combine with other highlights
+	bg = "#333333", -- Slightly darker gray background
+	-- italic = true, -- Subtle italic to distinguish
+	-- blend = 90, -- Slightly transparent to show through syntax
+	-- nocombine = false, -- Combine with other highlights
 })
 
 -- Helper function to get untagged lines (user annotations only)
