@@ -118,10 +118,12 @@ local function pull_response()
 	-- Tag each inserted line with extmark and highlight
 	-- Just the presence of extmark in our namespace = tagged as response
 	for i = 0, #lines - 1 do
+		local line_len = #lines[i + 1]
 		vim.api.nvim_buf_set_extmark(bufnr, llm_ns, row + i, 0, {
-			end_col = 0,
-			hl_group = "Comment",  -- Gray highlight
-			hl_eol = true,         -- Highlight entire line
+			end_row = row + i,
+			end_col = line_len,
+			hl_group = "Comment",  -- Gray text
+			priority = 200,         -- Override syntax highlighting
 		})
 	end
 
