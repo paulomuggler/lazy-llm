@@ -47,6 +47,17 @@
 
 [] Remove the prompt box from the pulled lines in Response Pull
 
+[] Enhance Response Pull to support pulling earlier responses:
+   - Add `-n N` flag to pull the N-th response (counting backwards from most recent)
+   - Add `-r START:END` flag to pull a range of responses
+   - Examples:
+     * `llm-pull` - current behavior (latest response)
+     * `llm-pull -n 2` - pull 2nd most recent response
+     * `llm-pull -r 1:3` - pull responses 1-3 (latest to 3rd most recent)
+   - Implementation: Parse all ### END PROMPT markers, extract content between them
+   - Update nvim keybinding to allow specifying which response(s) to pull
+   - Useful for referencing earlier parts of conversation or comparing responses
+
 [] Fix Codex autosubmit: Final Enter keypress not being received/processed. Need to investigate if Codex requires different submission mechanism (Ctrl+Enter?) or additional delay.
 
 [x] Fix Prompt Send on Grok (appears to send prompt after first carriage return) - WONT FIX: Grok TUI is unofficial implementation and mangles multi-line pastes. Wait for official Grok TUI or try alternative implementation.
