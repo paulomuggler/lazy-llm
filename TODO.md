@@ -1,5 +1,7 @@
 [] Write preliminary design and implementation plan for conversational branching model (based on git at first)
 
+[] Consider whether the use of a local database like SQLite would be better suited for persistence of the conversation branching model instead of git. Advantages it might allow lie on the analytics side, but we'd have to design and maitain the branching model through the data objects ourselves
+
 [x] Implement two-way buffer piping. Right now, we can only send from nvim buffer -> LLM TUI. There are situations when it's desirable to be able to also do the opposite; we should check feasibility of implementing the opposite, getting the contents of the prompt box in the TUI into the nvim scratch buffer. This can be useful also for responses, come to think of it; I often feel the inclination to copy the whole of the response text and add notes to it in the nvim buffer. If we can pipe the response text into the nvim buffer, that would be a nice-to-have feature.
 
 [x] given the features above and the chat branching planned feature, we should probably look to refactor and streamline our cross-pane text piping, around an easy simple to use set of utility functions 'API' that can be used in various places. This will help us avoid code duplication and make future maintenance easier.
