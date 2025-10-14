@@ -72,3 +72,5 @@
 
 [] The File & Folder Reference insert feature is using the wrong mode for the popup completion picker; instead of navigating through selections with TAB, tab actually marking files as selected/deselected, and we have to use arrow keys to navigate instead. We should investigate and fix that. Can we make it so that TAB inserts in the autocomplete filter input the selected completion, then keeps autocompleting as if typed in by the user?
 
+
+[] Autosubmit is still failing often, so when we do llms we get the prompt buffer sent to the LLM TUI prompt input, but the submit enter often does not go through, we want to investigate and improve this.
