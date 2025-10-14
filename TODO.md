@@ -67,3 +67,8 @@
 [x] Prompt Send and Response Pull tested on claude, gemini, codex, working, grok, Prompt Send broken, not possible to test Response Pull yet
 
 [] Improve robustness rgarding use of env vars AI_PANE, PROMPT_PANE, etc., these seem to be flaky when having multiple sessions or windows in a session, I've seen the whole thinkg go a bit crazy. But could have been about old stale sessions and windows tmux-ressurrext was trying to restore, IDK. Investigate.
+
+[] The File & Folder Reference insert feature ( @ autocomplete in prompt buffer) sometimes stops at folders, making it harder to autocomplete into a filename within that folder. We should investigate and fix that.
+
+[] The File & Folder Reference insert feature is using the wrong mode for the popup completion picker; instead of navigating through selections with TAB, tab actually marking files as selected/deselected, and we have to use arrow keys to navigate instead. We should investigate and fix that. Can we make it so that TAB inserts in the autocomplete filter input the selected completion, then keeps autocompleting as if typed in by the user?
+
