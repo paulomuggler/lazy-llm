@@ -35,6 +35,7 @@ fi
 # This avoids sending intermediate Enter keypresses that might trigger submission
 TIMESTAMP=$(date +'%F %T')
 COMPLETE_MESSAGE="### PROMPT ${TIMESTAMP}
+
 ${CONTENT}
 
 ### END PROMPT"
