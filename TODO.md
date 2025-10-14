@@ -50,15 +50,12 @@
 [] Remove the prompt box from the pulled lines in Response Pull
 
 [] Enhance Response Pull to support pulling earlier responses:
-   - Add `-n N` flag to pull the N-th response (counting backwards from most recent)
-   - Add `-r START:END` flag to pull a range of responses
-   - Examples:
-     * `llm-pull` - current behavior (latest response)
-     * `llm-pull -n 2` - pull 2nd most recent response
-     * `llm-pull -r 1:3` - pull responses 1-3 (latest to 3rd most recent)
-   - Implementation: Parse all ### END PROMPT markers, extract content between them
-   - Update nvim keybinding to allow specifying which response(s) to pull
-   - Useful for referencing earlier parts of conversation or comparing responses
+   - See detailed spec: prompts/enhanced-response-pull.md
+   - Add `-n N` flag to pull the N-th response (1=most recent, counting backwards)
+   - Add `-r START:END` flag to pull a range of responses (concatenated with delimiters)
+   - Implement in-memory conversation state for efficiency (lazy state file)
+   - Update nvim keybinding with input prompt for response selection
+   - Future: investigate marker-free extraction via raw LLM stream access
 
 [] Fix Codex autosubmit: Final Enter keypress not being received/processed. Need to investigate if Codex requires different submission mechanism (Ctrl+Enter?) or additional delay.
 
