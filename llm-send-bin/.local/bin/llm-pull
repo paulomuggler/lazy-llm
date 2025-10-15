@@ -27,7 +27,8 @@ TARGET="${AI_PANE:-:.0}"
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 
 # Capture pane with history (last 2000 lines should be plenty)
-content=$(tmux capture-pane -t "$TARGET" -p -S -2000)
+# -J flag joins wrapped lines back into logical lines (prevents line-wrap duplication)
+content=$(tmux capture-pane -t "$TARGET" -p -J -S -2000)
 
 # Extract latest response - everything after the last ### END PROMPT marker
 # Strategy:
