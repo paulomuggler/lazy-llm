@@ -1,6 +1,8 @@
+[] Split the llm-send stuff into multiple plugin files, per feature, i.e. llm-send, at-path-autocomplete, response-pull, etc.. This will make it easier to maintain and extend in the future.
+
+[] revisit features looking for code to refactor or better ways to do things as I learn more about nvim, tmux, etc.. I'm sure there's a bunch of stuff inthere bing done in a creepy dumb way.
+
 [] Consider whether the use of a local database like SQLite would be better suited for persistence of the conversation branching model instead of git. Advantages it might allow lie on the analytics side, but we'd have to design and maitain the branching model through the data objects ourselves
-
-
 
 [] incorporate our claude 'implement-prompts' custom tool prompt into other LLM TUIs
 

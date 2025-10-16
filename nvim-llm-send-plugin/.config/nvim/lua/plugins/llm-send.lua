@@ -91,6 +91,33 @@ local function get_untagged_lines()
 	return untagged
 end
 
+-- Global flag to prevent recursive autocmd triggering
+local _at_completion_active = false
+
+-- Helper function to trigger @ path completion
+-- Can be called from keymap or autocmd
+local function trigger_at_completion()
+	if _at_completion_active then
+		return
+	end
+
+	local buf = vim.api.nvim_get_current_buf()
+	local win = vim.api.nvim_get_current_win()
+	local row, col = unpack(vim.api.nvim_win_get_cursor(win))
+	local line_before = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]:sub(1, col)
+
+	-- Check if we're at an @ path position (bare @ or with content)
+	local existing_at_path = line_before:match("^@([^%s]*)$") or line_before:match("%s@([^%s]*)$")
+
+	if not existing_at_path then
+		return -- Not in an @ path context
+	end
+
+	-- Trigger the @ keymap by calling it directly
+	local keys = vim.api.nvim_replace_termcodes("@", true, false, true)
+	vim.api.nvim_feedkeys(keys, "m", false) -- Use 'm' mode for mapping
+end
+
 -- Function to pull response and insert as extmark-tagged lines
 local function pull_response()
 	-- Get current buffer
@@ -244,78 +271,181 @@ return {
 				mode = "n",
 				desc = "LLM: Pull response as tagged lines",
 			},
-			-- @ Path Completion for LLM Workspace References
-			-- Opens fuzzy picker to insert file or folder paths with @ prefix
+			-- @ Path Completion using fzf-lua
 			{
 				"@",
 				function()
-					-- Save the buffer and position before opening picker
+					-- Set flag to prevent autocmd from triggering during completion
+					_at_completion_active = true
+
 					local buf = vim.api.nvim_get_current_buf()
 					local win = vim.api.nvim_get_current_win()
 					local row, col = unpack(vim.api.nvim_win_get_cursor(win))
 
-					-- Insert @ character first and mark the position
-					vim.api.nvim_buf_set_text(buf, row - 1, col, row - 1, col, { "@" })
-					local at_col = col -- Save the column where @ was inserted
-					vim.api.nvim_win_set_cursor(win, { row, col + 1 })
+					-- Check trigger criteria: start of line OR after whitespace OR after @ (continuation)
+					local line_before = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]:sub(1, col)
+					local char_before_cursor = col > 0 and line_before:sub(-1) or ""
 
-					-- Get list of files AND directories using fd
-					vim.schedule(function()
-						local cwd = vim.fn.getcwd()
-						-- Include both files and directories (no --type flag = all)
-						local fd_cmd = string.format("fd . %s", vim.fn.shellescape(cwd))
-						local paths = vim.fn.systemlist(fd_cmd)
+					-- Check if we're continuing an existing @ path
+					local is_continuation = line_before:match("@[^%s]+$") ~= nil
 
-						-- Make paths relative to cwd and detect if directory
-						local items = {}
-						for _, path in ipairs(paths) do
-							local rel_path = vim.fn.fnamemodify(path, ":.")
-							-- Remove trailing slash if present (fd might add it)
-							rel_path = rel_path:gsub("/$", "")
-							-- Check if it's a directory
-							local is_dir = vim.fn.isdirectory(path) == 1
-							table.insert(items, {
-								path = rel_path,
-								is_dir = is_dir,
-							})
-						end
+					-- Only trigger if at start of line, after whitespace, or continuing @ path
+					if col > 0 and char_before_cursor ~= "" and not char_before_cursor:match("%s") and not is_continuation then
+						-- Not at valid trigger position, just insert @
+						vim.api.nvim_buf_set_text(buf, row - 1, col, row - 1, col, { "@" })
+						vim.api.nvim_win_set_cursor(win, { row, col + 1 })
+						_at_completion_active = false
+						return
+					end
 
-						-- Use vim.ui.select which will use Snacks.picker if configured
-						vim.ui.select(items, {
-							prompt = "@ Workspace Path (file or folder)",
-							format_item = function(item)
-								-- Add trailing / for directories to make them obvious
-								return item.is_dir and (item.path .. "/") or item.path
-							end,
-						}, function(selected)
-							if selected then
-								vim.schedule(function()
-									-- Return to original window/buffer
-									vim.api.nvim_set_current_win(win)
-									vim.api.nvim_set_current_buf(buf)
+					-- Get workspace root (git root or cwd)
+					local git_root = vim.fn.systemlist("git rev-parse --show-toplevel 2>/dev/null")[1]
+					local workspace_root = (git_root and git_root ~= "" and vim.v.shell_error == 0) and git_root
+						or vim.fn.getcwd()
 
-									-- Get the path to insert (add trailing / for directories)
-									local path_to_insert = selected.is_dir and (selected.path .. "/") or selected.path
+					-- Helper function to open picker and handle selection
+					-- at_col_start: position of @ character (0-based)
+					-- at_col_end: position after the @ path (0-based, where cursor was when triggered)
+					local function open_picker(search_dir, base_path, initial_query, at_col_start, at_col_end)
+						local query = initial_query or ""
+						local cmd = string.format(
+							"fd --hidden --exclude .git --exclude node_modules --max-results 500 --base-directory %s",
+							vim.fn.shellescape(search_dir)
+						)
 
-									-- Insert the file/folder path right after the @ (at_col + 1)
-									vim.api.nvim_buf_set_text(
-										buf,
-										row - 1,
-										at_col + 1,
-										row - 1,
-										at_col + 1,
-										{ path_to_insert }
-									)
+						-- Track whether we've made a selection (vs ESC cancel)
+						local selection_made = false
 
-									-- Move cursor to end of inserted text (after @ and path)
-									vim.api.nvim_win_set_cursor(win, { row, at_col + 1 + #path_to_insert })
-								end)
-							end
+						require("fzf-lua").fzf_exec(cmd, {
+							prompt = "@ " .. (base_path ~= "" and base_path or "workspace") .. " > ",
+							query = query,
+							-- Try using keymap.fzf for fzf native bindings
+							keymap = {
+								fzf = {
+									["tab"] = "replace-query",
+								},
+							},
+							winopts = {
+								-- When picker closes, handle insert mode re-entry based on how it closed
+								on_close = function()
+									vim.schedule(function()
+										if not selection_made then
+											-- ESC was pressed - re-enter insert mode at original position
+											vim.api.nvim_set_current_win(win)
+											vim.api.nvim_set_current_buf(buf)
+
+											-- Get current line to check if we're at EOL
+											local current_line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]
+											local line_len = #current_line
+
+											-- Check if we're at end of line
+											if at_col_end >= line_len then
+												-- At EOL: position cursor on last char, then append with 'a'
+												vim.api.nvim_win_set_cursor(win, { row, line_len > 0 and line_len - 1 or 0 })
+												local keys = vim.api.nvim_replace_termcodes("a", true, false, true)
+												vim.api.nvim_feedkeys(keys, "n", false)
+											else
+												-- Mid-line: position cursor after the @ content, use insert
+												vim.api.nvim_win_set_cursor(win, { row, at_col_end })
+												local keys = vim.api.nvim_replace_termcodes("<Cmd>startinsert<CR>", true, false, true)
+												vim.api.nvim_feedkeys(keys, "n", false)
+											end
+										end
+										-- Clear flag in all cases
+										if _at_completion_active then
+											_at_completion_active = false
+										end
+									end)
+								end,
+							},
+							actions = {
+								["default"] = function(selected)
+									if selected and selected[1] then
+										selection_made = true
+										vim.schedule(function()
+											vim.api.nvim_set_current_win(win)
+											vim.api.nvim_set_current_buf(buf)
+
+											local path = selected[1]:gsub("/$", "")
+											local full_path = base_path .. path
+
+											-- Check if it's a directory
+											local is_dir = vim.fn.isdirectory(workspace_root .. "/" .. full_path) == 1
+											if is_dir then
+												full_path = full_path .. "/"
+											end
+
+											-- Use original buffer position (don't use current cursor - fzf moved it)
+											-- We want to replace from at_col_start to at_col_end on the original row
+											vim.api.nvim_buf_set_text(
+												buf,
+												row - 1, -- Use original row (0-indexed for API)
+												at_col_start + 1, -- +1 to preserve the @, start replacing after @
+												row - 1,
+												at_col_end or at_col_start + 1, -- End of current @ path content
+												{ full_path }
+											)
+
+											-- Calculate final cursor position (0-based)
+											-- at_col_start is position of @
+											-- We inserted path starting at at_col_start + 1
+											-- Path has length #full_path
+											-- Last char position is: at_col_start + #full_path
+											local final_col = at_col_start + #full_path
+
+											-- Move cursor to last character of completion
+											vim.api.nvim_win_set_cursor(win, { row, final_col })
+
+											-- Clear flag before re-entering insert mode
+											_at_completion_active = false
+
+											-- Enter insert mode AFTER the cursor (append mode) using feedkeys
+											local keys = vim.api.nvim_replace_termcodes("a", true, false, true)
+											vim.api.nvim_feedkeys(keys, "n", false)
+
+											-- If directory, auto-trigger completion again after a short delay
+											if is_dir then
+												vim.defer_fn(function()
+													trigger_at_completion()
+												end, 20)
+											end
+										end)
+									end
+								end,
+							},
+						})
+					end
+
+					-- Check if we're continuing an existing @ path
+					local existing_at_path = line_before:match("^@([^%s]*)$") or line_before:match("%s@([^%s]*)$")
+
+					if existing_at_path and existing_at_path ~= "" then
+						-- Continuing an existing path - search from that subdirectory
+						local base_path = existing_at_path:match("^(.*/)[^/]*$") or ""
+						local search_dir = workspace_root .. "/" .. base_path
+						search_dir = search_dir:gsub("/+", "/"):gsub("/$", "") -- Clean up
+
+						-- Find the @ position (find returns 1-based, convert to 0-based for API)
+						local at_pos = line_before:find("@[^%s]*$")
+						local at_col_start = at_pos - 1 -- Convert to 0-based column index
+						local at_col_end = col -- End of @ path is current cursor position
+						local after_last_slash = existing_at_path:match("([^/]*)$")
+
+						open_picker(search_dir, base_path, after_last_slash, at_col_start, at_col_end)
+					else
+						-- New @ - insert it and open picker
+						vim.api.nvim_buf_set_text(buf, row - 1, col, row - 1, col, { "@" })
+						local at_col_start = col
+						local at_col_end = col + 1 -- Position after the @
+						vim.api.nvim_win_set_cursor(win, { row, col + 1 })
+
+						vim.schedule(function()
+							open_picker(workspace_root, "", "", at_col_start, at_col_end)
 						end)
-					end)
+					end
 				end,
 				mode = "i",
-				desc = "@ fuzzy picker for workspace file/folder references",
+				desc = "@ workspace path completion (fzf-lua)",
 			},
 			-- <C-f> in insert mode triggers native vim file completion
 			{
@@ -324,6 +454,71 @@ return {
 				mode = "i",
 				desc = "Trigger native file completion",
 			},
+			-- Ctrl+Space to manually trigger @ completion when editing @ path
+			{
+				"<C-Space>",
+				trigger_at_completion,
+				mode = "i",
+				desc = "Manually trigger @ path completion",
+			},
 		},
+		-- Setup autocmd for blink-like auto-triggering on text change
+		init = function()
+			local debounce_timer = nil
+
+			-- Use InsertCharPre to detect when user is typing (not backspacing)
+			vim.api.nvim_create_autocmd("InsertCharPre", {
+				pattern = "*",
+				callback = function()
+					-- Cancel previous timer if still running
+					if debounce_timer then
+						vim.fn.timer_stop(debounce_timer)
+					end
+
+					-- Only trigger after a short delay of no typing
+					if _at_completion_active then
+						return
+					end
+
+					-- Schedule check for after the character is inserted
+					debounce_timer = vim.fn.timer_start(15, function()
+						vim.schedule(function()
+							local buf = vim.api.nvim_get_current_buf()
+							local win = vim.api.nvim_get_current_win()
+
+							-- Check if still in insert mode
+							if vim.fn.mode() ~= 'i' then
+								return
+							end
+
+							local row, col = unpack(vim.api.nvim_win_get_cursor(win))
+							local line_before = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]:sub(1, col)
+
+							-- Check if we're at an @ path (bare @ or with content)
+							local at_path = line_before:match("^@([^%s]*)$") or line_before:match("%s@([^%s]*)$")
+
+							if at_path then
+								-- Get workspace root to check if path exists
+								local git_root = vim.fn.systemlist("git rev-parse --show-toplevel 2>/dev/null")[1]
+								local workspace_root = (git_root and git_root ~= "" and vim.v.shell_error == 0) and git_root or vim.fn.getcwd()
+
+								-- Only check file existence if there's content after @
+								if at_path ~= "" then
+									local full_path = workspace_root .. "/" .. at_path
+
+									-- Don't trigger if path is complete (exists as file)
+									if vim.fn.filereadable(full_path) == 1 then
+										return -- Complete file path, don't retrigger
+									end
+								end
+
+								-- Trigger completion
+								trigger_at_completion()
+							end
+						end)
+					end)
+				end,
+			})
+		end,
 	},
 }
