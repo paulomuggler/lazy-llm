@@ -52,7 +52,7 @@ local function add_code_reference(raw_mode)
 	cmd = cmd .. vim.fn.shellescape(reference)
 
 	-- Send to prompt buffer
-	vim.fn.jobstart({ "bash", "-lc", cmd }, { detach = true })
+	vim.fn.jobstart({ "bash", "-lc", cmd }, { detach = false })
 end
 
 -- Create namespace for LLM response extmark tagging
@@ -195,12 +195,12 @@ return {
 							"bash",
 							"-lc",
 							"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-						}, { detach = true })
+						}, { detach = false })
 					else
 						-- Named file: save and send
 						vim.cmd("write")
 						local file = vim.fn.expand("%:p")
-						vim.fn.jobstart({ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(file) }, { detach = true })
+						vim.fn.jobstart({ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(file) }, { detach = false })
 					end
 
 					if config.clear_on_send then
@@ -215,13 +215,13 @@ return {
 				function()
 					local tmp = vim.fn.tempname() .. ".md"
 					vim.cmd([[
-					<,'>write! 
+					<,'>write!
 					]] .. tmp)
 					vim.fn.jobstart({
 						"bash",
 						"-lc",
 						"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-					}, { detach = true })
+					}, { detach = false })
 				end,
 				mode = "v",
 				desc = "LLM: Send Selection",

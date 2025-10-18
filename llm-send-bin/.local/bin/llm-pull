@@ -4,19 +4,17 @@
 
 set -euo pipefail
 
-# Get AI_PANE from tmux environment (session-specific, like llm-send/llm-append)
-if [ -z "${AI_PANE:-}" ]; then
-  # Get current tmux session
-  CURRENT_SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo "")
+# Get AI_PANE from window-scoped tmux user option
+# Use $TMUX_PANE to determine current window
+AI_PANE=""
+if [ -n "${TMUX_PANE:-}" ]; then
+  # Get session and window from current pane
+  _session=$(tmux display-message -t "${TMUX_PANE}" -p '#S' 2>/dev/null)
+  _window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null)
 
-  if [ -n "$CURRENT_SESSION" ]; then
-    # Try session-specific environment first
-    AI_PANE=$(tmux show-environment -t "$CURRENT_SESSION" AI_PANE 2>/dev/null | cut -d= -f2- || echo "")
-  fi
-
-  # Fallback to global environment
-  if [ -z "$AI_PANE" ]; then
-    AI_PANE=$(tmux show-environment -g AI_PANE 2>/dev/null | cut -d= -f2- || echo "")
+  if [ -n "$_session" ] && [ -n "$_window" ]; then
+    # Retrieve window-scoped user option
+    AI_PANE=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE 2>/dev/null)
   fi
 fi
 
