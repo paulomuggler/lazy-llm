@@ -1,3 +1,5 @@
+[] Add keybindings to switch LLM TUI modes normal->autoaccept->plan
+
 [] Split the llm-send.lua stuff into multiple plugin files, per feature, i.e. llm-send, at-path-autocomplete, response-pull, etc.. This will make it easier to maintain and extend in the future.
 
 

@@ -68,14 +68,25 @@ if [ "$CONFLICT_FOUND" = false ]; then
   echo "    No conflicts found."
 fi
 
-# --- 3. Run Stow ---
+# --- 3. Create State Directories ---
+echo "--> Creating lazy-llm state directories..."
+
+STATE_DIR="${HOME}/.local/state/lazy-llm"
+PROMPTS_DIR="${STATE_DIR}/prompts"
+SWAP_DIR="${STATE_DIR}/swap"
+UNDO_DIR="${STATE_DIR}/undo"
+
+mkdir -p "$PROMPTS_DIR" "$SWAP_DIR" "$UNDO_DIR"
+echo "    State directories created at: $STATE_DIR"
+
+# --- 4. Run Stow ---
 echo "--> Running stow to create symlinks..."
 for package in "${STOW_PACKAGES[@]}"; do
   stow --restow --target="$HOME" "$package"
 done
 echo "    Symlinks created."
 
-# --- 4. Final Instructions ---
+# --- 5. Final Instructions ---
 BIN_DIR="$HOME/.local/bin"
 echo "--> Checking user PATH for $BIN_DIR..."
 PATH_INCLUDES_LOCAL_BIN=false

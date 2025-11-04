@@ -9,6 +9,118 @@ TARGET_DIR="$(pwd)"
 AI_TOOL="claude"
 NEW_WINDOW=false
 
+# State directory following XDG standards
+STATE_DIR="${HOME}/.local/state/lazy-llm"
+PROMPTS_DIR="${STATE_DIR}/prompts"
+SWAP_DIR="${STATE_DIR}/swap"
+UNDO_DIR="${STATE_DIR}/undo"
+
+# File retention periods (in days)
+PROMPT_RETENTION_DAYS=7
+UNDO_RETENTION_DAYS=30
+
+# Initialize state directories
+init_state_dirs() {
+  mkdir -p "$PROMPTS_DIR" "$SWAP_DIR" "$UNDO_DIR"
+}
+
+# Cleanup old files based on retention policy
+cleanup_old_files() {
+  # Clean up old prompt files (older than PROMPT_RETENTION_DAYS)
+  find "$PROMPTS_DIR" -name "prompt-*.md" -type f -mtime +${PROMPT_RETENTION_DAYS} -delete 2>/dev/null
+
+  # Clean up old undo files (older than UNDO_RETENTION_DAYS)
+  find "$UNDO_DIR" -type f -mtime +${UNDO_RETENTION_DAYS} -delete 2>/dev/null
+}
+
+# Check for orphaned swap files and recent prompts
+# Returns 0 and echoes file path if recovery file should be used
+# Returns 1 if no recovery or user chose to skip/delete
+check_recovery_files() {
+  local found_files=false
+  local swap_files=""
+  local recent_prompts=""
+
+  # Check for swap files
+  swap_files=$(find "$SWAP_DIR" -name ".*.swp" -type f 2>/dev/null)
+  if [ -n "$swap_files" ]; then
+    found_files=true
+  fi
+
+  # Check for recent prompt files (less than 24 hours old)
+  recent_prompts=$(find "$PROMPTS_DIR" -name "prompt-*.md" -type f -mtime -1 2>/dev/null)
+  if [ -n "$recent_prompts" ]; then
+    found_files=true
+  fi
+
+  if [ "$found_files" = true ]; then
+    echo "" >&2
+    echo "════════════════════════════════════════════════════════" >&2
+    echo "  Recovery Files Detected" >&2
+    echo "════════════════════════════════════════════════════════" >&2
+
+    if [ -n "$swap_files" ]; then
+      echo "" >&2
+      echo "Orphaned swap files from previous crash:" >&2
+      echo "$swap_files" | while read swpfile; do
+        echo "  • $(basename "$swpfile")" >&2
+      done
+    fi
+
+    if [ -n "$recent_prompts" ]; then
+      echo "" >&2
+      echo "Recent unsaved prompts:" >&2
+      echo "$recent_prompts" | while read prompt; do
+        local size=$(ls -lh "$prompt" 2>/dev/null | awk '{print $5}')
+        local date=$(ls -lh "$prompt" 2>/dev/null | awk '{print $6, $7, $8}')
+        echo "  • $(basename "$prompt") ($size, $date)" >&2
+      done
+    fi
+
+    echo "" >&2
+    echo "────────────────────────────────────────────────────────" >&2
+    read -p "Do you want to (R)ecover, (D)elete all, or (I)gnore? [R/D/I]: " -n 1 -r choice >&2
+    echo "" >&2
+    echo "════════════════════════════════════════════════════════" >&2
+    echo "" >&2
+
+    case "$choice" in
+      [Rr])
+        # Find most recent prompt file
+        local most_recent=$(echo "$recent_prompts" | sort -r | head -1)
+        if [ -n "$most_recent" ] && [ -f "$most_recent" ]; then
+          echo "Recovering: $(basename "$most_recent")" >&2
+          # Clean up swap files for the recovered file
+          find "$SWAP_DIR" -name ".$(basename "$most_recent").swp" -type f -delete 2>/dev/null
+          echo "$most_recent"
+          return 0
+        else
+          echo "No valid prompt file found for recovery." >&2
+        fi
+        ;;
+      [Dd])
+        # Delete swap files and old prompts
+        find "$SWAP_DIR" -name ".*.swp" -type f -delete 2>/dev/null
+        find "$PROMPTS_DIR" -name "prompt-*.md" -type f -mtime -1 -delete 2>/dev/null
+        echo "Deleted recovery files." >&2
+        ;;
+      [Ii]|*)
+        echo "Ignoring recovery files." >&2
+        ;;
+    esac
+  fi
+
+  return 1
+}
+
+# Create a new prompt temp file
+create_prompt_file() {
+  local timestamp=$(date +%Y%m%d-%H%M%S)
+  local prompt_file="${PROMPTS_DIR}/prompt-${timestamp}.md"
+  touch "$prompt_file"
+  echo "$prompt_file"
+}
+
 # Parse named parameters
 while getopts "s:d:t:wh" opt; do
   case $opt in
@@ -38,6 +150,10 @@ while getopts "s:d:t:wh" opt; do
   esac
 done
 
+# Initialize state directories and cleanup old files
+init_state_dirs
+cleanup_old_files
+
 # Generate session name from directory if not provided
 if [ -z "$SESSION_NAME" ]; then
   # Use basename of directory and replace dots/spaces with underscores
@@ -47,12 +163,13 @@ if [ -z "$SESSION_NAME" ]; then
 fi
 
 # Function to create a new window with 3-pane layout
-# Args: session_name, window_index, target_dir, ai_tool
+# Args: session_name, window_index, target_dir, ai_tool, prompt_file
 create_workspace_window() {
   local session=$1
   local win_idx=$2
   local target_dir=$3
   local ai_tool=$4
+  local prompt_file=$5
 
   # Get tmux base indexes
   local base_index=$(tmux show-options -g | grep base-index | awk '{print $2}')
@@ -95,8 +212,8 @@ create_workspace_window() {
   # Configure Neovim pane (top-right)
   tmux send-keys -t "$session:$win_idx.$neovim_pane" "nvim" C-m
 
-  # Configure Prompt Buffer pane (bottom)
-  tmux send-keys -t "$session:$win_idx.$prompt_pane" "nvim -n --cmd 'autocmd VimEnter * ++once enew | setlocal buftype=nofile bufhidden=wipe noswapfile | set filetype=markdown | set showtabline=0 | silent! bwipeout! /tmp/.dummy | startinsert' /tmp/.dummy" C-m
+  # Configure Prompt Buffer pane (bottom) with swap and undo persistence
+  tmux send-keys -t "$session:$win_idx.$prompt_pane" "nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert' '${prompt_file}'" C-m
 
   # Set pane titles if supported
   tmux select-pane -t "$session:$win_idx.$ai_pane" -T "AI: $ai_tool"
@@ -153,8 +270,14 @@ if [ "$NEW_WINDOW" = true ] || [ "$IN_TMUX" = true ]; then
     # Create new window
     tmux new-window -t "$TARGET_SESSION:$NEXT_WIN" -n "dev" -c "$TARGET_DIR"
 
+    # Determine prompt file (check for recovery or create new)
+    PROMPT_FILE=$(check_recovery_files)
+    if [ $? -ne 0 ] || [ -z "$PROMPT_FILE" ]; then
+      PROMPT_FILE=$(create_prompt_file)
+    fi
+
     # Set up the 3-pane layout
-    create_workspace_window "$TARGET_SESSION" "$NEXT_WIN" "$TARGET_DIR" "$AI_TOOL"
+    create_workspace_window "$TARGET_SESSION" "$NEXT_WIN" "$TARGET_DIR" "$AI_TOOL" "$PROMPT_FILE"
 
     # Switch to the new window
     tmux select-window -t "$TARGET_SESSION:$NEXT_WIN"
@@ -178,6 +301,12 @@ fi
 echo "Creating session: $SESSION_NAME"
 echo "Directory: $TARGET_DIR"
 echo "AI Tool: $AI_TOOL"
+
+# Determine prompt file (check for recovery or create new)
+PROMPT_FILE=$(check_recovery_files)
+if [ $? -ne 0 ] || [ -z "$PROMPT_FILE" ]; then
+  PROMPT_FILE=$(create_prompt_file)
+fi
 
 # Create new tmux session
 tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
@@ -241,9 +370,8 @@ esac
 # Configure Neovim pane (top-right)
 tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$NEOVIM_PANE" "nvim" C-m
 
-# Configure Prompt Buffer pane (bottom)
-# Open nvim with -n (no swap) and dummy argument to skip dashboard, then create scratch buffer and wipe dummy
-tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" "nvim -n --cmd 'autocmd VimEnter * ++once enew | setlocal buftype=nofile bufhidden=wipe noswapfile | set filetype=markdown | set showtabline=0 | silent! bwipeout! /tmp/.dummy | startinsert' /tmp/.dummy" C-m
+# Configure Prompt Buffer pane (bottom) with swap and undo persistence
+tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" "nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert' '${PROMPT_FILE}'" C-m
 
 # Set pane titles if supported
 tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" -T "AI: $AI_TOOL"
