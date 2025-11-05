@@ -1,0 +1,12 @@
+# Never commit API keys or credentials
+.env
+
+# Test artifacts
+*.log
+test-sessions/
+artifacts/
+
+# Temporary files
+*.tmp
+*.swp
+*~

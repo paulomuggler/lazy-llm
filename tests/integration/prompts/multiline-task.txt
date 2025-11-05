@@ -1,0 +1,8 @@
+I need help with a simple task.
+
+Can you write a Python function that:
+1. Takes a string as input
+2. Reverses the string
+3. Returns the reversed string
+
+Please include type hints and keep it concise.
