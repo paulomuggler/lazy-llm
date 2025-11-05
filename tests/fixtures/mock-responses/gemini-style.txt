@@ -1,0 +1,20 @@
+Absolutely! I can help you with that. Here's a Python function that meets your requirements:
+
+```python
+def sum_positive_numbers(numbers):
+    """
+    Filters out negative numbers and returns the sum of positive numbers.
+    """
+    if not isinstance(numbers, list):
+        raise TypeError("Input must be a list")
+
+    positive_sum = sum(num for num in numbers if num > 0)
+    return positive_sum
+```
+
+Key features:
+* Type checking for input validation
+* Uses generator expression for efficiency
+* Returns 0 for empty lists or lists with no positive numbers
+
+Is there anything else you'd like me to add?

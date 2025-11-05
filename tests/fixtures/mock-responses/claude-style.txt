@@ -1,0 +1,16 @@
+I'll help you with that.
+
+Here's the solution:
+
+```python
+def process_data(items: list[int]) -> int:
+    """Process a list of numbers and return sum of positive values."""
+    return sum(x for x in items if x > 0)
+```
+
+This function:
+- Uses type hints for clarity
+- Filters negative numbers with a generator expression
+- Returns the sum of remaining positive numbers
+
+Would you like me to add error handling as well?

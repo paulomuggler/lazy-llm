@@ -1,0 +1,55 @@
+This is a large prompt designed to test how the system handles substantial text input.
+
+# Background
+
+I'm working on a distributed system that needs to handle high-throughput message processing. The system has multiple components:
+
+1. **Message Queue**: RabbitMQ cluster handling ~10k messages/second
+2. **Worker Processes**: 50 Python workers consuming messages
+3. **Database**: PostgreSQL with read replicas
+4. **Cache Layer**: Redis cluster for session management
+
+# Current Issues
+
+We're experiencing several problems:
+
+## Performance Bottlenecks
+
+The system starts degrading after about 8k messages/second. I've profiled the code and found:
+- Database connection pooling seems inadequate
+- Workers are blocking on I/O operations
+- Redis latency increases during peak hours
+- Memory usage grows continuously over 24-hour periods
+
+## Reliability Concerns
+
+- Messages occasionally get lost during worker restarts
+- Dead letter queue fills up with malformed messages
+- No proper circuit breaking when downstream services fail
+- Monitoring is insufficient to diagnose issues quickly
+
+# What I Need
+
+Can you help me design a solution that addresses:
+
+1. **Better connection pooling**: What parameters should I tune? Should I use pgbouncer?
+
+2. **Async I/O**: Should we migrate to asyncio? What about compatibility with our existing sync code?
+
+3. **Circuit breakers**: Implement a pattern to handle downstream failures gracefully
+
+4. **Memory leaks**: How can I identify and fix the memory growth issue?
+
+5. **Observability**: What metrics should we track? How to implement distributed tracing?
+
+# Constraints
+
+- Python 3.11 with existing codebase of ~50k lines
+- Cannot introduce breaking changes (need backward compatibility)
+- Budget for infrastructure scaling is limited
+- Team has 4 engineers with varying experience levels
+- Must maintain 99.9% uptime SLA
+
+Please provide detailed recommendations with code examples where appropriate. Priority is on quick wins that can be implemented in the next sprint, but I'm also interested in longer-term architectural improvements.
+
+Let me know if you need any additional context or clarification on the current architecture!
