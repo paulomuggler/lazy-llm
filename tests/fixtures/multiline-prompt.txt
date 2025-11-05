@@ -1,0 +1,10 @@
+I need help with a Python function.
+
+Could you write a function that:
+1. Takes a list of numbers as input
+2. Filters out negative numbers
+3. Returns the sum of positive numbers
+
+Please include error handling and type hints.
+
+Thanks!

@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Mock AI TUI for testing lazy-llm infrastructure
+# Simulates different AI tool behaviors for unit testing
+
+LOG_FILE="${MOCK_AI_LOG:-/tmp/mock-ai-tool.log}"
+MODE="${MOCK_AI_MODE:-echo}"
+
+# Initialize log file
+echo "=== Mock AI Tool Started at $(date) ===" > "$LOG_FILE"
+echo "Mode: $MODE" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"
+
+# Log input with timestamp
+log_input() {
+    echo "[$(date +%T.%N)] $1" >> "$LOG_FILE"
+}
+
+# Simple prompt to show tool is ready
+echo "Mock AI Tool ($MODE mode) ready. Type your prompts..."
+echo ""
+
+# Track if we're in a prompt block
+in_prompt=false
+prompt_buffer=""
+
+# Process input line by line
+while IFS= read -r line; do
+    log_input "INPUT: $line"
+
+    case "$MODE" in
+        echo)
+            # Simple echo mode - just repeat back what was sent
+            echo "$line"
+            ;;
+
+        delay)
+            # Simulate slow response (like a real AI thinking)
+            sleep 0.2
+            echo "$line"
+            ;;
+
+        multiline)
+            # Simulate AI that responds to prompts with meaningful replies
+            echo "$line"
+
+            # Detect prompt markers and generate response
+            if [[ "$line" == "### PROMPT"* ]]; then
+                in_prompt=true
+                prompt_buffer=""
+            elif [[ "$line" == "### END PROMPT" ]]; then
+                in_prompt=false
+
+                # Generate a mock response
+                echo ""
+                echo "Sure, I'll help with that!"
+                echo ""
+                echo "Here's my response to your prompt:"
+                echo ""
+
+                # Echo back a summary of what was asked
+                if [[ -n "$prompt_buffer" ]]; then
+                    echo "You asked about: $(echo "$prompt_buffer" | head -n 1 | cut -c 1-60)..."
+                fi
+
+                echo ""
+                echo "This is a multi-line response that should be"
+                echo "extractable via the llm-pull command."
+                echo ""
+                echo "Response complete."
+
+                log_input "RESPONSE: Generated mock response"
+            elif [[ "$in_prompt" == true ]]; then
+                prompt_buffer+="$line"$'\n'
+            fi
+            ;;
+
+        truncate)
+            # Simulate Gemini-style truncation bug (repeats prompt multiple times)
+            echo "$line"
+
+            if [[ "$line" == "### END PROMPT" ]]; then
+                log_input "TRUNCATE: Simulating Gemini repetition bug"
+
+                # Repeat the prompt 3 times (simulating the bug)
+                for i in {1..3}; do
+                    echo ""
+                    echo "### PROMPT $(date +%Y-%m-%d-%H:%M:%S)"
+                    echo "[TRUNCATED REPETITION $i]"
+                    echo "### END PROMPT"
+                done
+            fi
+            ;;
+
+        slow)
+            # Very slow response to test timeout handling
+            sleep 1
+            echo "$line"
+            ;;
+
+        partial)
+            # Simulate partial/interrupted responses
+            echo "$line"
+
+            if [[ "$line" == "### END PROMPT" ]]; then
+                echo ""
+                echo "Starting my respo"
+                # Cut off mid-word to simulate interruption
+                log_input "PARTIAL: Simulating interrupted response"
+            fi
+            ;;
+
+        interactive)
+            # Simulate interactive prompts (like asking user to choose 1/2/3)
+            echo "$line"
+
+            if [[ "$line" == "### END PROMPT" ]]; then
+                echo ""
+                echo "I need more information. Please choose:"
+                echo ""
+                echo "1. Option A - Do this"
+                echo "2. Option B - Do that"
+                echo "3. Option C - Do something else"
+                echo ""
+                echo "Enter your choice (1-3):"
+
+                log_input "INTERACTIVE: Waiting for user choice"
+
+                # Wait for and echo the choice
+                read -r choice
+                log_input "INTERACTIVE: User chose: $choice"
+                echo ""
+                echo "You selected option $choice. Processing..."
+            fi
+            ;;
+
+        markers)
+            # Test mode specifically for marker line breaking issues
+            echo "$line"
+
+            # Check if markers have proper line breaks
+            if [[ "$line" == "### PROMPT"* ]]; then
+                # Should be on its own line
+                log_input "MARKER: Found PROMPT marker"
+            elif [[ "$line" == "### END PROMPT" ]]; then
+                # Should be on its own line
+                log_input "MARKER: Found END PROMPT marker"
+
+                # Response should start on new line after marker
+                echo ""
+                echo "Response starts here on new line."
+            fi
+            ;;
+
+        *)
+            # Unknown mode - default to echo
+            log_input "WARNING: Unknown mode '$MODE', defaulting to echo"
+            echo "$line"
+            ;;
+    esac
+done
+
+log_input "Mock AI tool terminated"
