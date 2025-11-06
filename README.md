@@ -200,6 +200,32 @@ While the AI makes edits, use the editor pane to review diffs, stage changes, an
   - `AI_PANE`: Target pane for AI tool (left pane)
   - `PROMPT_PANE`: Target pane for prompt buffer (bottom pane)
 
+## Testing
+
+lazy-llm includes a comprehensive test suite for automated integration testing. See [`tests/README.md`](tests/README.md) for details.
+
+### Quick Start
+
+```bash
+# Run all tests
+cd tests && ./test-runner.sh
+
+# Run specific test
+./test-runner.sh 01-simple-send.sh
+
+# Debug mode (keeps sessions alive)
+./test-runner.sh -d 02-multiline-send.sh
+```
+
+The test suite uses tmux to create real PTY sessions and includes a mock AI tool for deterministic testing. See [`docs/HEADLESS_TESTING_RESEARCH.md`](docs/HEADLESS_TESTING_RESEARCH.md) for research on automated PTY testing approaches.
+
+## Contributing
+
+Contributions are welcome! Please see [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines on:
+- Running tests before submitting PRs
+- Code style and conventions
+- Reporting issues
+
 ## License
 
 MIT
