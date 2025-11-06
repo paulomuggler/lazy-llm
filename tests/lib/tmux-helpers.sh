@@ -34,7 +34,8 @@ start_lazy_llm_session() {
     fi
 
     # Start lazy-llm in detached mode
-    lazy-llm -s "test-${session_name}" -t "$ai_tool" -d "$working_dir" &
+    # Unset TMUX so lazy-llm creates a new session instead of adding a window
+    env -u TMUX lazy-llm -s "test-${session_name}" -t "$ai_tool" -d "$working_dir" &
     local lazy_llm_pid=$!
 
     # Wait for session to be created (with timeout)
@@ -300,7 +301,8 @@ start_lazy_llm_session_with_args() {
     fi
 
     # Start lazy-llm with extra args
-    eval "lazy-llm -s \"test-${session_name}\" -t \"$ai_tool\" $extra_args" &
+    # Unset TMUX so lazy-llm creates a new session instead of adding a window
+    eval "env -u TMUX lazy-llm -s \"test-${session_name}\" -t \"$ai_tool\" $extra_args" &
     local lazy_llm_pid=$!
 
     # Wait for session to be created
