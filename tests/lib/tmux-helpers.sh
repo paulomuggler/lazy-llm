@@ -56,10 +56,16 @@ start_lazy_llm_session() {
     # Wait a bit more for panes to be fully initialized
     sleep 1
 
-    # Get pane IDs from tmux window
-    export AI_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^0:' | cut -d: -f2)
-    export EDITOR_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^1:' | cut -d: -f2)
-    export PROMPT_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^2:' | cut -d: -f2)
+    # Get the actual base indexes from tmux config
+    local base_index=$(tmux show-options -g base-index 2>/dev/null | awk '{print $2}')
+    local pane_base_index=$(tmux show-options -gw pane-base-index 2>/dev/null | awk '{print $2}')
+    base_index=${base_index:-0}
+    pane_base_index=${pane_base_index:-0}
+
+    # Get pane IDs from tmux window using actual base indexes
+    export AI_PANE=$(tmux list-panes -t "${TEST_SESSION}:${base_index}" -F '#{pane_index}:#{pane_id}' | grep "^${pane_base_index}:" | cut -d: -f2)
+    export EDITOR_PANE=$(tmux list-panes -t "${TEST_SESSION}:${base_index}" -F '#{pane_index}:#{pane_id}' | grep "^$((pane_base_index + 1)):" | cut -d: -f2)
+    export PROMPT_PANE=$(tmux list-panes -t "${TEST_SESSION}:${base_index}" -F '#{pane_index}:#{pane_id}' | grep "^$((pane_base_index + 2)):" | cut -d: -f2)
 
     # Verify panes exist
     if [ -z "$AI_PANE" ] || [ -z "$EDITOR_PANE" ] || [ -z "$PROMPT_PANE" ]; then
@@ -323,10 +329,16 @@ start_lazy_llm_session_with_args() {
     # Wait for panes to be initialized
     sleep 1
 
-    # Get pane IDs
-    export AI_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^0:' | cut -d: -f2)
-    export EDITOR_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^1:' | cut -d: -f2)
-    export PROMPT_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^2:' | cut -d: -f2)
+    # Get the actual base indexes from tmux config
+    local base_index=$(tmux show-options -g base-index 2>/dev/null | awk '{print $2}')
+    local pane_base_index=$(tmux show-options -gw pane-base-index 2>/dev/null | awk '{print $2}')
+    base_index=${base_index:-0}
+    pane_base_index=${pane_base_index:-0}
+
+    # Get pane IDs using actual base indexes
+    export AI_PANE=$(tmux list-panes -t "${TEST_SESSION}:${base_index}" -F '#{pane_index}:#{pane_id}' | grep "^${pane_base_index}:" | cut -d: -f2)
+    export EDITOR_PANE=$(tmux list-panes -t "${TEST_SESSION}:${base_index}" -F '#{pane_index}:#{pane_id}' | grep "^$((pane_base_index + 1)):" | cut -d: -f2)
+    export PROMPT_PANE=$(tmux list-panes -t "${TEST_SESSION}:${base_index}" -F '#{pane_index}:#{pane_id}' | grep "^$((pane_base_index + 2)):" | cut -d: -f2)
 
     # Verify panes exist
     if [ -z "$AI_PANE" ] || [ -z "$EDITOR_PANE" ] || [ -z "$PROMPT_PANE" ]; then
