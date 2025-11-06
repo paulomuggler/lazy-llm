@@ -39,85 +39,9 @@ cleanup_old_files() {
   find "$UNDO_DIR" -type f -mtime +${UNDO_RETENTION_DAYS} -delete 2>/dev/null
 }
 
-# Check for orphaned swap files and recent prompts
-# Returns 0 and echoes file path if recovery file should be used
-# Returns 1 if no recovery or user chose to skip/delete
-check_recovery_files() {
-  local found_files=false
-  local swap_files=""
-  local recent_prompts=""
-
-  # Check for swap files
-  swap_files=$(find "$SWAP_DIR" -name ".*.swp" -type f 2>/dev/null)
-  if [ -n "$swap_files" ]; then
-    found_files=true
-  fi
-
-  # Check for recent prompt files (less than 24 hours old)
-  recent_prompts=$(find "$PROMPTS_DIR" -name "prompt-*.md" -type f -mtime -1 2>/dev/null)
-  if [ -n "$recent_prompts" ]; then
-    found_files=true
-  fi
-
-  if [ "$found_files" = true ]; then
-    echo "" >&2
-    echo "════════════════════════════════════════════════════════" >&2
-    echo "  Recovery Files Detected" >&2
-    echo "════════════════════════════════════════════════════════" >&2
-
-    if [ -n "$swap_files" ]; then
-      echo "" >&2
-      echo "Orphaned swap files from previous crash:" >&2
-      echo "$swap_files" | while read swpfile; do
-        echo "  • $(basename "$swpfile")" >&2
-      done
-    fi
-
-    if [ -n "$recent_prompts" ]; then
-      echo "" >&2
-      echo "Recent unsaved prompts:" >&2
-      echo "$recent_prompts" | while read prompt; do
-        local size=$(ls -lh "$prompt" 2>/dev/null | awk '{print $5}')
-        local date=$(ls -lh "$prompt" 2>/dev/null | awk '{print $6, $7, $8}')
-        echo "  • $(basename "$prompt") ($size, $date)" >&2
-      done
-    fi
-
-    echo "" >&2
-    echo "────────────────────────────────────────────────────────" >&2
-    read -p "Do you want to (R)ecover, (D)elete all, or (I)gnore? [R/D/I]: " -n 1 -r choice >&2
-    echo "" >&2
-    echo "════════════════════════════════════════════════════════" >&2
-    echo "" >&2
-
-    case "$choice" in
-      [Rr])
-        # Find most recent prompt file
-        local most_recent=$(echo "$recent_prompts" | sort -r | head -1)
-        if [ -n "$most_recent" ] && [ -f "$most_recent" ]; then
-          echo "Recovering: $(basename "$most_recent")" >&2
-          # Clean up swap files for the recovered file
-          find "$SWAP_DIR" -name ".$(basename "$most_recent").swp" -type f -delete 2>/dev/null
-          echo "$most_recent"
-          return 0
-        else
-          echo "No valid prompt file found for recovery." >&2
-        fi
-        ;;
-      [Dd])
-        # Delete swap files and old prompts
-        find "$SWAP_DIR" -name ".*.swp" -type f -delete 2>/dev/null
-        find "$PROMPTS_DIR" -name "prompt-*.md" -type f -mtime -1 -delete 2>/dev/null
-        echo "Deleted recovery files." >&2
-        ;;
-      [Ii]|*)
-        echo "Ignoring recovery files." >&2
-        ;;
-    esac
-  fi
-
-  return 1
-}
+# Note: Swap file recovery is handled natively by nvim
+# When opening a file with an existing swap file, nvim will show its
+# built-in recovery prompt directly in the buffer - no need for custom handling
 
 # Create a new prompt temp file
 create_prompt_file() {
@@ -276,11 +200,8 @@ if [ "$NEW_WINDOW" = true ] || [ "$IN_TMUX" = true ]; then
     # Create new window
     tmux new-window -t "$TARGET_SESSION:$NEXT_WIN" -n "dev" -c "$TARGET_DIR"
 
-    # Determine prompt file (check for recovery or create new)
-    PROMPT_FILE=$(check_recovery_files)
-    if [ $? -ne 0 ] || [ -z "$PROMPT_FILE" ]; then
-      PROMPT_FILE=$(create_prompt_file)
-    fi
+    # Create prompt file (nvim handles swap recovery natively)
+    PROMPT_FILE=$(create_prompt_file)
 
     # Set up the 3-pane layout
     create_workspace_window "$TARGET_SESSION" "$NEXT_WIN" "$TARGET_DIR" "$AI_TOOL" "$PROMPT_FILE"
@@ -308,11 +229,8 @@ echo "Creating session: $SESSION_NAME"
 echo "Directory: $TARGET_DIR"
 echo "AI Tool: $AI_TOOL"
 
-# Determine prompt file (check for recovery or create new)
-PROMPT_FILE=$(check_recovery_files)
-if [ $? -ne 0 ] || [ -z "$PROMPT_FILE" ]; then
-  PROMPT_FILE=$(create_prompt_file)
-fi
+# Create prompt file (nvim handles swap recovery natively)
+PROMPT_FILE=$(create_prompt_file)
 
 # Create new tmux session
 tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
