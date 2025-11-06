@@ -9,18 +9,24 @@ TARGET_DIR="$(pwd)"
 AI_TOOL="claude"
 NEW_WINDOW=false
 
-# State directory following XDG standards
-STATE_DIR="${HOME}/.local/state/lazy-llm"
-PROMPTS_DIR="${STATE_DIR}/prompts"
-SWAP_DIR="${STATE_DIR}/swap"
-UNDO_DIR="${STATE_DIR}/undo"
-
 # File retention periods (in days)
 PROMPT_RETENTION_DAYS=7
 UNDO_RETENTION_DAYS=30
 
-# Initialize state directories
+# Initialize state directories (workspace-local)
+# These will be set after TARGET_DIR is determined
+STATE_DIR=""
+PROMPTS_DIR=""
+SWAP_DIR=""
+UNDO_DIR=""
+
 init_state_dirs() {
+  # Use workspace-local .lazy-llm directory
+  STATE_DIR="${TARGET_DIR}/.lazy-llm"
+  PROMPTS_DIR="${STATE_DIR}/prompts"
+  SWAP_DIR="${STATE_DIR}/swap"
+  UNDO_DIR="${STATE_DIR}/undo"
+
   mkdir -p "$PROMPTS_DIR" "$SWAP_DIR" "$UNDO_DIR"
 }
 
