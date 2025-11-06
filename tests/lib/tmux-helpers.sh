@@ -268,3 +268,69 @@ session_alive() {
     local session=$1
     tmux has-session -t "$session" 2>/dev/null
 }
+
+# Helper: Start lazy-llm in a specific directory (wrapper for clarity in tests)
+start_lazy_llm_session_in_dir() {
+    local session_name=$1
+    local working_dir=$2
+    local ai_tool=${3:-"tests/mock-ai-tool"}
+
+    start_lazy_llm_session "$session_name" "$ai_tool" "$working_dir"
+}
+
+# Helper: Start lazy-llm with custom args
+start_lazy_llm_session_with_args() {
+    local session_name=$1
+    local extra_args=$2
+
+    # Export mock AI configuration
+    export MOCK_AI_MODE=${MOCK_AI_MODE:-multiline}
+    export MOCK_AI_LOG="/tmp/test-${session_name}-mock-ai.log"
+
+    # Use absolute path for mock-ai-tool
+    local ai_tool="$PWD/tests/mock-ai-tool"
+
+    # Kill any existing test session
+    tmux kill-session -t "test-${session_name}" 2>/dev/null || true
+
+    # Start lazy-llm with custom args
+    if ! command -v lazy-llm &> /dev/null; then
+        echo "ERROR: lazy-llm not found in PATH"
+        return 1
+    fi
+
+    # Start lazy-llm with extra args
+    eval "lazy-llm -s \"test-${session_name}\" -t \"$ai_tool\" $extra_args" &
+    local lazy_llm_pid=$!
+
+    # Wait for session to be created
+    local timeout=10
+    local elapsed=0
+    while ! tmux has-session -t "test-${session_name}" 2>/dev/null; do
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+        if [ $elapsed -gt $((timeout * 2)) ]; then
+            echo "ERROR: Timeout waiting for lazy-llm session"
+            return 1
+        fi
+    done
+
+    # Store session name and pane IDs
+    export TEST_SESSION="test-${session_name}"
+
+    # Wait for panes to be initialized
+    sleep 1
+
+    # Get pane IDs
+    export AI_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^0:' | cut -d: -f2)
+    export EDITOR_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^1:' | cut -d: -f2)
+    export PROMPT_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^2:' | cut -d: -f2)
+
+    # Verify panes exist
+    if [ -z "$AI_PANE" ] || [ -z "$EDITOR_PANE" ] || [ -z "$PROMPT_PANE" ]; then
+        echo "ERROR: Failed to get pane IDs"
+        return 1
+    fi
+
+    return 0
+}
