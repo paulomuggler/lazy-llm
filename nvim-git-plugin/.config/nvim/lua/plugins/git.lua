@@ -59,9 +59,7 @@ return {
       opts.on_attach = function(bufnr)
         local gs = package.loaded.gitsigns
 
-        -- Navigate hunks
-        vim.keymap.set("n", "]h", gs.next_hunk, { buffer = bufnr, desc = "Next Hunk" })
-        vim.keymap.set("n", "[h", gs.prev_hunk, { buffer = bufnr, desc = "Prev Hunk" })
+        -- Note: ]h/[h keymaps are defined globally at the module level to unify gitsigns + vgit
 
         -- Toggle a clean "diff overlay" quickly
         vim.keymap.set("n", "<leader>gd", function()
@@ -128,6 +126,11 @@ return {
     dependencies = { "nvim-lua/plenary.nvim" },
     event = "LazyFile",
     keys = {
+      -- Hunk navigation
+      { "<leader>V]", function() require("vgit").hunk_down() end, desc = "Next Hunk (VGit)" },
+      { "<leader>V[", function() require("vgit").hunk_up() end, desc = "Prev Hunk (VGit)" },
+
+      -- Diff/blame/history previews
       { "<leader>Vd", function() require("vgit").buffer_diff_preview() end, desc = "Buffer Diff Preview" },
       { "<leader>Vh", function() require("vgit").buffer_history_preview() end, desc = "Buffer History Preview" },
       { "<leader>Vb", function() require("vgit").buffer_blame_preview() end, desc = "Buffer Blame Preview" },
@@ -150,6 +153,37 @@ return {
           },
         },
       })
+    end,
+  },
+
+  -- Unified hunk navigation: tries both gitsigns and vgit
+  {
+    "lewis6991/gitsigns.nvim", -- depends on gitsigns being loaded
+    config = function()
+      local function next_hunk()
+        -- try gitsigns
+        pcall(function()
+          require("gitsigns").nav_hunk("next")
+        end)
+
+        -- try vgit
+        pcall(function()
+          require("vgit").hunk_down()
+        end)
+      end
+
+      local function prev_hunk()
+        pcall(function()
+          require("gitsigns").nav_hunk("prev")
+        end)
+
+        pcall(function()
+          require("vgit").hunk_up()
+        end)
+      end
+
+      vim.keymap.set("n", "]h", next_hunk, { desc = "Next hunk (gitsigns/VGit)" })
+      vim.keymap.set("n", "[h", prev_hunk, { desc = "Prev hunk (gitsigns/VGit)" })
     end,
   },
 }
