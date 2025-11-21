@@ -34,7 +34,7 @@ echo "    Checks passed."
 # --- 2. Conflict Resolution ---
 echo "--> Checking for conflicting files..."
 
-STOW_PACKAGES=("llm-send-bin" "lazy-llm-bin" "nvim-git-plugin" "nvim-llm-send-plugin")
+STOW_PACKAGES=("llm-send-bin" "lazy-llm-bin" "nvim-git-plugin" "nvim-llm-send-plugin" "nvim-dropbar-plugin")
 CONFLICT_FOUND=false
 for package in "${STOW_PACKAGES[@]}"; do
   # Find every file within the package directory
