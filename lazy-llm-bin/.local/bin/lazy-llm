@@ -143,7 +143,8 @@ create_workspace_window() {
   tmux send-keys -t "$session:$win_idx.$neovim_pane" "nvim" C-m
 
   # Configure Prompt Buffer pane (bottom) with swap and undo persistence
-  tmux send-keys -t "$session:$win_idx.$prompt_pane" "nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert' '${prompt_file}'" C-m
+  # Explicitly cd to target directory to ensure shell and nvim are in sync
+  tmux send-keys -t "$session:$win_idx.$prompt_pane" "cd '${target_dir}' && nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert' '${prompt_file}'" C-m
 
   # Set pane titles if supported
   tmux select-pane -t "$session:$win_idx.$ai_pane" -T "AI: $ai_tool"
@@ -295,7 +296,8 @@ esac
 tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$NEOVIM_PANE" "nvim" C-m
 
 # Configure Prompt Buffer pane (bottom) with swap and undo persistence
-tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" "nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert' '${PROMPT_FILE}'" C-m
+# Explicitly cd to target directory to ensure shell and nvim are in sync
+tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" "cd '${TARGET_DIR}' && nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert' '${PROMPT_FILE}'" C-m
 
 # Set pane titles if supported
 tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" -T "AI: $AI_TOOL"
