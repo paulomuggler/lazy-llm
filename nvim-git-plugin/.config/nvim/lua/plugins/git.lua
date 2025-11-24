@@ -22,6 +22,35 @@ return {
     "lewis6991/gitsigns.nvim",
     enabled = true,
     event = "LazyFile",
+    -- Override snacks_picker <leader>gd binding with our toggle
+    -- Move snacks git diff picker to alternative binding
+    keys = {
+      {
+        "<leader>gd",
+        function()
+          local gs = require("gitsigns")
+          gs.toggle_signs()          -- gutter signs
+          gs.toggle_linehl()         -- line background
+          gs.toggle_deleted()        -- show removed lines as virtual lines
+          gs.toggle_word_diff()      -- optional intra-line word diff
+          gs.toggle_numhl()          -- number column highlight
+          -- If on a recent gitsigns, also:
+          if gs.toggle_virt_lines then gs.toggle_virt_lines() end
+        end,
+        desc = "Toggle Diff Overlay",
+      },
+      {
+        "<leader>gDh",
+        function()
+          if pcall(require, "snacks") then
+            require("snacks").picker.git_diff()
+          else
+            vim.notify("Snacks.nvim not available", vim.log.levels.WARN)
+          end
+        end,
+        desc = "Git Diff (hunks picker)",
+      },
+    },
     opts = function(_, opts)
       opts = opts or {}
       opts.signs = {
@@ -60,17 +89,7 @@ return {
         local gs = package.loaded.gitsigns
 
         -- Note: ]h/[h keymaps are defined globally at the module level to unify gitsigns + vgit
-
-        -- Toggle a clean "diff overlay" quickly
-        vim.keymap.set("n", "<leader>gd", function()
-          gs.toggle_signs()          -- gutter signs
-          gs.toggle_linehl()         -- line background
-          gs.toggle_deleted()        -- show removed lines as virtual lines
-          gs.toggle_word_diff()      -- optional intra-line word diff
-          gs.toggle_numhl()          -- number column highlight
-          -- If on a recent gitsigns, also:
-          if gs.toggle_virt_lines then gs.toggle_virt_lines() end
-        end, { buffer = bufnr, desc = "Toggle Diff Overlay" })
+        -- Note: <leader>gd is defined at plugin level (keys table) to override snacks_picker
 
         -- Stage/reset/unstage hunks
         vim.keymap.set({ "n", "v" }, "<leader>hs", gs.stage_hunk, { buffer = bufnr, desc = "Stage/Unstage Hunk" })
