@@ -16,9 +16,16 @@ echo -e "${GREEN}Starting llm-dev-session installation...${NC}"
 echo "--> Checking dependencies and environment..."
 
 DEPS=("stow" "git" "nvim" "tmux")
+if [[ "$(uname)" == "Darwin" ]]; then
+  DEPS+=("pbcopy")
+fi
+
 for dep in "${DEPS[@]}"; do
   if ! command -v "$dep" &>/dev/null; then
     echo -e "${YELLOW}Error: Dependency '$dep' not found in PATH. Please install it first.${NC}"
+    if [[ "$dep" == "pbcopy" ]]; then
+      echo -e "${YELLOW}Note: 'pbcopy' is required for the Gemini CLI multiline paste strategy.${NC}"
+    fi
     exit 1
   fi
 done

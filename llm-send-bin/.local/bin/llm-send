@@ -4,14 +4,17 @@ set -euo pipefail
 # Get AI_PANE from window-scoped tmux user option
 # Use $TMUX_PANE to determine current window
 AI_PANE=""
+PROMPT_PANE="" # Add PROMPT_PANE here as it's needed for the gemini strategy
 if [ -n "${TMUX_PANE:-}" ]; then
   # Get session and window from current pane
   _session=$(tmux display-message -t "${TMUX_PANE}" -p '#S' 2>/dev/null)
   _window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null)
 
   if [ -n "$_session" ] && [ -n "$_window" ]; then
-    # Retrieve window-scoped user option
+    # Retrieve window-scoped user options
     AI_PANE=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE 2>/dev/null)
+    PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null)
+    AI_TOOL=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOL 2>/dev/null)
   fi
 fi
 
@@ -27,7 +30,6 @@ else
 fi
 
 # Construct complete message with markers and content as single string
-# This avoids sending intermediate Enter keypresses that might trigger submission
 TIMESTAMP=$(date +'%F %T')
 COMPLETE_MESSAGE="### PROMPT ${TIMESTAMP}
 
@@ -35,24 +37,44 @@ ${CONTENT}
 
 ### END PROMPT"
 
-# Load the complete message into tmux buffer
-echo "$COMPLETE_MESSAGE" | tmux load-buffer -
-
-# Get buffer size to determine if we need a delay
-BUFFER_SIZE=$(tmux show-buffer | wc -c)
-
 # CRITICAL: Exit copy-mode if pane is scrolled up
-# This ensures send-keys go to the application, not copy-mode navigation
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 
-# Paste the complete message (all newlines are part of the paste, not keypresses)
-tmux paste-buffer -t "$TARGET"
+case "$AI_TOOL" in
+  gemini)
+    # Gemini strategy: Use external editor with system clipboard paste
+    # 1. Send Ctrl-x to open external editor in the AI pane
+    tmux send-keys -t "$TARGET" C-x
+    sleep 0.5 # Optimized sleep time
 
-# For large pastes, add a delay before sending Enter
-# This gives the TUI time to process the pasted content
-if [ "$BUFFER_SIZE" -gt 1000 ]; then
-  sleep 0.5
-fi
+    # 2. Copy the content to the system clipboard and paste in vim
+    echo "$COMPLETE_MESSAGE" | pbcopy
+    tmux send-keys -t "$TARGET" '"+p'
+    sleep 0.5 # Optimized sleep time
 
-# Send single Enter to submit the prompt
-tmux send-keys -t "$TARGET" Enter
+    # 3. Save and quit the editor (e.g., :wq)
+    tmux send-keys -t "$TARGET" Escape
+    tmux send-keys -t "$TARGET" ":wq" C-m
+    sleep 0.5 # Optimized sleep time
+
+    # 4. Send Enter to submit the prompt now in the Gemini CLI input
+    tmux send-keys -t "$TARGET" Enter
+    ;;
+  *)
+    # Default strategy: Paste from buffer (for Claude, etc.)
+    # Load the complete message into tmux buffer
+    echo "$COMPLETE_MESSAGE" | tmux load-buffer -
+
+    # Paste the complete message (all newlines are part of the paste, not keypresses)
+    tmux paste-buffer -t "$TARGET"
+
+    # For large pastes, add a delay before sending Enter
+    BUFFER_SIZE=$(tmux show-buffer | wc -c)
+    if [ "$BUFFER_SIZE" -gt 1000 ]; then
+      sleep 0.5
+    fi
+
+    # Send single Enter to submit the prompt
+    tmux send-keys -t "$TARGET" Enter
+    ;;
+esac

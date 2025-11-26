@@ -154,6 +154,7 @@ create_workspace_window() {
   # Set AI_PANE and PROMPT_PANE as window-scoped user options
   tmux set-option -w -t "$session:$win_idx" @AI_PANE "$session:$win_idx.$ai_pane"
   tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE "$session:$win_idx.$prompt_pane"
+  tmux set-option -w -t "$session:$win_idx" @AI_TOOL "$ai_tool"
 
   # Set initial focus to prompt buffer pane
   tmux select-pane -t "$session:$win_idx.$prompt_pane"
@@ -310,6 +311,7 @@ tmux set-option -t "$SESSION_NAME" mouse on
 # Set AI_PANE and PROMPT_PANE as window-scoped user options
 tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANE "$SESSION_NAME:$WIN_INDEX.$AI_PANE"
 tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @PROMPT_PANE "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE"
+tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_TOOL "$AI_TOOL"
 
 # Set initial focus to prompt buffer pane
 tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE"
