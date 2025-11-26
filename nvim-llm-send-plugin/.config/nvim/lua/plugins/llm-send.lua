@@ -3,6 +3,7 @@
 -- Configuration
 local config = {
 	clear_on_send = true, -- Clear buffer after sending (default: true)
+	path_completion_max_results = 5000, -- Max results for @ path completion
 }
 
 -- Helper function to get tmux pane_base_index
@@ -309,7 +310,8 @@ return {
 					local function open_picker(search_dir, base_path, initial_query, at_col_start, at_col_end)
 						local query = initial_query or ""
 						local cmd = string.format(
-							"fd --hidden --exclude .git --exclude node_modules --max-results 500 --base-directory %s",
+							"fd --hidden --exclude .git --exclude node_modules --max-results %d --base-directory %s",
+							config.path_completion_max_results,
 							vim.fn.shellescape(search_dir)
 						)
 
