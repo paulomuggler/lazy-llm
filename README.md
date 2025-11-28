@@ -29,6 +29,7 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Keypress forwarding**: Respond to LLM prompts directly from the prompt buffer
 - **Context picker**: Reference specific lines/blocks of code in your prompts (`<leader>llmr`)
 - **File & folder references**: @ autocomplete with fuzzy picker supports both files and directories
+- **NOTE markers**: Insert `[NOTE: ]` markers in code, collect and send all notes to AI (`<leader>n` prefix)
 - **Smart window management**: Auto-detects if inside tmux and adds new window to current session
 - **Git integration**: Editor pane includes vim-fugitive, gitsigns, and vgit for tracking changes
 - **Multiple AI tools**: Supports Claude, Gemini, Codex, Grok, Aider, or any agentic TUI tool
@@ -147,6 +148,62 @@ Add specific line or block references from your workspace editor to the prompt b
 ```
 
 The LLM can use these lightweight references to understand context without including full file contents. Perfect for code reviews, debugging, or referencing specific implementations.
+
+### NOTE Markers
+
+Add inline notes throughout your codebase that can be collected and sent to your AI tool. Perfect for marking TODO items, questions, or context you want the AI to address.
+
+**Keymaps** (under `<leader>n` prefix):
+
+| Key | Action |
+|-----|--------|
+| `<leader>ni` | **Insert Note** - Insert `[NOTE: ]` marker at cursor, ready to type |
+| `<leader>nb` | **Buffer Notes** - Send all notes from current file to prompt pane |
+| `<leader>np` | **Project Notes** - Send all notes from entire project to prompt pane |
+| `]n` | **Next Note** - Jump to next note in buffer |
+| `[n` | **Previous Note** - Jump to previous note in buffer |
+| `<leader>nf` | **Find Notes** - Fuzzy picker for all project notes |
+| `<leader>nq` | **Quickfix Buffer** - Buffer notes to quickfix list |
+| `<leader>nQ` | **Quickfix Project** - Project notes to quickfix list |
+
+**Note Format:**
+```
+[NOTE: your note text here]
+```
+
+**Example Usage:**
+```python
+def calculate_total(items):
+    # [NOTE: Should this handle empty lists differently?]
+    return sum(item.price for item in items)
+
+class UserService:
+    # [NOTE: Consider adding caching here for performance]
+    def get_user(self, user_id):
+        return self.db.query(User).get(user_id)
+```
+
+**Pulling Notes to Prompt:**
+
+When you press `<leader>np` (project notes), all notes are collected and sent to the prompt pane:
+
+```markdown
+# Notes from project
+
+- **src/services/user.py:42**
+  Should this handle empty lists differently?
+
+- **src/services/user.py:47**
+  Consider adding caching here for performance
+```
+
+**Smart Cross-Pane Collection:**
+
+The `<leader>nb` (buffer notes) command is smart about which buffer to collect from:
+- **In editor pane**: Collects notes from the current file
+- **In prompt pane**: Automatically collects notes from the file open in the editor pane
+
+This allows you to stay in the prompt pane and pull notes from whatever file you're viewing in the editor without switching panes. Scatter notes throughout your codebase while working, then collect them all at once to discuss with your AI assistant.
 
 ### Workflow
 
