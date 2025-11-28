@@ -18,12 +18,12 @@ return {
   },
 
   -- gitsigns: block-style inline diffs and git decorations
+  -- Using config instead of opts to completely override LazyVim's gitsigns config
   {
     "lewis6991/gitsigns.nvim",
     enabled = true,
     event = "LazyFile",
     -- Override snacks_picker <leader>gd binding with our toggle
-    -- Move snacks git diff picker to alternative binding
     keys = {
       {
         "<leader>gd",
@@ -34,7 +34,6 @@ return {
           gs.toggle_deleted()        -- show removed lines as virtual lines
           gs.toggle_word_diff()      -- optional intra-line word diff
           gs.toggle_numhl()          -- number column highlight
-          -- If on a recent gitsigns, also:
           if gs.toggle_virt_lines then gs.toggle_virt_lines() end
         end,
         desc = "Toggle Diff Overlay",
@@ -51,91 +50,83 @@ return {
         desc = "Git Diff (hunks picker)",
       },
     },
-    opts = function(_, opts)
-      opts = opts or {}
-      opts.signs = {
-        add          = { text = '│' },
-        change       = { text = '│' },
-        delete       = { text = '_' },
-        topdelete    = { text = '‾' },
-        changedelete = { text = '~' },
-        untracked    = { text = '┆' },
-      }
-      opts.signcolumn = true
-      opts.numhl = false
-      opts.linehl = false
-      opts.word_diff = false
-      opts.current_line_blame = false
-      opts.current_line_blame_opts = {
-        virt_text = true,
-        virt_text_pos = "eol",
-        delay = 1000,
-      }
-      opts.attach_to_untracked = true
-      opts.watch_gitdir = {
-        interval = 1000,
-        follow_files = true,
-      }
-      opts._threaded_diff = true  -- Better performance
-      opts.preview_config = {
-        border = 'single',
-        style = 'minimal',
-        relative = 'cursor',
-        row = 0,
-        col = 1
-      }
+    -- Use config for complete control (bypasses lazy.nvim opts merging)
+    config = function()
+      local gs = require("gitsigns")
+      gs.setup({
+        signs = {
+          add          = { text = '│' },
+          change       = { text = '│' },
+          delete       = { text = '_' },
+          topdelete    = { text = '‾' },
+          changedelete = { text = '~' },
+          untracked    = { text = '┆' },
+        },
+        signcolumn = true,
+        numhl = false,
+        linehl = false,
+        word_diff = false,
+        current_line_blame = false,
+        current_line_blame_opts = {
+          virt_text = true,
+          virt_text_pos = "eol",
+          delay = 1000,
+        },
+        attach_to_untracked = true,
+        watch_gitdir = {
+          interval = 1000,
+          follow_files = true,
+        },
+        _threaded_diff = true,
+        preview_config = {
+          border = 'single',
+          style = 'minimal',
+          relative = 'cursor',
+          row = 0,
+          col = 1,
+        },
+        on_attach = function(bufnr)
+          local gitsigns = require("gitsigns")
 
-      opts.on_attach = function(bufnr)
-        local gs = package.loaded.gitsigns
+          -- Stage/reset/unstage hunks
+          vim.keymap.set({ "n", "v" }, "<leader>hs", gitsigns.stage_hunk, { buffer = bufnr, desc = "Stage/Unstage Hunk" })
+          vim.keymap.set({ "n", "v" }, "<leader>hr", gitsigns.reset_hunk, { buffer = bufnr, desc = "Reset Hunk" })
+          vim.keymap.set({ "n", "v" }, "<leader>hu", gitsigns.undo_stage_hunk, { buffer = bufnr, desc = "Undo Stage Hunk" })
+          vim.keymap.set("n", "<leader>hS", gitsigns.stage_buffer, { buffer = bufnr, desc = "Stage Buffer" })
+          vim.keymap.set("n", "<leader>hR", gitsigns.reset_buffer, { buffer = bufnr, desc = "Reset Buffer" })
+          vim.keymap.set("n", "<leader>hU", gitsigns.reset_buffer_index, { buffer = bufnr, desc = "Unstage Buffer" })
 
-        -- Note: ]h/[h keymaps are defined globally at the module level to unify gitsigns + vgit
-        -- Note: <leader>gd is defined at plugin level (keys table) to override snacks_picker
+          -- Preview hunk (per-hunk inline preview)
+          vim.keymap.set("n", "<leader>hp", function()
+            gitsigns.preview_hunk_inline()
+          end, { buffer = bufnr, desc = "Preview Hunk Inline" })
 
-        -- Stage/reset/unstage hunks
-        vim.keymap.set({ "n", "v" }, "<leader>hs", gs.stage_hunk, { buffer = bufnr, desc = "Stage/Unstage Hunk" })
-        vim.keymap.set({ "n", "v" }, "<leader>hr", gs.reset_hunk, { buffer = bufnr, desc = "Reset Hunk" })
-        vim.keymap.set({ "n", "v" }, "<leader>hu", gs.undo_stage_hunk, { buffer = bufnr, desc = "Undo Stage Hunk" })
-        vim.keymap.set("n", "<leader>hS", gs.stage_buffer, { buffer = bufnr, desc = "Stage Buffer" })
-        vim.keymap.set("n", "<leader>hR", gs.reset_buffer, { buffer = bufnr, desc = "Reset Buffer" })
-        vim.keymap.set("n", "<leader>hU", gs.reset_buffer_index, { buffer = bufnr, desc = "Unstage Buffer" })
+          -- Show all hunks inline
+          vim.keymap.set("n", "<leader>hd", function()
+            local current_deleted = vim.b.gitsigns_status_dict and vim.b.gitsigns_status_dict.show_deleted
+            local current_word_diff = vim.b.gitsigns_status_dict and vim.b.gitsigns_status_dict.word_diff
 
-        -- Preview hunk (per-hunk inline preview)
-        vim.keymap.set("n", "<leader>hp", function()
-          gs.preview_hunk_inline()
-        end, { buffer = bufnr, desc = "Preview Hunk Inline" })
+            if current_deleted or current_word_diff then
+              if current_deleted then gitsigns.toggle_deleted() end
+              if current_word_diff then gitsigns.toggle_word_diff() end
+              gitsigns.toggle_linehl()
+            else
+              if not current_deleted then gitsigns.toggle_deleted() end
+              if not current_word_diff then gitsigns.toggle_word_diff() end
+              gitsigns.toggle_linehl()
+            end
+          end, { buffer = bufnr, desc = "Toggle Full File Diff View" })
 
-        -- Show all hunks inline using setqflist approach
-        vim.keymap.set("n", "<leader>hd", function()
-          -- Use gitsigns' show_deleted feature which shows all deleted lines inline
-          -- Combined with word_diff, this gives a full file diff view
-          local current_deleted = vim.b.gitsigns_status_dict and vim.b.gitsigns_status_dict.show_deleted
-          local current_word_diff = vim.b.gitsigns_status_dict and vim.b.gitsigns_status_dict.word_diff
+          -- Blame
+          vim.keymap.set("n", "<leader>hb", function()
+            gitsigns.blame_line({ full = true })
+          end, { buffer = bufnr, desc = "Blame Line" })
+          vim.keymap.set("n", "<leader>tb", gitsigns.toggle_current_line_blame, { buffer = bufnr, desc = "Toggle Line Blame" })
 
-          if current_deleted or current_word_diff then
-            -- Turn off if already on
-            if current_deleted then gs.toggle_deleted() end
-            if current_word_diff then gs.toggle_word_diff() end
-            gs.toggle_linehl()
-          else
-            -- Turn on full inline diff view
-            if not current_deleted then gs.toggle_deleted() end
-            if not current_word_diff then gs.toggle_word_diff() end
-            gs.toggle_linehl()
-          end
-        end, { buffer = bufnr, desc = "Toggle Full File Diff View" })
-
-        -- Blame
-        vim.keymap.set("n", "<leader>hb", function()
-          gs.blame_line({ full = true })
-        end, { buffer = bufnr, desc = "Blame Line" })
-        vim.keymap.set("n", "<leader>tb", gs.toggle_current_line_blame, { buffer = bufnr, desc = "Toggle Line Blame" })
-
-
-        -- Text object for hunks
-        vim.keymap.set({ "o", "x" }, "ih", ":<C-U>Gitsigns select_hunk<CR>", { buffer = bufnr, desc = "Select Hunk" })
-      end
-
-      return opts
+          -- Text object for hunks
+          vim.keymap.set({ "o", "x" }, "ih", ":<C-U>Gitsigns select_hunk<CR>", { buffer = bufnr, desc = "Select Hunk" })
+        end,
+      })
     end,
   },
 
