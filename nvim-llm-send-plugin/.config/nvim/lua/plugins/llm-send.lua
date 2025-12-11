@@ -228,6 +228,59 @@ return {
 				desc = "LLM: Send Selection",
 			},
 			{
+				"<leader>llmc",
+				function()
+					local bufnr = vim.api.nvim_get_current_buf()
+					local bufname = vim.api.nvim_buf_get_name(bufnr)
+					local tmp = vim.fn.tempname()
+
+					-- Write buffer content to temp file
+					local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+					vim.fn.writefile(lines, tmp)
+
+					vim.fn.jobstart({
+						"bash",
+						"-lc",
+						"llm-send -c " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
+					}, { detach = false })
+
+					if config.clear_on_send then
+						vim.cmd([[%delete _]])
+					end
+				end,
+				mode = "n",
+				desc = "LLM: Send Buffer as Command",
+			},
+			{
+				"<leader>llmc",
+				function()
+					local tmp = vim.fn.tempname()
+					vim.cmd([[
+					<,'>write!
+					]] .. tmp)
+					vim.fn.jobstart({
+						"bash",
+						"-lc",
+						"llm-send -c " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
+					}, { detach = false })
+				end,
+				mode = "v",
+				desc = "LLM: Send Selection as Command",
+			},
+			{
+				"<leader>llm/",
+				function()
+					vim.ui.input({ prompt = "LLM Command: ", default = "/" }, function(input)
+						if input then
+							local cmd = string.format("printf %%s %s | llm-send -c", vim.fn.shellescape(input))
+							vim.fn.jobstart({ "bash", "-lc", cmd }, { detach = true })
+						end
+					end)
+				end,
+				mode = "n",
+				desc = "LLM: Send Slash Command",
+			},
+			{
 				"<leader>llmd",
 				function()
 					vim.cmd([[%delete _]])

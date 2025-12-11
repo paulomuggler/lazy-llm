@@ -21,12 +21,39 @@ fi
 # Fallback to next pane if still not set
 TARGET="${AI_PANE:-:.+}"
 
+IS_COMMAND=false
+INPUT_FILE=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c|--command)
+      IS_COMMAND=true
+      shift
+      ;;
+    *)
+      INPUT_FILE="$1"
+      shift
+      ;;
+  esac
+done
+
 # Read content from file arg or stdin
 CONTENT=""
-if [[ $# -gt 0 ]]; then
-  CONTENT=$(cat "$1")
+if [ -n "$INPUT_FILE" ]; then
+  CONTENT=$(cat "$INPUT_FILE")
 else
   CONTENT=$(cat -)
+fi
+
+# CRITICAL: Exit copy-mode if pane is scrolled up
+tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
+
+if [ "$IS_COMMAND" = true ]; then
+  # Direct send strategy for slash commands
+  tmux send-keys -t "$TARGET" "$CONTENT"
+  tmux send-keys -t "$TARGET" Enter
+  exit 0
 fi
 
 # Construct complete message with markers and content as single string
