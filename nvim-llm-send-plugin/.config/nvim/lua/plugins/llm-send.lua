@@ -576,4 +576,10 @@ return {
 			})
 		end,
 	},
+	-- fzf-lua is required for @ path completion
+	{
+		"ibhagwan/fzf-lua",
+		dependencies = { "nvim-tree/nvim-web-devicons" },
+		opts = {},
+	},
 }
