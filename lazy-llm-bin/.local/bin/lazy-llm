@@ -347,10 +347,11 @@ tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANE "$SESSION_NAME:$WIN_IN
 tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @PROMPT_PANE "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE"
 tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_TOOL "$AI_TOOL"
 
-# Register keybindings for AI pane cycling (Ctrl+N/P = next/prev, Ctrl+X = remove)
+# Register keybindings for AI pane management
 tmux bind-key -T prefix C-n run-shell "$HOME/.local/bin/llm-cycle next"
 tmux bind-key -T prefix C-p run-shell "$HOME/.local/bin/llm-cycle prev"
 tmux bind-key -T prefix C-x run-shell "$HOME/.local/bin/llm-remove current"
+tmux bind-key -T prefix A run-shell "$HOME/.local/bin/llm-add"
 
 # Set initial focus to prompt buffer pane
 tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE"
