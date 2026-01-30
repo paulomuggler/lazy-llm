@@ -151,10 +151,30 @@ create_workspace_window() {
   tmux select-pane -t "$session:$win_idx.$neovim_pane" -T "Editor"
   tmux select-pane -t "$session:$win_idx.$prompt_pane" -T "Prompt"
 
-  # Set AI_PANE and PROMPT_PANE as window-scoped user options
+  # Capture stable pane IDs (survive swap-pane, unlike indices)
+  local ai_pane_id
+  local prompt_pane_id
+  ai_pane_id=$(tmux display-message -t "$session:$win_idx.$ai_pane" -p '#{pane_id}')
+  prompt_pane_id=$(tmux display-message -t "$session:$win_idx.$prompt_pane" -p '#{pane_id}')
+
+  # Set pane ID options (preferred by llm-send/llm-pull/llm-append)
+  tmux set-option -w -t "$session:$win_idx" @AI_PANE_ID "$ai_pane_id"
+  tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE_ID "$prompt_pane_id"
+
+  # Initialize multi-pane state (single-element lists)
+  tmux set-option -w -t "$session:$win_idx" @AI_PANES "$ai_pane_id"
+  tmux set-option -w -t "$session:$win_idx" @AI_TOOLS "$ai_tool"
+  tmux set-option -w -t "$session:$win_idx" @AI_PANE_IDX "0"
+
+  # Keep legacy index-based options for backward compatibility
   tmux set-option -w -t "$session:$win_idx" @AI_PANE "$session:$win_idx.$ai_pane"
   tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE "$session:$win_idx.$prompt_pane"
   tmux set-option -w -t "$session:$win_idx" @AI_TOOL "$ai_tool"
+
+  # Register keybindings for AI pane cycling (Ctrl+N/P = next/prev, Ctrl+X = remove)
+  tmux bind-key -T prefix C-n run-shell "$HOME/.local/bin/llm-cycle next"
+  tmux bind-key -T prefix C-p run-shell "$HOME/.local/bin/llm-cycle prev"
+  tmux bind-key -T prefix C-x run-shell "$HOME/.local/bin/llm-remove current"
 
   # Set initial focus to prompt buffer pane
   tmux select-pane -t "$session:$win_idx.$prompt_pane"
@@ -308,10 +328,28 @@ tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" -T "Prompt"
 # Enable mouse support
 tmux set-option -t "$SESSION_NAME" mouse on
 
-# Set AI_PANE and PROMPT_PANE as window-scoped user options
+# Capture stable pane IDs (survive swap-pane, unlike indices)
+AI_PANE_ID=$(tmux display-message -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" -p '#{pane_id}')
+PROMPT_PANE_ID=$(tmux display-message -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" -p '#{pane_id}')
+
+# Set pane ID options (preferred by llm-send/llm-pull/llm-append)
+tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANE_ID "$AI_PANE_ID"
+tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @PROMPT_PANE_ID "$PROMPT_PANE_ID"
+
+# Initialize multi-pane state (single-element lists)
+tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANES "$AI_PANE_ID"
+tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_TOOLS "$AI_TOOL"
+tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANE_IDX "0"
+
+# Keep legacy index-based options for backward compatibility
 tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANE "$SESSION_NAME:$WIN_INDEX.$AI_PANE"
 tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @PROMPT_PANE "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE"
 tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_TOOL "$AI_TOOL"
+
+# Register keybindings for AI pane cycling (Ctrl+N/P = next/prev, Ctrl+X = remove)
+tmux bind-key -T prefix C-n run-shell "$HOME/.local/bin/llm-cycle next"
+tmux bind-key -T prefix C-p run-shell "$HOME/.local/bin/llm-cycle prev"
+tmux bind-key -T prefix C-x run-shell "$HOME/.local/bin/llm-remove current"
 
 # Set initial focus to prompt buffer pane
 tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE"

@@ -4,8 +4,9 @@
 
 set -euo pipefail
 
-# Get AI_PANE from window-scoped tmux user option
-# Use $TMUX_PANE to determine current window
+# Get AI pane target from window-scoped tmux user options
+# Prefer stable pane ID (@AI_PANE_ID), fall back to legacy index (@AI_PANE)
+AI_PANE_ID=""
 AI_PANE=""
 if [ -n "${TMUX_PANE:-}" ]; then
   # Get session and window from current pane
@@ -13,13 +14,14 @@ if [ -n "${TMUX_PANE:-}" ]; then
   _window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null)
 
   if [ -n "$_session" ] && [ -n "$_window" ]; then
-    # Retrieve window-scoped user option
-    AI_PANE=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE 2>/dev/null)
+    # Retrieve window-scoped user options (prefer pane IDs)
+    AI_PANE_ID=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_ID 2>/dev/null) || true
+    AI_PANE=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE 2>/dev/null) || true
   fi
 fi
 
-# Fallback to pane 0 (AI pane) if still not set
-TARGET="${AI_PANE:-:.0}"
+# Prefer stable pane ID, fall back to legacy index, then pane 0
+TARGET="${AI_PANE_ID:-${AI_PANE:-:.0}}"
 
 # Exit copy-mode if active (handles scrolled-up pane)
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# llm-status - Output AI pane tab indicator for tmux status bar
+# Usage: llm-status
+#
+# Renders a tab indicator showing all AI panes with the active one highlighted.
+# For use in tmux status-right: set -g status-right '#(llm-status)'
+#
+# Output examples:
+#   Single pane:  "AI: claude"
+#   Multi pane:   "[claude] gemini"  (active pane is bracketed/bold)
+
+set -euo pipefail
+
+# Must be inside tmux
+if [ -z "${TMUX_PANE:-}" ]; then
+  exit 0
+fi
+
+# Get current session and window
+_session=$(tmux display-message -t "${TMUX_PANE}" -p '#S' 2>/dev/null) || exit 0
+_window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null) || exit 0
+
+# Read multi-pane state
+AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true
+AI_TOOLS=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOLS 2>/dev/null) || true
+AI_PANE_IDX=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_IDX 2>/dev/null) || true
+
+# Fall back to single-pane mode
+if [ -z "$AI_PANES" ]; then
+  AI_TOOL=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOL 2>/dev/null) || true
+  if [ -n "$AI_TOOL" ]; then
+    echo "AI: $AI_TOOL"
+  fi
+  exit 0
+fi
+
+# Parse into arrays
+read -ra tool_arr <<< "$AI_TOOLS"
+current_idx="${AI_PANE_IDX:-0}"
+total=${#tool_arr[@]}
+
+# Single pane: simple display
+if [ "$total" -le 1 ]; then
+  echo "AI: ${tool_arr[0]}"
+  exit 0
+fi
+
+# Multi pane: render tab indicator
+output=""
+for i in "${!tool_arr[@]}"; do
+  if [ "$i" -eq "$current_idx" ]; then
+    output+="#[bold][${tool_arr[$i]}]#[nobold]"
+  else
+    output+=" ${tool_arr[$i]}"
+  fi
+done
+
+# Trim leading space
+echo "${output# }"

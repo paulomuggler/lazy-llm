@@ -16,19 +16,19 @@ echo -e "${GREEN}Starting llm-dev-session installation...${NC}"
 echo "--> Checking dependencies and environment..."
 
 DEPS=("stow" "git" "nvim" "tmux")
-if [[ "$(uname)" == "Darwin" ]]; then
-  DEPS+=("pbcopy")
-fi
 
 for dep in "${DEPS[@]}"; do
   if ! command -v "$dep" &>/dev/null; then
     echo -e "${YELLOW}Error: Dependency '$dep' not found in PATH. Please install it first.${NC}"
-    if [[ "$dep" == "pbcopy" ]]; then
-      echo -e "${YELLOW}Note: 'pbcopy' is required for the Gemini CLI multiline paste strategy.${NC}"
-    fi
     exit 1
   fi
 done
+
+# Check for clipboard tool (needed for Gemini CLI multiline paste strategy)
+if ! command -v wl-copy &>/dev/null && ! command -v xclip &>/dev/null && ! command -v pbcopy &>/dev/null; then
+  echo -e "${YELLOW}Warning: No clipboard tool found (wl-copy, xclip, or pbcopy).${NC}"
+  echo -e "${YELLOW}Note: A clipboard tool is required for the Gemini CLI multiline paste strategy.${NC}"
+fi
 
 NVIM_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 if [ ! -d "$NVIM_CONFIG_DIR" ] || [ ! -f "$NVIM_CONFIG_DIR/lazy-lock.json" ]; then
@@ -41,7 +41,7 @@ echo "    Checks passed."
 # --- 2. Conflict Resolution ---
 echo "--> Checking for conflicting files..."
 
-STOW_PACKAGES=("llm-send-bin" "lazy-llm-bin" "nvim-git-plugin" "nvim-llm-send-plugin" "nvim-dropbar-plugin")
+STOW_PACKAGES=("llm-send-bin" "lazy-llm-bin" "llm-add-bin" "llm-cycle-bin" "llm-remove-bin" "llm-status-bin" "nvim-git-plugin" "nvim-llm-send-plugin" "nvim-dropbar-plugin")
 CONFLICT_FOUND=false
 for package in "${STOW_PACKAGES[@]}"; do
   # Find every file within the package directory

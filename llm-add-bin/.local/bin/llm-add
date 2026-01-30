@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# llm-add - Add a new AI pane to the lazy-llm workspace
+# Usage: llm-add [-t tool_name]
+#
+# Creates a new AI pane in a hidden holding window and swaps it into view.
+# The holding window stores inactive AI panes for swap-pane cycling.
+
+set -euo pipefail
+
+# Default AI tool
+AI_TOOL="claude"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t|--tool)
+      AI_TOOL="$2"
+      shift 2
+      ;;
+    -h|--help)
+      echo "Usage: llm-add [-t tool_name]"
+      echo ""
+      echo "Options:"
+      echo "  -t, --tool    AI tool to launch (default: claude)"
+      echo "                Supported: claude, gemini, codex, grok, aider"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+# Must be inside tmux
+if [ -z "${TMUX_PANE:-}" ]; then
+  echo "Error: llm-add must be run inside a tmux session" >&2
+  exit 1
+fi
+
+# Save the currently focused pane to restore later
+original_pane="${TMUX_PANE}"
+
+# Get current session and window
+_session=$(tmux display-message -t "${TMUX_PANE}" -p '#S')
+_window=$(tmux display-message -t "${TMUX_PANE}" -p '#I')
+
+# Get current working directory from the workspace window
+target_dir=$(tmux display-message -t "$_session:$_window" -p '#{pane_current_path}')
+
+# Read current multi-pane state
+AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true
+AI_TOOLS=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOLS 2>/dev/null) || true
+AI_PANE_IDX=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_IDX 2>/dev/null) || true
+AI_HOLD_WIN=$(tmux show-option -wv -t "$_session:$_window" @AI_HOLD_WIN 2>/dev/null) || true
+
+if [ -z "$AI_PANES" ]; then
+  echo "Error: No @AI_PANES set. Is this a lazy-llm workspace?" >&2
+  exit 1
+fi
+
+# Create holding window if it doesn't exist
+if [ -z "$AI_HOLD_WIN" ] || ! tmux list-windows -t "$_session" -F '#{window_name}' | grep -q "^_hold_${_window}$"; then
+  hold_win_name="_hold_${_window}"
+  tmux new-window -d -t "$_session" -n "$hold_win_name" -c "$target_dir"
+  AI_HOLD_WIN="$_session:$hold_win_name"
+  tmux set-option -w -t "$_session:$_window" @AI_HOLD_WIN "$AI_HOLD_WIN"
+  # Mark the holding window so it can be identified
+  tmux set-option -w -t "$AI_HOLD_WIN" @lazy_llm_hold "1"
+fi
+
+# Create new pane in the holding window without stealing focus (-d)
+# -P -F prints the new pane's ID directly
+new_pane_id=$(tmux split-window -d -t "$AI_HOLD_WIN" -c "$target_dir" -P -F '#{pane_id}')
+
+# Launch AI tool in the new pane
+tmux send-keys -t "$new_pane_id" "$AI_TOOL" C-m
+
+# Set pane title (select-pane -T also selects, so restore focus after)
+tmux select-pane -t "$new_pane_id" -T "AI: $AI_TOOL"
+tmux select-pane -t "$original_pane"
+
+# Append to pane and tool lists
+AI_PANES="$AI_PANES $new_pane_id"
+AI_TOOLS="$AI_TOOLS $AI_TOOL"
+tmux set-option -w -t "$_session:$_window" @AI_PANES "$AI_PANES"
+tmux set-option -w -t "$_session:$_window" @AI_TOOLS "$AI_TOOLS"
+
+# Count total panes
+read -ra pane_arr <<< "$AI_PANES"
+total=${#pane_arr[@]}
+
+# Auto-switch to the new pane (cycle to last index)
+new_idx=$((total - 1))
+"$HOME/.local/bin/llm-cycle" "$new_idx"
+
+echo "Added AI pane: $AI_TOOL ($new_pane_id) [$total total]"

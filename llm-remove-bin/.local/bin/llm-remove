@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# llm-remove - Remove an AI pane from the lazy-llm workspace
+# Usage: llm-remove [current|N]
+#
+# Removes the specified AI pane (default: current). If removing the visible
+# pane, cycles to the next one first. Cleans up holding window when only
+# one pane remains.
+
+set -euo pipefail
+
+TARGET_ARG="${1:-current}"
+
+# Must be inside tmux
+if [ -z "${TMUX_PANE:-}" ]; then
+  echo "Error: llm-remove must be run inside a tmux session" >&2
+  exit 1
+fi
+
+# Save the currently focused pane to restore later
+original_pane="${TMUX_PANE}"
+
+# Get current session and window
+_session=$(tmux display-message -t "${TMUX_PANE}" -p '#S')
+_window=$(tmux display-message -t "${TMUX_PANE}" -p '#I')
+
+# Read multi-pane state
+AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true
+AI_TOOLS=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOLS 2>/dev/null) || true
+AI_PANE_IDX=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_IDX 2>/dev/null) || true
+AI_HOLD_WIN=$(tmux show-option -wv -t "$_session:$_window" @AI_HOLD_WIN 2>/dev/null) || true
+
+if [ -z "$AI_PANES" ]; then
+  echo "Error: No @AI_PANES set. Is this a lazy-llm workspace?" >&2
+  exit 1
+fi
+
+# Parse into arrays
+read -ra pane_arr <<< "$AI_PANES"
+read -ra tool_arr <<< "$AI_TOOLS"
+current_idx="${AI_PANE_IDX:-0}"
+total=${#pane_arr[@]}
+
+# Can't remove the last pane
+if [ "$total" -le 1 ]; then
+  echo "Error: Cannot remove the only AI pane" >&2
+  exit 1
+fi
+
+# Determine which index to remove
+case "$TARGET_ARG" in
+  current)
+    remove_idx="$current_idx"
+    ;;
+  [0-9]*)
+    remove_idx="$TARGET_ARG"
+    if [ "$remove_idx" -ge "$total" ] || [ "$remove_idx" -lt 0 ]; then
+      echo "Error: Index $remove_idx out of range (0-$((total - 1)))" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Usage: llm-remove [current|N]" >&2
+    exit 1
+    ;;
+esac
+
+remove_pane="${pane_arr[$remove_idx]}"
+remove_tool="${tool_arr[$remove_idx]}"
+
+# If removing the currently visible pane, cycle to next first
+if [ "$remove_idx" -eq "$current_idx" ]; then
+  # Calculate next index (wrapping)
+  next_idx=$(( (current_idx + 1) % total ))
+  if [ "$next_idx" -eq "$remove_idx" ]; then
+    # Wrap to prev if next is same as remove
+    next_idx=$(( (current_idx - 1 + total) % total ))
+  fi
+
+  # Swap next pane into view before killing (without changing focus)
+  next_pane="${pane_arr[$next_idx]}"
+  tmux swap-pane -d -s "$remove_pane" -t "$next_pane"
+
+  # After swap, the content we want to keep is now where remove_pane was
+  # and the content to remove is where next_pane was
+  # But pane IDs follow content, so remove_pane still has the content to kill
+fi
+
+# Kill the pane
+tmux kill-pane -t "$remove_pane" 2>/dev/null || true
+
+# Build new arrays without the removed entry
+new_panes=()
+new_tools=()
+for i in "${!pane_arr[@]}"; do
+  if [ "$i" -ne "$remove_idx" ]; then
+    new_panes+=("${pane_arr[$i]}")
+    new_tools+=("${tool_arr[$i]}")
+  fi
+done
+
+total=${#new_panes[@]}
+
+# Adjust current index
+if [ "$remove_idx" -lt "$current_idx" ]; then
+  # Removed before current: shift index down
+  current_idx=$((current_idx - 1))
+elif [ "$remove_idx" -eq "$current_idx" ]; then
+  # Removed current: we already swapped, figure out new index
+  # Find where the next_pane we swapped in is in the new array
+  for i in "${!new_panes[@]}"; do
+    if [ "${new_panes[$i]}" = "$next_pane" ]; then
+      current_idx="$i"
+      break
+    fi
+  done
+fi
+
+# Clamp index
+if [ "$current_idx" -ge "$total" ]; then
+  current_idx=$((total - 1))
+fi
+
+# Update state
+tmux set-option -w -t "$_session:$_window" @AI_PANES "${new_panes[*]}"
+tmux set-option -w -t "$_session:$_window" @AI_TOOLS "${new_tools[*]}"
+tmux set-option -w -t "$_session:$_window" @AI_PANE_IDX "$current_idx"
+tmux set-option -w -t "$_session:$_window" @AI_PANE_ID "${new_panes[$current_idx]}"
+tmux set-option -w -t "$_session:$_window" @AI_TOOL "${new_tools[$current_idx]}"
+
+# Update legacy option
+tmux set-option -w -t "$_session:$_window" @AI_PANE "$_session:$_window.$(tmux display-message -t "${new_panes[$current_idx]}" -p '#{pane_index}')"
+
+# Clean up holding window if only one pane remains
+if [ "$total" -le 1 ] && [ -n "$AI_HOLD_WIN" ]; then
+  # Kill holding window (may already be empty)
+  tmux kill-window -t "$AI_HOLD_WIN" 2>/dev/null || true
+  tmux set-option -wu -t "$_session:$_window" @AI_HOLD_WIN 2>/dev/null || true
+fi
+
+# Update pane title (select-pane -T also selects, so restore focus after)
+active_pane="${new_panes[$current_idx]}"
+active_tool="${new_tools[$current_idx]}"
+if [ "$total" -le 1 ]; then
+  tmux select-pane -t "$active_pane" -T "AI: $active_tool"
+else
+  tmux select-pane -t "$active_pane" -T "AI: $active_tool [$((current_idx + 1))/$total]"
+fi
+tmux select-pane -t "$original_pane"
+
+echo "Removed AI pane: $remove_tool ($remove_pane) [$total remaining]"

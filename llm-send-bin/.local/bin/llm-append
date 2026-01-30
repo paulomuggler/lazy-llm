@@ -12,8 +12,9 @@ if [[ "${1:-}" == "--raw" ]]; then
   shift
 fi
 
-# Get PROMPT_PANE from window-scoped tmux user option
-# Use $TMUX_PANE to determine current window
+# Get prompt pane target from window-scoped tmux user options
+# Prefer stable pane ID (@PROMPT_PANE_ID), fall back to legacy index (@PROMPT_PANE)
+PROMPT_PANE_ID=""
 PROMPT_PANE=""
 if [ -n "${TMUX_PANE:-}" ]; then
   # Get session and window from current pane
@@ -21,13 +22,14 @@ if [ -n "${TMUX_PANE:-}" ]; then
   _window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null)
 
   if [ -n "$_session" ] && [ -n "$_window" ]; then
-    # Retrieve window-scoped user option
-    PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null)
+    # Retrieve window-scoped user options (prefer pane IDs)
+    PROMPT_PANE_ID=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE_ID 2>/dev/null) || true
+    PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null) || true
   fi
 fi
 
-# Fallback to pane 2 (bottom pane) if still not set
-TARGET="${PROMPT_PANE:-:.2}"
+# Prefer stable pane ID, fall back to legacy index, then pane 2
+TARGET="${PROMPT_PANE_ID:-${PROMPT_PANE:-:.2}}"
 
 # CRITICAL: Exit copy-mode if pane is scrolled up
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true

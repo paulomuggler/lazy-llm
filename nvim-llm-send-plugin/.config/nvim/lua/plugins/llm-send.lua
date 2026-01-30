@@ -293,8 +293,12 @@ return {
 				function()
 					local char = vim.fn.getcharstr()
 					local pane_base_index = get_pane_base_index()
+					-- Prefer @AI_PANE_ID (stable across swap-pane), fall back to @AI_PANE, then index
 					local cmd = string.format(
-						'tmux send-keys -t "${AI_PANE:-:.%d}" %s',
+						'_s=$(tmux display-message -p "#S"); _w=$(tmux display-message -p "#I"); '
+							.. '_id=$(tmux show-option -wv -t "$_s:$_w" @AI_PANE_ID 2>/dev/null); '
+							.. '_legacy=$(tmux show-option -wv -t "$_s:$_w" @AI_PANE 2>/dev/null); '
+							.. 'tmux send-keys -t "${_id:-${_legacy:-:.%d}}" %s',
 						pane_base_index,
 						vim.fn.shellescape(char)
 					)
@@ -324,6 +328,56 @@ return {
 				pull_response,
 				mode = "n",
 				desc = "LLM: Pull response as tagged lines",
+			},
+			-- Multi-pane cycling
+			{
+				"<leader>llm]",
+				function()
+					vim.fn.jobstart({ "bash", "-lc", "llm-cycle next" }, { detach = true })
+					vim.defer_fn(function()
+						vim.notify("Cycled to next AI pane", vim.log.levels.INFO)
+					end, 200)
+				end,
+				mode = "n",
+				desc = "LLM: Cycle to next AI pane",
+			},
+			{
+				"<leader>llm[",
+				function()
+					vim.fn.jobstart({ "bash", "-lc", "llm-cycle prev" }, { detach = true })
+					vim.defer_fn(function()
+						vim.notify("Cycled to prev AI pane", vim.log.levels.INFO)
+					end, 200)
+				end,
+				mode = "n",
+				desc = "LLM: Cycle to prev AI pane",
+			},
+			{
+				"<leader>llma",
+				function()
+					vim.ui.input({ prompt = "AI Tool: ", default = "claude" }, function(input)
+						if input and input ~= "" then
+							local cmd = string.format("llm-add -t %s", vim.fn.shellescape(input))
+							vim.fn.jobstart({ "bash", "-lc", cmd }, { detach = true })
+							vim.defer_fn(function()
+								vim.notify("Added AI pane: " .. input, vim.log.levels.INFO)
+							end, 500)
+						end
+					end)
+				end,
+				mode = "n",
+				desc = "LLM: Add new AI pane",
+			},
+			{
+				"<leader>llmx",
+				function()
+					vim.fn.jobstart({ "bash", "-lc", "llm-remove current" }, { detach = true })
+					vim.defer_fn(function()
+						vim.notify("Removed current AI pane", vim.log.levels.INFO)
+					end, 200)
+				end,
+				mode = "n",
+				desc = "LLM: Remove current AI pane",
 			},
 			-- @ Path Completion using fzf-lua
 			{

@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Get AI_PANE from window-scoped tmux user option
-# Use $TMUX_PANE to determine current window
+# Get AI pane target from window-scoped tmux user options
+# Prefer stable pane ID (@AI_PANE_ID), fall back to legacy index (@AI_PANE)
+AI_PANE_ID=""
 AI_PANE=""
-PROMPT_PANE="" # Add PROMPT_PANE here as it's needed for the gemini strategy
+PROMPT_PANE="" # Needed for the gemini strategy
 if [ -n "${TMUX_PANE:-}" ]; then
   # Get session and window from current pane
   _session=$(tmux display-message -t "${TMUX_PANE}" -p '#S' 2>/dev/null)
   _window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null)
 
   if [ -n "$_session" ] && [ -n "$_window" ]; then
-    # Retrieve window-scoped user options
-    AI_PANE=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE 2>/dev/null)
-    PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null)
-    AI_TOOL=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOL 2>/dev/null)
+    # Retrieve window-scoped user options (prefer pane IDs)
+    AI_PANE_ID=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_ID 2>/dev/null) || true
+    AI_PANE=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE 2>/dev/null) || true
+    PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null) || true
+    AI_TOOL=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOL 2>/dev/null) || true
   fi
 fi
 
-# Fallback to next pane if still not set
-TARGET="${AI_PANE:-:.+}"
+# Prefer stable pane ID, fall back to legacy index, then next pane
+TARGET="${AI_PANE_ID:-${AI_PANE:-:.+}}"
 
 IS_COMMAND=false
 INPUT_FILE=""
@@ -75,7 +77,16 @@ case "$AI_TOOL" in
     sleep 0.5 # Optimized sleep time
 
     # 2. Copy the content to the system clipboard and paste in vim
-    echo "$COMPLETE_MESSAGE" | pbcopy
+    if command -v wl-copy &>/dev/null; then
+      echo "$COMPLETE_MESSAGE" | wl-copy
+    elif command -v xclip &>/dev/null; then
+      echo "$COMPLETE_MESSAGE" | xclip -selection clipboard
+    elif command -v pbcopy &>/dev/null; then
+      echo "$COMPLETE_MESSAGE" | pbcopy
+    else
+      echo "Error: No clipboard tool found (need wl-copy, xclip, or pbcopy)" >&2
+      exit 1
+    fi
     tmux send-keys -t "$TARGET" '"+p'
     sleep 0.5 # Optimized sleep time
 

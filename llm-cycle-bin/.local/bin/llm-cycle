@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# llm-cycle - Cycle between AI panes in a lazy-llm workspace
+# Usage: llm-cycle [next|prev|N]
+#
+# Swaps the currently visible AI pane with the next/prev/Nth one from the
+# hidden holding window using tmux swap-pane.
+
+set -euo pipefail
+
+DIRECTION="${1:-next}"
+
+# Must be inside tmux
+if [ -z "${TMUX_PANE:-}" ]; then
+  echo "Error: llm-cycle must be run inside a tmux session" >&2
+  exit 1
+fi
+
+# Get current session and window
+_session=$(tmux display-message -t "${TMUX_PANE}" -p '#S')
+_window=$(tmux display-message -t "${TMUX_PANE}" -p '#I')
+
+# Read multi-pane state
+AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true
+AI_TOOLS=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOLS 2>/dev/null) || true
+AI_PANE_IDX=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_IDX 2>/dev/null) || true
+
+if [ -z "$AI_PANES" ]; then
+  echo "Error: No @AI_PANES set. Is this a lazy-llm workspace?" >&2
+  exit 1
+fi
+
+# Parse into arrays
+read -ra pane_arr <<< "$AI_PANES"
+read -ra tool_arr <<< "$AI_TOOLS"
+current_idx="${AI_PANE_IDX:-0}"
+total=${#pane_arr[@]}
+
+# No-op if only one pane
+if [ "$total" -le 1 ]; then
+  exit 0
+fi
+
+# Validate existing pane IDs - remove stale entries
+valid_panes=()
+valid_tools=()
+for i in "${!pane_arr[@]}"; do
+  if tmux display-message -t "${pane_arr[$i]}" -p '#{pane_id}' &>/dev/null; then
+    valid_panes+=("${pane_arr[$i]}")
+    valid_tools+=("${tool_arr[$i]:-unknown}")
+  fi
+done
+
+# Update if stale entries were removed
+if [ "${#valid_panes[@]}" -ne "$total" ]; then
+  pane_arr=("${valid_panes[@]}")
+  tool_arr=("${valid_tools[@]}")
+  total=${#pane_arr[@]}
+  tmux set-option -w -t "$_session:$_window" @AI_PANES "${pane_arr[*]}"
+  tmux set-option -w -t "$_session:$_window" @AI_TOOLS "${tool_arr[*]}"
+
+  # Adjust current index if it's now out of bounds
+  if [ "$current_idx" -ge "$total" ]; then
+    current_idx=$((total - 1))
+  fi
+
+  # No-op after cleanup if only one pane remains
+  if [ "$total" -le 1 ]; then
+    tmux set-option -w -t "$_session:$_window" @AI_PANE_IDX "0"
+    tmux set-option -w -t "$_session:$_window" @AI_PANE_ID "${pane_arr[0]}"
+    tmux set-option -w -t "$_session:$_window" @AI_TOOL "${tool_arr[0]}"
+    exit 0
+  fi
+fi
+
+# Calculate target index
+case "$DIRECTION" in
+  next)
+    target_idx=$(( (current_idx + 1) % total ))
+    ;;
+  prev)
+    target_idx=$(( (current_idx - 1 + total) % total ))
+    ;;
+  [0-9]*)
+    target_idx="$DIRECTION"
+    if [ "$target_idx" -ge "$total" ] || [ "$target_idx" -lt 0 ]; then
+      echo "Error: Index $target_idx out of range (0-$((total - 1)))" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Usage: llm-cycle [next|prev|N]" >&2
+    exit 1
+    ;;
+esac
+
+# No-op if same index
+if [ "$target_idx" -eq "$current_idx" ]; then
+  exit 0
+fi
+
+current_pane="${pane_arr[$current_idx]}"
+target_pane="${pane_arr[$target_idx]}"
+
+# Save the currently focused pane so we can restore it after title update
+original_pane="${TMUX_PANE}"
+
+# Swap the currently visible pane with the target held pane
+tmux swap-pane -d -s "$current_pane" -t "$target_pane"
+
+# Update state
+tmux set-option -w -t "$_session:$_window" @AI_PANE_IDX "$target_idx"
+tmux set-option -w -t "$_session:$_window" @AI_PANE_ID "$target_pane"
+tmux set-option -w -t "$_session:$_window" @AI_TOOL "${tool_arr[$target_idx]}"
+
+# Update legacy option to point to the pane that is now visible
+# After swap-pane, the target pane content is now in the current pane's position
+# But pane IDs follow the content, so target_pane is still the correct ID
+tmux set-option -w -t "$_session:$_window" @AI_PANE "$_session:$_window.$(tmux display-message -t "$target_pane" -p '#{pane_index}')"
+
+# Update pane title with position indicator (select-pane -T also selects, so restore after)
+target_tool="${tool_arr[$target_idx]}"
+tmux select-pane -t "$target_pane" -T "AI: $target_tool [$((target_idx + 1))/$total]"
+tmux select-pane -t "$original_pane"
