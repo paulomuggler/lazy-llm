@@ -33,6 +33,7 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Smart window management**: Auto-detects if inside tmux and adds new window to current session
 - **Git integration**: Editor pane includes vim-fugitive, gitsigns, and vgit for tracking changes
 - **Multiple AI tools**: Supports Claude, Gemini, Codex, Grok, Aider, or any agentic TUI tool
+- **Multi-AI pane tabbing**: Run multiple AI tools side-by-side, cycling between them with keybindings
 
 ## Installation
 
@@ -92,11 +93,20 @@ Options:
 
 All keymaps are under the `<leader>llm` prefix:
 
-- `<leader>llms` - **Send Buffer** - Send entire buffer to AI pane
-- `<leader>llms` (visual) - **Send Selection** - Send visual selection to AI pane
-- `<leader>llmd` - **Delete Buffer** - Clear prompt buffer content
-- `<leader>llmk` - **Send Keypress** - Send next keypress to AI pane (for responding to prompts)
-- `<leader>llmr` - **Add Code Reference** - Insert line/block reference to prompt buffer (normal/visual mode)
+| Key | Mode | Action |
+|-----|------|--------|
+| `<leader>llms` | n/v | **Send** - Send buffer (normal) or selection (visual) to AI pane |
+| `<leader>llmc` | n/v | **Command** - Send as slash command |
+| `<leader>llm/` | n | **Slash Command** - Interactive slash command input |
+| `<leader>llmd` | n | **Delete** - Clear prompt buffer content |
+| `<leader>llmk` | n | **Keypress** - Forward next keypress to AI pane |
+| `<leader>llmr` | n/v | **Reference** - Add inline code reference (raw) |
+| `<leader>llmR` | n/v | **Reference** - Add code reference (wrapped) |
+| `<leader>llmp` | n | **Pull** - Pull latest AI response into buffer |
+| `<leader>llm]` | n | **Next AI** - Cycle to next AI pane |
+| `<leader>llm[` | n | **Prev AI** - Cycle to previous AI pane |
+| `<leader>llma` | n | **Add AI** - Add new AI pane (prompts for tool name) |
+| `<leader>llmx` | n | **Remove AI** - Remove current AI pane |
 
 ### File & Folder References with @ Autocomplete
 
@@ -205,6 +215,42 @@ The `<leader>nb` (buffer notes) command is smart about which buffer to collect f
 
 This allows you to stay in the prompt pane and pull notes from whatever file you're viewing in the editor without switching panes. Scatter notes throughout your codebase while working, then collect them all at once to discuss with your AI assistant.
 
+### Tmux Keybindings
+
+Registered automatically when a workspace is created:
+
+| Key | Action |
+|-----|--------|
+| `Prefix + C-n` | Cycle to next AI pane |
+| `Prefix + C-p` | Cycle to previous AI pane |
+| `Prefix + A` | Add new AI pane (default: claude) |
+| `Prefix + C-x` | Remove current AI pane |
+
+### Multi-AI Pane Tabbing
+
+Run multiple AI tools simultaneously in the same workspace. Only one AI pane is visible at a time (top-left), and you cycle between them with keybindings.
+
+```bash
+# Start with one AI tool
+lazy-llm -t claude
+
+# Add more from inside the workspace:
+# - Prefix + A (tmux) or <leader>llma (nvim)
+# - Cycle with Prefix + C-n/C-p or <leader>llm]/[
+# - Remove with Prefix + C-x or <leader>llmx
+```
+
+Inactive AI panes are held in a hidden tmux window. `tmux swap-pane` atomically exchanges the visible pane with a held one. All existing commands (`llm-send`, `llm-pull`, `llm-append`) automatically target whichever AI pane is currently active.
+
+**CLI tools:**
+
+| Command | Description |
+|---------|-------------|
+| `llm-add [-t tool]` | Add a new AI pane (default: claude) |
+| `llm-cycle [next\|prev\|N]` | Cycle between AI panes |
+| `llm-remove [current\|N]` | Remove an AI pane |
+| `llm-status` | Status line output for tmux (e.g. `[claude] gemini`) |
+
 ### Workflow
 
 1. Start session: `lazy-llm`
@@ -253,9 +299,12 @@ While the AI makes edits, use the editor pane to review diffs, stage changes, an
 - **Neovim plugin**: LazyVim plugin providing keymaps to trigger llm-send and other utilities
 - **Scroll-aware sending**: Auto-exits tmux copy-mode before sending to prevent key binding conflicts
 - **Scratch buffer**: No-file buffer that writes to temp files when sending
-- **Environment variables**:
-  - `AI_PANE`: Target pane for AI tool (left pane)
-  - `PROMPT_PANE`: Target pane for prompt buffer (bottom pane)
+- **Pane targeting**: Uses stable tmux pane IDs (`%N` format) stored as window-scoped options, which survive `swap-pane` operations:
+  - `@AI_PANE_ID`: Currently active AI pane
+  - `@PROMPT_PANE_ID`: Prompt buffer pane
+  - `@AI_PANES`: Space-separated list of all AI pane IDs
+  - `@AI_TOOLS`: Parallel list of tool names
+  - `@AI_PANE_IDX`: Index of the active pane in the list
 
 ## Testing
 
