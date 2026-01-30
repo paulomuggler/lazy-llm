@@ -9,15 +9,18 @@ set -euo pipefail
 
 DIRECTION="${1:-next}"
 
-# Must be inside tmux
-if [ -z "${TMUX_PANE:-}" ]; then
+# Resolve current pane context
+# TMUX_PANE is set in interactive shells but NOT in tmux run-shell context.
+# Fallback to tmux display-message -p which works in both contexts.
+_current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
+if [ -z "$_current_pane" ]; then
   echo "Error: llm-cycle must be run inside a tmux session" >&2
   exit 1
 fi
 
 # Get current session and window
-_session=$(tmux display-message -t "${TMUX_PANE}" -p '#S')
-_window=$(tmux display-message -t "${TMUX_PANE}" -p '#I')
+_session=$(tmux display-message -t "$_current_pane" -p '#S')
+_window=$(tmux display-message -t "$_current_pane" -p '#I')
 
 # Read multi-pane state
 AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true
@@ -102,7 +105,7 @@ current_pane="${pane_arr[$current_idx]}"
 target_pane="${pane_arr[$target_idx]}"
 
 # Save the currently focused pane so we can restore it after title update
-original_pane="${TMUX_PANE}"
+original_pane="$_current_pane"
 
 # Swap the currently visible pane with the target held pane
 tmux swap-pane -d -s "$current_pane" -t "$target_pane"

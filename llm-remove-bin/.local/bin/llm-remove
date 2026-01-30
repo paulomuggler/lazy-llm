@@ -10,18 +10,21 @@ set -euo pipefail
 
 TARGET_ARG="${1:-current}"
 
-# Must be inside tmux
-if [ -z "${TMUX_PANE:-}" ]; then
+# Resolve current pane context
+# TMUX_PANE is set in interactive shells but NOT in tmux run-shell context.
+# Fallback to tmux display-message -p which works in both contexts.
+_current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
+if [ -z "$_current_pane" ]; then
   echo "Error: llm-remove must be run inside a tmux session" >&2
   exit 1
 fi
 
 # Save the currently focused pane to restore later
-original_pane="${TMUX_PANE}"
+original_pane="$_current_pane"
 
 # Get current session and window
-_session=$(tmux display-message -t "${TMUX_PANE}" -p '#S')
-_window=$(tmux display-message -t "${TMUX_PANE}" -p '#I')
+_session=$(tmux display-message -t "$_current_pane" -p '#S')
+_window=$(tmux display-message -t "$_current_pane" -p '#I')
 
 # Read multi-pane state
 AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true

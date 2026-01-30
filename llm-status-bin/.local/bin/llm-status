@@ -11,14 +11,15 @@
 
 set -euo pipefail
 
-# Must be inside tmux
-if [ -z "${TMUX_PANE:-}" ]; then
+# Resolve current pane context (works in both interactive and run-shell contexts)
+_current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
+if [ -z "$_current_pane" ]; then
   exit 0
 fi
 
 # Get current session and window
-_session=$(tmux display-message -t "${TMUX_PANE}" -p '#S' 2>/dev/null) || exit 0
-_window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null) || exit 0
+_session=$(tmux display-message -t "$_current_pane" -p '#S' 2>/dev/null) || exit 0
+_window=$(tmux display-message -t "$_current_pane" -p '#I' 2>/dev/null) || exit 0
 
 # Read multi-pane state
 AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true
