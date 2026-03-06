@@ -24,14 +24,14 @@ local function get_relative_path(filepath)
   return filepath
 end
 
--- Helper: Check if we're in the prompt pane (via tmux @PROMPT_PANE window option)
+-- Helper: Check if we're in the prompt pane (via tmux @PROMPT_PANE_ID window option)
 local function is_prompt_pane()
   local tmux_pane = vim.env.TMUX_PANE
   if not tmux_pane then
     return false
   end
 
-  -- Get session and window from current pane (like llm-append does)
+  -- Get session and window from current pane
   local session = vim.trim(vim.fn.system("tmux display-message -t " .. tmux_pane .. " -p '#S' 2>/dev/null"))
   local window = vim.trim(vim.fn.system("tmux display-message -t " .. tmux_pane .. " -p '#I' 2>/dev/null"))
 
@@ -39,9 +39,17 @@ local function is_prompt_pane()
     return false
   end
 
-  local result = vim.fn.system("tmux show-option -wv -t " .. session .. ":" .. window .. " @PROMPT_PANE 2>/dev/null")
-  local prompt_pane = vim.trim(result)
+  -- Use stable pane ID (@PROMPT_PANE_ID) — TMUX_PANE is already a pane ID (%N format)
+  local result = vim.fn.system("tmux show-option -wv -t " .. session .. ":" .. window .. " @PROMPT_PANE_ID 2>/dev/null")
+  local prompt_pane_id = vim.trim(result)
 
+  if prompt_pane_id ~= "" then
+    return tmux_pane == prompt_pane_id
+  end
+
+  -- Fall back to legacy @PROMPT_PANE (index-based, won't match pane ID but try anyway)
+  result = vim.fn.system("tmux show-option -wv -t " .. session .. ":" .. window .. " @PROMPT_PANE 2>/dev/null")
+  local prompt_pane = vim.trim(result)
   return prompt_pane ~= "" and tmux_pane == prompt_pane
 end
 
@@ -204,19 +212,21 @@ local function send_notes_to_prompt(notes, title)
   vim.fn.writefile(vim.split(formatted, "\n"), tmpfile)
 
   -- Build tmux command to paste content
-  -- 1. Get PROMPT_PANE from tmux window option
+  -- 1. Get prompt pane from tmux window option (prefer stable pane ID)
   -- 2. Load file into tmux buffer
   -- 3. Ensure insert mode and paste
   local script = [[
+    PROMPT_PANE_ID=""
     PROMPT_PANE=""
     if [ -n "${TMUX_PANE:-}" ]; then
       _session=$(tmux display-message -t "${TMUX_PANE}" -p '#S' 2>/dev/null)
       _window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null)
       if [ -n "$_session" ] && [ -n "$_window" ]; then
-        PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null)
+        PROMPT_PANE_ID=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE_ID 2>/dev/null) || true
+        PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null) || true
       fi
     fi
-    TARGET="${PROMPT_PANE:-:.2}"
+    TARGET="${PROMPT_PANE_ID:-${PROMPT_PANE:-:.2}}"
     tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
     tmux send-keys -t "$TARGET" Escape
     tmux send-keys -t "$TARGET" A
