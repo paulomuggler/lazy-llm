@@ -171,6 +171,9 @@ create_workspace_window() {
   tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE "$session:$win_idx.$prompt_pane"
   tmux set-option -w -t "$session:$win_idx" @AI_TOOL "$ai_tool"
 
+  # Enable mouse support
+  tmux set-option -t "$session" mouse on
+
   # Register keybindings for AI pane management
   tmux bind-key -T prefix C-n run-shell "$HOME/.local/bin/llm-cycle next"
   tmux bind-key -T prefix C-p run-shell "$HOME/.local/bin/llm-cycle prev"
@@ -258,103 +261,11 @@ PROMPT_FILE=$(create_prompt_file)
 # Create new tmux session
 tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
 
-# Create the layout:
-# +------------------+------------------+
-# |                  |                  |
-# |    AI Tools      |      Neovim      |
-# |    (Pane 0)      |     (Pane 1)     |
-# |                  |                  |
-# +------------------+------------------+
-# |                                     |
-# |          Prompt Buffer              |
-# |             (Pane 2)                |
-# +-------------------------------------+
+# Get base-index for the first window
+WIN_INDEX=$(tmux show-options -g | grep base-index | awk '{print $2}')
 
-# Get tmux base indexes
-BASE_INDEX=$(tmux show-options -g | grep base-index | awk '{print $2}')
-PANE_BASE_INDEX=$(tmux show-options -gw | grep pane-base-index | awk '{print $2}')
-
-# Define pane variables
-WIN_INDEX=$BASE_INDEX
-AI_PANE=$PANE_BASE_INDEX
-NEOVIM_PANE=$((PANE_BASE_INDEX + 1))
-PROMPT_PANE=$((PANE_BASE_INDEX + 2))
-
-# Split horizontally first (left/right)
-tmux split-window -h -p 50 -t "$SESSION_NAME:$WIN_INDEX" -c "$TARGET_DIR"
-
-# Split vertically with -f flag to create full-width bottom pane
-tmux split-window -v -f -p 25 -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" -c "$TARGET_DIR"
-
-# Now we have:
-# Pane 1: Top-left (AI tools)
-# Pane 2: Top-right (Neovim)
-# Pane 3: Bottom (Prompt buffer - spans full width)
-
-# Configure AI Tools pane (top-left)
-case "$AI_TOOL" in
-claude)
-  tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "claude" C-m
-  ;;
-gemini)
-  tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "gemini" C-m
-  ;;
-codex)
-  tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "codex" C-m
-  ;;
-grok)
-  tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "grok" C-m
-  ;;
-aider)
-  tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "aider" C-m
-  ;;
-*)
-  tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "# AI Tool: $AI_TOOL" C-m
-  tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" "$AI_TOOL" C-m
-  ;;
-esac
-
-# Configure Neovim pane (top-right)
-tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$NEOVIM_PANE" "nvim" C-m
-
-# Configure Prompt Buffer pane (bottom) with swap and undo persistence
-# Explicitly cd to target directory to ensure shell and nvim are in sync
-tmux send-keys -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" "cd '${TARGET_DIR}' && nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert' '${PROMPT_FILE}'" C-m
-
-# Set pane titles if supported
-tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" -T "AI: $AI_TOOL"
-tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$NEOVIM_PANE" -T "Editor"
-tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" -T "Prompt"
-
-# Enable mouse support
-tmux set-option -t "$SESSION_NAME" mouse on
-
-# Capture stable pane IDs (survive swap-pane, unlike indices)
-AI_PANE_ID=$(tmux display-message -t "$SESSION_NAME:$WIN_INDEX.$AI_PANE" -p '#{pane_id}')
-PROMPT_PANE_ID=$(tmux display-message -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE" -p '#{pane_id}')
-
-# Set pane ID options (preferred by llm-send/llm-pull/llm-append)
-tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANE_ID "$AI_PANE_ID"
-tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @PROMPT_PANE_ID "$PROMPT_PANE_ID"
-
-# Initialize multi-pane state (single-element lists)
-tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANES "$AI_PANE_ID"
-tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_TOOLS "$AI_TOOL"
-tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANE_IDX "0"
-
-# Keep legacy index-based options for backward compatibility
-tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_PANE "$SESSION_NAME:$WIN_INDEX.$AI_PANE"
-tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @PROMPT_PANE "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE"
-tmux set-option -w -t "$SESSION_NAME:$WIN_INDEX" @AI_TOOL "$AI_TOOL"
-
-# Register keybindings for AI pane management
-tmux bind-key -T prefix C-n run-shell "$HOME/.local/bin/llm-cycle next"
-tmux bind-key -T prefix C-p run-shell "$HOME/.local/bin/llm-cycle prev"
-tmux bind-key -T prefix C-x run-shell "$HOME/.local/bin/llm-remove current"
-tmux bind-key -T prefix A run-shell "$HOME/.local/bin/llm-add"
-
-# Set initial focus to prompt buffer pane
-tmux select-pane -t "$SESSION_NAME:$WIN_INDEX.$PROMPT_PANE"
+# Set up the 3-pane layout using shared function
+create_workspace_window "$SESSION_NAME" "$WIN_INDEX" "$TARGET_DIR" "$AI_TOOL" "$PROMPT_FILE"
 
 # Attach to the session
 tmux attach-session -t "$SESSION_NAME"
