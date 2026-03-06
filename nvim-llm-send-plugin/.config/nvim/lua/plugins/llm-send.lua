@@ -444,17 +444,20 @@ return {
 			{
 				"<leader>llmx",
 				function()
-					vim.fn.jobstart({ "bash", "-lc", "llm-remove current" }, {
-						on_exit = function(_, code)
-							vim.schedule(function()
-								if code == 0 then
-									vim.notify("Removed current AI pane", vim.log.levels.INFO)
-								else
-									vim.notify("Failed to remove AI pane", vim.log.levels.ERROR)
-								end
-							end)
-						end,
-					})
+					local choice = vim.fn.confirm("Remove current AI pane?", "&Yes\n&No", 2)
+					if choice == 1 then
+						vim.fn.jobstart({ "bash", "-lc", "llm-remove current" }, {
+							on_exit = function(_, code)
+								vim.schedule(function()
+									if code == 0 then
+										vim.notify("Removed current AI pane", vim.log.levels.INFO)
+									else
+										vim.notify("Failed to remove AI pane", vim.log.levels.ERROR)
+									end
+								end)
+							end,
+						})
+					end
 				end,
 				mode = "n",
 				desc = "LLM: Remove current AI pane",

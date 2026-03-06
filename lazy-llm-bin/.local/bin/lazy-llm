@@ -197,7 +197,7 @@ create_workspace_window() {
     "previous-window"
   tmux bind-key -T prefix C-x if-shell \
     "tmux show-option -wqv @AI_PANES" \
-    "run-shell '$HOME/.local/bin/llm-remove current'"
+    "confirm-before -p 'Remove current AI pane? (y/n)' \"run-shell '$HOME/.local/bin/llm-remove current'\""
   tmux bind-key -T prefix A if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "display-menu -T 'Add AI Pane' \
