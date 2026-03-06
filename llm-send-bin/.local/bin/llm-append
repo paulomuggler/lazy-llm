@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # llm-append - Appends text to prompt pane without clearing or submitting
 # Usage: llm-append [--raw] "text to append"
+#        echo "text" | llm-append [--raw]
 #   --raw: insert inline without extra newlines
+# Content can be passed as an argument or piped via stdin.
 
 set -euo pipefail
 
@@ -13,6 +15,16 @@ RAW_MODE=false
 if [[ "${1:-}" == "--raw" ]]; then
   RAW_MODE=true
   shift
+fi
+
+# Get content from argument or stdin
+if [[ -n "${1:-}" ]]; then
+  CONTENT="$1"
+elif [[ ! -t 0 ]]; then
+  CONTENT=$(cat)
+else
+  echo "Error: No content provided (pass as argument or pipe via stdin)" >&2
+  exit 1
 fi
 
 # Resolve prompt pane target
@@ -35,19 +47,17 @@ fi
 # CRITICAL: Exit copy-mode if pane is scrolled up
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 
-# Ensure nvim is in insert mode before sending text
+# Ensure nvim is in normal mode, then position cursor at end of line
 tmux send-keys -t "$TARGET" Escape
+tmux send-keys -t "$TARGET" A
 
 if [[ "$RAW_MODE" == "true" ]]; then
-  # Raw mode: append at end of current line, insert text inline
-  tmux send-keys -t "$TARGET" A
-  tmux send-keys -t "$TARGET" "$1"
+  # Raw mode: append inline at cursor position (no extra newlines)
+  printf '%s' "$CONTENT" | tmux load-buffer -
+  tmux paste-buffer -t "$TARGET"
 else
-  # Wrapped mode: ensure we're on a new line with spacing
-  # 'A' to go to end of line, Enter to create new line, Enter for blank line
-  tmux send-keys -t "$TARGET" A
-  tmux send-keys -t "$TARGET" "" Enter
-  tmux send-keys -t "$TARGET" "" Enter
-  tmux send-keys -t "$TARGET" "$1"
-  tmux send-keys -t "$TARGET" "" Enter
+  # Wrapped mode: add blank line spacing before and after content
+  tmux send-keys -t "$TARGET" Enter Enter
+  printf '%s\n' "$CONTENT" | tmux load-buffer -
+  tmux paste-buffer -t "$TARGET"
 fi

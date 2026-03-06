@@ -203,7 +203,7 @@ local function format_notes(notes, title)
   return table.concat(lines, "\n")
 end
 
--- Send notes to prompt pane via temp file + tmux (handles multiline properly)
+-- Send notes to prompt pane via llm-append (handles multiline properly)
 local function send_notes_to_prompt(notes, title)
   local formatted = format_notes(notes, title)
   local tmpfile = "/tmp/lazy-llm-notes-output.txt"
@@ -211,35 +211,21 @@ local function send_notes_to_prompt(notes, title)
   -- Write to temp file (preserves newlines)
   vim.fn.writefile(vim.split(formatted, "\n"), tmpfile)
 
-  -- Build tmux command to paste content
-  -- 1. Get prompt pane from tmux window option (prefer stable pane ID)
-  -- 2. Load file into tmux buffer
-  -- 3. Ensure insert mode and paste
-  local script = [[
-    PROMPT_PANE_ID=""
-    PROMPT_PANE=""
-    if [ -n "${TMUX_PANE:-}" ]; then
-      _session=$(tmux display-message -t "${TMUX_PANE}" -p '#S' 2>/dev/null)
-      _window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null)
-      if [ -n "$_session" ] && [ -n "$_window" ]; then
-        PROMPT_PANE_ID=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE_ID 2>/dev/null) || true
-        PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null) || true
-      fi
-    fi
-    TARGET="${PROMPT_PANE_ID:-${PROMPT_PANE:-:.2}}"
-    tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
-    tmux send-keys -t "$TARGET" Escape
-    tmux send-keys -t "$TARGET" A
-    tmux send-keys -t "$TARGET" "" Enter
-    tmux send-keys -t "$TARGET" "" Enter
-    tmux load-buffer ]] .. vim.fn.shellescape(tmpfile) .. [[
-
-    tmux paste-buffer -t "$TARGET"
-    tmux send-keys -t "$TARGET" "" Enter
-  ]]
-
-  vim.fn.jobstart({ "bash", "-lc", script }, { detach = false })
-  vim.notify(string.format("Sent %d notes to prompt pane", #notes), vim.log.levels.INFO)
+  -- Use llm-append which handles pane resolution, load-buffer, and positioning
+  local cmd = "llm-append < " .. vim.fn.shellescape(tmpfile)
+  local note_count = #notes
+  vim.fn.jobstart({ "bash", "-lc", cmd }, {
+    on_exit = function(_, code)
+      vim.fn.delete(tmpfile)
+      vim.schedule(function()
+        if code == 0 then
+          vim.notify(string.format("Sent %d notes to prompt pane", note_count), vim.log.levels.INFO)
+        else
+          vim.notify("Failed to send notes to prompt pane", vim.log.levels.ERROR)
+        end
+      end)
+    end,
+  })
 end
 
 -- Pull buffer notes to prompt pane (smart: detects if in prompt pane)
