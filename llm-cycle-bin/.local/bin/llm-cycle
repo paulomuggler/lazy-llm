@@ -24,47 +24,18 @@ if [ -z "$AI_PANES" ]; then
   exit 1
 fi
 
+# Prune stale panes and re-read state
+lazy_llm_prune_stale_panes
+
 # Parse into arrays
 read -ra pane_arr <<< "$AI_PANES"
 read -ra tool_arr <<< "$AI_TOOLS"
 current_idx="${AI_PANE_IDX:-0}"
 total=${#pane_arr[@]}
 
-# No-op if only one pane
+# No-op if only one pane (or none) remains
 if [ "$total" -le 1 ]; then
   exit 0
-fi
-
-# Validate existing pane IDs - remove stale entries
-valid_panes=()
-valid_tools=()
-for i in "${!pane_arr[@]}"; do
-  if tmux display-message -t "${pane_arr[$i]}" -p '#{pane_id}' &>/dev/null; then
-    valid_panes+=("${pane_arr[$i]}")
-    valid_tools+=("${tool_arr[$i]:-unknown}")
-  fi
-done
-
-# Update if stale entries were removed
-if [ "${#valid_panes[@]}" -ne "$total" ]; then
-  pane_arr=("${valid_panes[@]}")
-  tool_arr=("${valid_tools[@]}")
-  total=${#pane_arr[@]}
-  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANES "${pane_arr[*]}"
-  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOLS "${tool_arr[*]}"
-
-  # Adjust current index if it's now out of bounds
-  if [ "$current_idx" -ge "$total" ]; then
-    current_idx=$((total - 1))
-  fi
-
-  # No-op after cleanup if only one pane remains
-  if [ "$total" -le 1 ]; then
-    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_IDX "0"
-    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_ID "${pane_arr[0]}"
-    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOL "${tool_arr[0]}"
-    exit 0
-  fi
 fi
 
 # Calculate target index

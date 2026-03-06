@@ -68,3 +68,58 @@ lazy_llm_read_multi_state() {
   AI_HOLD_WIN=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN 2>/dev/null) || true
   AI_TOOL=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_TOOL 2>/dev/null) || true
 }
+
+# Check if a tmux pane is still alive.
+# Returns 0 if alive, 1 if dead.
+lazy_llm_validate_pane() {
+  tmux display-message -t "$1" -p '#{pane_id}' &>/dev/null
+}
+
+# Prune stale (dead) panes from AI_PANES/AI_TOOLS lists.
+# Updates tmux window options and global variables with cleaned-up state.
+# Requires: _SESSION, _WINDOW, AI_PANES, AI_TOOLS, AI_PANE_IDX (call lazy_llm_read_multi_state first)
+lazy_llm_prune_stale_panes() {
+  [[ -z "$AI_PANES" ]] && return 0
+
+  local -a pane_arr tool_arr valid_panes valid_tools
+  read -ra pane_arr <<< "$AI_PANES"
+  read -ra tool_arr <<< "$AI_TOOLS"
+  local total=${#pane_arr[@]}
+  local current_idx="${AI_PANE_IDX:-0}"
+
+  valid_panes=()
+  valid_tools=()
+  for i in "${!pane_arr[@]}"; do
+    if lazy_llm_validate_pane "${pane_arr[$i]}"; then
+      valid_panes+=("${pane_arr[$i]}")
+      valid_tools+=("${tool_arr[$i]:-unknown}")
+    fi
+  done
+
+  # No stale entries — nothing to do
+  if [[ "${#valid_panes[@]}" -eq "$total" ]]; then
+    return 0
+  fi
+
+  # Update globals with pruned values
+  AI_PANES="${valid_panes[*]}"
+  AI_TOOLS="${valid_tools[*]}"
+  total=${#valid_panes[@]}
+
+  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANES "$AI_PANES"
+  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOLS "$AI_TOOLS"
+
+  # Adjust current index if out of bounds
+  if [[ "$current_idx" -ge "$total" ]] && [[ "$total" -gt 0 ]]; then
+    current_idx=$((total - 1))
+  fi
+  AI_PANE_IDX="$current_idx"
+  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_IDX "$AI_PANE_IDX"
+
+  # Update active pane reference if any panes remain
+  if [[ "$total" -gt 0 ]]; then
+    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_ID "${valid_panes[$current_idx]}"
+    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOL "${valid_tools[$current_idx]}"
+    AI_TOOL="${valid_tools[$current_idx]}"
+  fi
+}

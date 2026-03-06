@@ -26,6 +26,12 @@ else
   TARGET=":.2"
 fi
 
+# Validate prompt pane is still alive
+if ! lazy_llm_validate_pane "$TARGET"; then
+  echo "Error: Prompt pane $TARGET no longer exists" >&2
+  exit 1
+fi
+
 # CRITICAL: Exit copy-mode if pane is scrolled up
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 

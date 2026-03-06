@@ -15,6 +15,12 @@ else
   TARGET=":.+"
 fi
 
+# Validate AI pane is still alive
+if ! lazy_llm_validate_pane "$TARGET"; then
+  echo "Error: AI pane $TARGET no longer exists" >&2
+  exit 1
+fi
+
 IS_COMMAND=false
 INPUT_FILE=""
 

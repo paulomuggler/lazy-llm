@@ -18,15 +18,16 @@ lazy_llm_resolve_pane || { echo "Error: llm-remove must be run inside a tmux ses
 original_pane="$_CURRENT_PANE"
 lazy_llm_resolve_session_window || { echo "Error: Could not determine session/window" >&2; exit 1; }
 
-# Read multi-pane state
+# Read multi-pane state and prune stale entries
 lazy_llm_read_multi_state
+lazy_llm_prune_stale_panes
 
 if [ -z "$AI_PANES" ]; then
   echo "Error: No @AI_PANES set. Is this a lazy-llm workspace?" >&2
   exit 1
 fi
 
-# Parse into arrays
+# Parse into arrays (already pruned)
 read -ra pane_arr <<< "$AI_PANES"
 read -ra tool_arr <<< "$AI_TOOLS"
 current_idx="${AI_PANE_IDX:-0}"

@@ -18,6 +18,12 @@ else
   TARGET=":.0"
 fi
 
+# Validate AI pane is still alive
+if ! lazy_llm_validate_pane "$TARGET"; then
+  echo "Error: AI pane $TARGET no longer exists" >&2
+  exit 1
+fi
+
 # Exit copy-mode if active (handles scrolled-up pane)
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 
