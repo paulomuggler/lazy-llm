@@ -11,24 +11,19 @@
 
 set -euo pipefail
 
-# Resolve current pane context (works in both interactive and run-shell contexts)
-_current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
-if [ -z "$_current_pane" ]; then
-  exit 0
-fi
+# Source shared library for pane resolution
+source "$(dirname "$0")/lazy-llm-lib.sh"
 
-# Get current session and window
-_session=$(tmux display-message -t "$_current_pane" -p '#S' 2>/dev/null) || exit 0
-_window=$(tmux display-message -t "$_current_pane" -p '#I' 2>/dev/null) || exit 0
+# Resolve pane context (exit silently on failure — status bar must not error)
+lazy_llm_resolve_pane || exit 0
+lazy_llm_resolve_session_window || exit 0
 
 # Read multi-pane state
-AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true
-AI_TOOLS=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOLS 2>/dev/null) || true
-AI_PANE_IDX=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_IDX 2>/dev/null) || true
+lazy_llm_read_multi_state
 
 # Fall back to single-pane mode
 if [ -z "$AI_PANES" ]; then
-  AI_TOOL=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOL 2>/dev/null) || true
+  AI_TOOL=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_TOOL 2>/dev/null) || true
   if [ -n "$AI_TOOL" ]; then
     echo "AI: $AI_TOOL"
   fi

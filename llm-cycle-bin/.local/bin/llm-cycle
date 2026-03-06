@@ -7,25 +7,17 @@
 
 set -euo pipefail
 
+# Source shared library for pane resolution
+source "$(dirname "$0")/lazy-llm-lib.sh"
+
 DIRECTION="${1:-next}"
 
 # Resolve current pane context
-# TMUX_PANE is set in interactive shells but NOT in tmux run-shell context.
-# Fallback to tmux display-message -p which works in both contexts.
-_current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
-if [ -z "$_current_pane" ]; then
-  echo "Error: llm-cycle must be run inside a tmux session" >&2
-  exit 1
-fi
-
-# Get current session and window
-_session=$(tmux display-message -t "$_current_pane" -p '#S')
-_window=$(tmux display-message -t "$_current_pane" -p '#I')
+lazy_llm_resolve_pane || { echo "Error: llm-cycle must be run inside a tmux session" >&2; exit 1; }
+lazy_llm_resolve_session_window || { echo "Error: Could not determine session/window" >&2; exit 1; }
 
 # Read multi-pane state
-AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true
-AI_TOOLS=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOLS 2>/dev/null) || true
-AI_PANE_IDX=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_IDX 2>/dev/null) || true
+lazy_llm_read_multi_state
 
 if [ -z "$AI_PANES" ]; then
   echo "Error: No @AI_PANES set. Is this a lazy-llm workspace?" >&2
@@ -58,8 +50,8 @@ if [ "${#valid_panes[@]}" -ne "$total" ]; then
   pane_arr=("${valid_panes[@]}")
   tool_arr=("${valid_tools[@]}")
   total=${#pane_arr[@]}
-  tmux set-option -w -t "$_session:$_window" @AI_PANES "${pane_arr[*]}"
-  tmux set-option -w -t "$_session:$_window" @AI_TOOLS "${tool_arr[*]}"
+  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANES "${pane_arr[*]}"
+  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOLS "${tool_arr[*]}"
 
   # Adjust current index if it's now out of bounds
   if [ "$current_idx" -ge "$total" ]; then
@@ -68,9 +60,9 @@ if [ "${#valid_panes[@]}" -ne "$total" ]; then
 
   # No-op after cleanup if only one pane remains
   if [ "$total" -le 1 ]; then
-    tmux set-option -w -t "$_session:$_window" @AI_PANE_IDX "0"
-    tmux set-option -w -t "$_session:$_window" @AI_PANE_ID "${pane_arr[0]}"
-    tmux set-option -w -t "$_session:$_window" @AI_TOOL "${tool_arr[0]}"
+    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_IDX "0"
+    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_ID "${pane_arr[0]}"
+    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOL "${tool_arr[0]}"
     exit 0
   fi
 fi
@@ -105,20 +97,20 @@ current_pane="${pane_arr[$current_idx]}"
 target_pane="${pane_arr[$target_idx]}"
 
 # Save the currently focused pane so we can restore it after title update
-original_pane="$_current_pane"
+original_pane="$_CURRENT_PANE"
 
 # Swap the currently visible pane with the target held pane
 tmux swap-pane -d -s "$current_pane" -t "$target_pane"
 
 # Update state
-tmux set-option -w -t "$_session:$_window" @AI_PANE_IDX "$target_idx"
-tmux set-option -w -t "$_session:$_window" @AI_PANE_ID "$target_pane"
-tmux set-option -w -t "$_session:$_window" @AI_TOOL "${tool_arr[$target_idx]}"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_IDX "$target_idx"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_ID "$target_pane"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOL "${tool_arr[$target_idx]}"
 
 # Update legacy option to point to the pane that is now visible
 # After swap-pane, the target pane content is now in the current pane's position
 # But pane IDs follow the content, so target_pane is still the correct ID
-tmux set-option -w -t "$_session:$_window" @AI_PANE "$_session:$_window.$(tmux display-message -t "$target_pane" -p '#{pane_index}')"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE "$_SESSION:$_WINDOW.$(tmux display-message -t "$target_pane" -p '#{pane_index}')"
 
 # Update pane title with position indicator (select-pane -T also selects, so restore after)
 target_tool="${tool_arr[$target_idx]}"

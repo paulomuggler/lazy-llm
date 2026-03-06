@@ -8,29 +8,18 @@
 
 set -euo pipefail
 
+# Source shared library for pane resolution
+source "$(dirname "$0")/lazy-llm-lib.sh"
+
 TARGET_ARG="${1:-current}"
 
 # Resolve current pane context
-# TMUX_PANE is set in interactive shells but NOT in tmux run-shell context.
-# Fallback to tmux display-message -p which works in both contexts.
-_current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
-if [ -z "$_current_pane" ]; then
-  echo "Error: llm-remove must be run inside a tmux session" >&2
-  exit 1
-fi
-
-# Save the currently focused pane to restore later
-original_pane="$_current_pane"
-
-# Get current session and window
-_session=$(tmux display-message -t "$_current_pane" -p '#S')
-_window=$(tmux display-message -t "$_current_pane" -p '#I')
+lazy_llm_resolve_pane || { echo "Error: llm-remove must be run inside a tmux session" >&2; exit 1; }
+original_pane="$_CURRENT_PANE"
+lazy_llm_resolve_session_window || { echo "Error: Could not determine session/window" >&2; exit 1; }
 
 # Read multi-pane state
-AI_PANES=$(tmux show-option -wv -t "$_session:$_window" @AI_PANES 2>/dev/null) || true
-AI_TOOLS=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOLS 2>/dev/null) || true
-AI_PANE_IDX=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_IDX 2>/dev/null) || true
-AI_HOLD_WIN=$(tmux show-option -wv -t "$_session:$_window" @AI_HOLD_WIN 2>/dev/null) || true
+lazy_llm_read_multi_state
 
 if [ -z "$AI_PANES" ]; then
   echo "Error: No @AI_PANES set. Is this a lazy-llm workspace?" >&2
@@ -124,20 +113,20 @@ if [ "$current_idx" -ge "$total" ]; then
 fi
 
 # Update state
-tmux set-option -w -t "$_session:$_window" @AI_PANES "${new_panes[*]}"
-tmux set-option -w -t "$_session:$_window" @AI_TOOLS "${new_tools[*]}"
-tmux set-option -w -t "$_session:$_window" @AI_PANE_IDX "$current_idx"
-tmux set-option -w -t "$_session:$_window" @AI_PANE_ID "${new_panes[$current_idx]}"
-tmux set-option -w -t "$_session:$_window" @AI_TOOL "${new_tools[$current_idx]}"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANES "${new_panes[*]}"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOLS "${new_tools[*]}"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_IDX "$current_idx"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_ID "${new_panes[$current_idx]}"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOL "${new_tools[$current_idx]}"
 
 # Update legacy option
-tmux set-option -w -t "$_session:$_window" @AI_PANE "$_session:$_window.$(tmux display-message -t "${new_panes[$current_idx]}" -p '#{pane_index}')"
+tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE "$_SESSION:$_WINDOW.$(tmux display-message -t "${new_panes[$current_idx]}" -p '#{pane_index}')"
 
 # Clean up holding window if only one pane remains
 if [ "$total" -le 1 ] && [ -n "$AI_HOLD_WIN" ]; then
   # Kill holding window (may already be empty)
   tmux kill-window -t "$AI_HOLD_WIN" 2>/dev/null || true
-  tmux set-option -wu -t "$_session:$_window" @AI_HOLD_WIN 2>/dev/null || true
+  tmux set-option -wu -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN 2>/dev/null || true
 fi
 
 # Update pane title (select-pane -T also selects, so restore focus after)

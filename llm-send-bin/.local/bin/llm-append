@@ -5,6 +5,9 @@
 
 set -euo pipefail
 
+# Source shared library for pane resolution
+source "$(dirname "$0")/lazy-llm-lib.sh"
+
 # Parse flags
 RAW_MODE=false
 if [[ "${1:-}" == "--raw" ]]; then
@@ -12,24 +15,16 @@ if [[ "${1:-}" == "--raw" ]]; then
   shift
 fi
 
-# Get prompt pane target from window-scoped tmux user options
-# Prefer stable pane ID (@PROMPT_PANE_ID), fall back to legacy index (@PROMPT_PANE)
-PROMPT_PANE_ID=""
-PROMPT_PANE=""
-if [ -n "${TMUX_PANE:-}" ]; then
-  # Get session and window from current pane
-  _session=$(tmux display-message -t "${TMUX_PANE}" -p '#S' 2>/dev/null)
-  _window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null)
-
-  if [ -n "$_session" ] && [ -n "$_window" ]; then
-    # Retrieve window-scoped user options (prefer pane IDs)
-    PROMPT_PANE_ID=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE_ID 2>/dev/null) || true
-    PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null) || true
-  fi
+# Resolve prompt pane target
+lazy_llm_resolve_pane || true
+if [[ -n "${_CURRENT_PANE:-}" ]]; then
+  lazy_llm_resolve_session_window || true
 fi
-
-# Prefer stable pane ID, fall back to legacy index, then pane 2
-TARGET="${PROMPT_PANE_ID:-${PROMPT_PANE:-:.2}}"
+if [[ -n "${_SESSION:-}" ]]; then
+  TARGET=$(lazy_llm_get_prompt_target)
+else
+  TARGET=":.2"
+fi
 
 # CRITICAL: Exit copy-mode if pane is scrolled up
 tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true

@@ -1,27 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Get AI pane target from window-scoped tmux user options
-# Prefer stable pane ID (@AI_PANE_ID), fall back to legacy index (@AI_PANE)
-AI_PANE_ID=""
-AI_PANE=""
-PROMPT_PANE="" # Needed for the gemini strategy
-if [ -n "${TMUX_PANE:-}" ]; then
-  # Get session and window from current pane
-  _session=$(tmux display-message -t "${TMUX_PANE}" -p '#S' 2>/dev/null)
-  _window=$(tmux display-message -t "${TMUX_PANE}" -p '#I' 2>/dev/null)
+# Source shared library for pane resolution
+source "$(dirname "$0")/lazy-llm-lib.sh"
 
-  if [ -n "$_session" ] && [ -n "$_window" ]; then
-    # Retrieve window-scoped user options (prefer pane IDs)
-    AI_PANE_ID=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_ID 2>/dev/null) || true
-    AI_PANE=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE 2>/dev/null) || true
-    PROMPT_PANE=$(tmux show-option -wv -t "$_session:$_window" @PROMPT_PANE 2>/dev/null) || true
-    AI_TOOL=$(tmux show-option -wv -t "$_session:$_window" @AI_TOOL 2>/dev/null) || true
-  fi
+# Resolve AI pane target
+lazy_llm_resolve_pane || true
+if [[ -n "${_CURRENT_PANE:-}" ]]; then
+  lazy_llm_resolve_session_window || true
 fi
-
-# Prefer stable pane ID, fall back to legacy index, then next pane
-TARGET="${AI_PANE_ID:-${AI_PANE:-:.+}}"
+if [[ -n "${_SESSION:-}" ]]; then
+  TARGET=$(lazy_llm_get_ai_target)
+else
+  TARGET=":.+"
+fi
 
 IS_COMMAND=false
 INPUT_FILE=""
