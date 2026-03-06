@@ -427,16 +427,19 @@ local function quickfix_project_notes()
   end
 end
 
--- Set up buffer tracking autocmd for cross-pane note collection
-vim.api.nvim_create_autocmd("BufEnter", {
-  callback = track_editor_buffer,
-  desc = "Track editor buffer for NOTE plugin cross-pane access",
-})
+-- Set up buffer tracking autocmd for cross-pane note collection (tmux only)
+if vim.env.TMUX then
+  vim.api.nvim_create_autocmd("BufEnter", {
+    callback = track_editor_buffer,
+    desc = "Track editor buffer for NOTE plugin cross-pane access",
+  })
+end
 
 return {
   {
     "LazyVim/LazyVim",
-    keys = {
+    -- Keymaps only register when inside tmux (lazy-llm context)
+    keys = vim.env.TMUX and {
       -- Insert NOTE marker
       {
         "<leader>ni",
@@ -494,6 +497,6 @@ return {
         mode = "n",
         desc = "Note: Project notes to quickfix",
       },
-    },
+    } or {},
   },
 }

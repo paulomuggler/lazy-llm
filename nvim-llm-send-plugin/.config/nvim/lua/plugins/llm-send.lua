@@ -174,8 +174,8 @@ end
 return {
 	{
 		"LazyVim/LazyVim",
-		-- Define keymaps in a dedicated 'llm' namespace
-		keys = {
+		-- Keymaps only register when inside tmux (lazy-llm context)
+		keys = vim.env.TMUX and {
 			{
 				"<leader>llms",
 				function()
@@ -570,9 +570,9 @@ return {
 				mode = "i",
 				desc = "Manually trigger @ path completion",
 			},
-		},
-		-- Setup autocmd for blink-like auto-triggering on text change
-		init = function()
+		} or {},
+		-- Setup autocmd for blink-like auto-triggering on text change (only in tmux)
+		init = vim.env.TMUX and function()
 			local debounce_timer = nil
 
 			-- Use InsertCharPre to detect when user is typing (not backspacing)
@@ -628,7 +628,7 @@ return {
 					end)
 				end,
 			})
-		end,
+		end or nil,
 	},
 	-- fzf-lua is required for @ path completion
 	{
