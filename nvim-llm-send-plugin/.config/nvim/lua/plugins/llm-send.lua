@@ -53,7 +53,15 @@ local function add_code_reference(raw_mode)
 	cmd = cmd .. vim.fn.shellescape(reference)
 
 	-- Send to prompt buffer
-	vim.fn.jobstart({ "bash", "-lc", cmd }, { detach = false })
+	vim.fn.jobstart({ "bash", "-lc", cmd }, {
+		on_exit = function(_, code)
+			vim.schedule(function()
+				if code ~= 0 then
+					vim.notify("Failed to append to prompt buffer", vim.log.levels.ERROR)
+				end
+			end)
+		end,
+	})
 end
 
 -- Create namespace for LLM response extmark tagging
@@ -195,13 +203,30 @@ return {
 						vim.fn.jobstart({
 							"bash",
 							"-lc",
-							"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-						}, { detach = false })
+							"llm-send " .. vim.fn.fnameescape(tmp),
+						}, {
+							on_exit = function(_, code)
+								vim.fn.delete(tmp)
+								vim.schedule(function()
+									if code ~= 0 then
+										vim.notify("Failed to send to AI pane", vim.log.levels.ERROR)
+									end
+								end)
+							end,
+						})
 					else
 						-- Named file: save and send
 						vim.cmd("write")
 						local file = vim.fn.expand("%:p")
-						vim.fn.jobstart({ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(file) }, { detach = false })
+						vim.fn.jobstart({ "bash", "-lc", "llm-send " .. vim.fn.fnameescape(file) }, {
+							on_exit = function(_, code)
+								vim.schedule(function()
+									if code ~= 0 then
+										vim.notify("Failed to send to AI pane", vim.log.levels.ERROR)
+									end
+								end)
+							end,
+						})
 					end
 
 					if config.clear_on_send then
@@ -221,8 +246,17 @@ return {
 					vim.fn.jobstart({
 						"bash",
 						"-lc",
-						"llm-send " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-					}, { detach = false })
+						"llm-send " .. vim.fn.fnameescape(tmp),
+					}, {
+						on_exit = function(_, code)
+							vim.fn.delete(tmp)
+							vim.schedule(function()
+								if code ~= 0 then
+									vim.notify("Failed to send selection to AI pane", vim.log.levels.ERROR)
+								end
+							end)
+						end,
+					})
 				end,
 				mode = "v",
 				desc = "LLM: Send Selection",
@@ -241,8 +275,17 @@ return {
 					vim.fn.jobstart({
 						"bash",
 						"-lc",
-						"llm-send -c " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-					}, { detach = false })
+						"llm-send -c " .. vim.fn.fnameescape(tmp),
+					}, {
+						on_exit = function(_, code)
+							vim.fn.delete(tmp)
+							vim.schedule(function()
+								if code ~= 0 then
+									vim.notify("Failed to send command to AI pane", vim.log.levels.ERROR)
+								end
+							end)
+						end,
+					})
 
 					if config.clear_on_send then
 						vim.cmd([[%delete _]])
@@ -261,8 +304,17 @@ return {
 					vim.fn.jobstart({
 						"bash",
 						"-lc",
-						"llm-send -c " .. vim.fn.fnameescape(tmp) .. " ; rm -f " .. vim.fn.fnameescape(tmp),
-					}, { detach = false })
+						"llm-send -c " .. vim.fn.fnameescape(tmp),
+					}, {
+						on_exit = function(_, code)
+							vim.fn.delete(tmp)
+							vim.schedule(function()
+								if code ~= 0 then
+									vim.notify("Failed to send command to AI pane", vim.log.levels.ERROR)
+								end
+							end)
+						end,
+					})
 				end,
 				mode = "v",
 				desc = "LLM: Send Selection as Command",
@@ -333,10 +385,17 @@ return {
 			{
 				"<leader>llm]",
 				function()
-					vim.fn.jobstart({ "bash", "-lc", "llm-cycle next" }, { detach = true })
-					vim.defer_fn(function()
-						vim.notify("Cycled to next AI pane", vim.log.levels.INFO)
-					end, 200)
+					vim.fn.jobstart({ "bash", "-lc", "llm-cycle next" }, {
+						on_exit = function(_, code)
+							vim.schedule(function()
+								if code == 0 then
+									vim.notify("Cycled to next AI pane", vim.log.levels.INFO)
+								else
+									vim.notify("Failed to cycle AI pane", vim.log.levels.ERROR)
+								end
+							end)
+						end,
+					})
 				end,
 				mode = "n",
 				desc = "LLM: Cycle to next AI pane",
@@ -344,10 +403,17 @@ return {
 			{
 				"<leader>llm[",
 				function()
-					vim.fn.jobstart({ "bash", "-lc", "llm-cycle prev" }, { detach = true })
-					vim.defer_fn(function()
-						vim.notify("Cycled to prev AI pane", vim.log.levels.INFO)
-					end, 200)
+					vim.fn.jobstart({ "bash", "-lc", "llm-cycle prev" }, {
+						on_exit = function(_, code)
+							vim.schedule(function()
+								if code == 0 then
+									vim.notify("Cycled to prev AI pane", vim.log.levels.INFO)
+								else
+									vim.notify("Failed to cycle AI pane", vim.log.levels.ERROR)
+								end
+							end)
+						end,
+					})
 				end,
 				mode = "n",
 				desc = "LLM: Cycle to prev AI pane",
@@ -358,10 +424,17 @@ return {
 					vim.ui.input({ prompt = "AI Tool: ", default = "claude" }, function(input)
 						if input and input ~= "" then
 							local cmd = string.format("llm-add -t %s", vim.fn.shellescape(input))
-							vim.fn.jobstart({ "bash", "-lc", cmd }, { detach = true })
-							vim.defer_fn(function()
-								vim.notify("Added AI pane: " .. input, vim.log.levels.INFO)
-							end, 500)
+							vim.fn.jobstart({ "bash", "-lc", cmd }, {
+								on_exit = function(_, code)
+									vim.schedule(function()
+										if code == 0 then
+											vim.notify("Added AI pane: " .. input, vim.log.levels.INFO)
+										else
+											vim.notify("Failed to add AI pane: " .. input, vim.log.levels.ERROR)
+										end
+									end)
+								end,
+							})
 						end
 					end)
 				end,
@@ -371,10 +444,17 @@ return {
 			{
 				"<leader>llmx",
 				function()
-					vim.fn.jobstart({ "bash", "-lc", "llm-remove current" }, { detach = true })
-					vim.defer_fn(function()
-						vim.notify("Removed current AI pane", vim.log.levels.INFO)
-					end, 200)
+					vim.fn.jobstart({ "bash", "-lc", "llm-remove current" }, {
+						on_exit = function(_, code)
+							vim.schedule(function()
+								if code == 0 then
+									vim.notify("Removed current AI pane", vim.log.levels.INFO)
+								else
+									vim.notify("Failed to remove AI pane", vim.log.levels.ERROR)
+								end
+							end)
+						end,
+					})
 				end,
 				mode = "n",
 				desc = "LLM: Remove current AI pane",
