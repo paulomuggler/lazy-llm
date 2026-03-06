@@ -24,8 +24,9 @@ if [ -z "$AI_PANES" ]; then
   exit 1
 fi
 
-# Prune stale panes and re-read state
+# Prune stale panes and validate holding window
 lazy_llm_prune_stale_panes
+lazy_llm_validate_hold_win
 
 # Parse into arrays
 read -ra pane_arr <<< "$AI_PANES"

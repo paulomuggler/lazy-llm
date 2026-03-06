@@ -54,13 +54,15 @@ if [ -z "$AI_PANES" ]; then
   exit 1
 fi
 
-# Create holding window if it doesn't exist
-if [ -z "$AI_HOLD_WIN" ] || ! tmux list-windows -t "$_SESSION" -F '#{window_name}' | grep -q "^_hold_${_WINDOW}$"; then
+# Validate holding window (recreates if missing)
+lazy_llm_validate_hold_win
+
+# Create holding window if none exists yet
+if [ -z "$AI_HOLD_WIN" ]; then
   hold_win_name="_hold_${_WINDOW}"
   tmux new-window -d -t "$_SESSION" -n "$hold_win_name" -c "$target_dir"
-  AI_HOLD_WIN="$_SESSION:$hold_win_name"
+  AI_HOLD_WIN=$(tmux display-message -t "$_SESSION:$hold_win_name" -p '#{window_id}')
   tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN "$AI_HOLD_WIN"
-  # Mark the holding window so it can be identified
   tmux set-option -w -t "$AI_HOLD_WIN" @lazy_llm_hold "1"
 fi
 

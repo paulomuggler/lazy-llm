@@ -122,4 +122,31 @@ lazy_llm_prune_stale_panes() {
     tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOL "${valid_tools[$current_idx]}"
     AI_TOOL="${valid_tools[$current_idx]}"
   fi
+
+  # Clean up empty holding window when only one pane remains
+  if [[ -n "${AI_HOLD_WIN:-}" ]] && [[ "$total" -le 1 ]]; then
+    tmux kill-window -t "$AI_HOLD_WIN" 2>/dev/null || true
+    tmux set-option -wu -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN 2>/dev/null || true
+    AI_HOLD_WIN=""
+  fi
+}
+
+# Validate that the holding window exists; recreate if missing.
+# Requires: _SESSION, _WINDOW, AI_HOLD_WIN (call lazy_llm_read_multi_state first)
+lazy_llm_validate_hold_win() {
+  [[ -z "${AI_HOLD_WIN:-}" ]] && return 0
+
+  # Check if window still exists
+  if tmux display-message -t "$AI_HOLD_WIN" -p '#{window_id}' &>/dev/null; then
+    return 0
+  fi
+
+  # Holding window is gone — recreate it
+  local hold_win_name="_hold_${_WINDOW}"
+  local target_dir
+  target_dir=$(tmux display-message -t "$_SESSION:$_WINDOW" -p '#{pane_current_path}')
+  tmux new-window -d -t "$_SESSION" -n "$hold_win_name" -c "$target_dir"
+  AI_HOLD_WIN=$(tmux display-message -t "$_SESSION:$hold_win_name" -p '#{window_id}')
+  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN "$AI_HOLD_WIN"
+  tmux set-option -w -t "$AI_HOLD_WIN" @lazy_llm_hold "1"
 }
