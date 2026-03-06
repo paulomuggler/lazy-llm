@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# llm-panes - TUI pane manager for multi-AI management
+# Usage: llm-panes
+#
+# Designed to run inside tmux display-popup -E.
+# Shows all AI panes with status, allows switching, adding, and removing.
+
+set -euo pipefail
+
+# Source shared library
+source "$(dirname "$0")/lazy-llm-lib.sh"
+
+# Detect pane status by reading last few lines of content.
+# Echoes: "idle", "working", or "waiting"
+detect_pane_status() {
+  local pane_id="$1"
+  local content
+  content=$(tmux capture-pane -t "$pane_id" -p -S -5 2>/dev/null) || { echo "?"; return; }
+
+  # Find last non-empty line
+  local last_line=""
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && last_line="$line"
+  done <<< "$content"
+
+  [[ -z "$last_line" ]] && { echo "?"; return; }
+
+  # Check for waiting indicators (permission prompts, confirmations)
+  if [[ "$last_line" =~ \[Y/n\]|\[y/N\]|\(y/n\)|\[Y/N\] ]]; then
+    echo "waiting"
+    return
+  fi
+
+  # Check for idle indicators (shell/tool prompts at end of line)
+  # Strip ANSI codes for matching
+  local clean
+  clean=$(echo "$last_line" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | sed 's/[[:space:]]*$//')
+  if [[ "$clean" =~ [\$\>❯]$ ]] || [[ "$clean" =~ ^\>\>\>$ ]]; then
+    echo "idle"
+    return
+  fi
+
+  echo "working"
+}
+
+# Resolve pane context
+lazy_llm_resolve_pane || { echo "Not inside a tmux session."; exit 1; }
+lazy_llm_resolve_session_window || { echo "Could not determine session/window."; exit 1; }
+lazy_llm_read_multi_state
+lazy_llm_prune_stale_panes
+
+if [[ -z "$AI_PANES" ]]; then
+  echo "Not a lazy-llm workspace (no AI panes found)."
+  echo "Press Enter to exit."
+  read -r
+  exit 0
+fi
+
+# Parse pane arrays
+read -ra pane_arr <<< "$AI_PANES"
+read -ra tool_arr <<< "$AI_TOOLS"
+current_idx="${AI_PANE_IDX:-0}"
+total=${#pane_arr[@]}
+
+# Build display lines for fzf
+lines=""
+for i in "${!pane_arr[@]}"; do
+  local_status=$(detect_pane_status "${pane_arr[$i]}")
+
+  active=""
+  if [[ "$i" -eq "$current_idx" ]]; then
+    active="  (active)"
+  fi
+
+  lines+=$(printf '  %d  %-12s  %-8s%s' "$((i + 1))" "${tool_arr[$i]}" "$local_status" "$active")
+  lines+=$'\n'
+done
+lines="${lines%$'\n'}"
+
+# Check if fzf is available
+if ! command -v fzf &>/dev/null; then
+  echo "AI Panes:"
+  echo "$lines"
+  echo ""
+  echo "fzf required for interactive mode."
+  echo "Press Enter to exit."
+  read -r
+  exit 0
+fi
+
+header="Enter: switch | ctrl-a: add | ctrl-d: remove | esc: close"
+
+selection=$(echo "$lines" | fzf \
+  --ansi \
+  --header="$header" \
+  --expect="ctrl-a,ctrl-d" \
+  --no-multi \
+  --reverse \
+  --border=rounded \
+  --prompt="pane> " \
+) || exit 0
+
+# Parse fzf output
+key=$(echo "$selection" | head -1)
+chosen_line=$(echo "$selection" | tail -1)
+
+# Extract pane number (first field)
+chosen_num=$(echo "$chosen_line" | awk '{print $1}')
+[[ -z "$chosen_num" ]] && exit 0
+chosen_idx=$((chosen_num - 1))
+
+case "$key" in
+  ctrl-a)
+    # Add a new pane — prompt for tool selection
+    tool=$(printf 'claude\ngemini\ncodex\ngrok\naider' | fzf \
+      --header="Select AI tool:" \
+      --reverse \
+      --border=rounded \
+      --prompt="tool> " \
+    ) || exit 0
+    "$HOME/.local/bin/llm-add" -t "$tool"
+    ;;
+  ctrl-d)
+    # Remove the selected pane
+    if [[ "$total" -le 1 ]]; then
+      echo "Cannot remove the only AI pane."
+      sleep 1
+      exit 0
+    fi
+    "$HOME/.local/bin/llm-remove" "$chosen_idx"
+    ;;
+  *)
+    # Switch to the selected pane
+    if [[ "$chosen_idx" -ne "$current_idx" ]]; then
+      "$HOME/.local/bin/llm-cycle" "$chosen_idx"
+    fi
+    ;;
+esac
