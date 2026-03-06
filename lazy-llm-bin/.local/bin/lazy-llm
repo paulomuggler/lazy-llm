@@ -184,13 +184,34 @@ create_workspace_window() {
   tmux set-option -t "$session" @lazy_llm 1
   tmux set-option -t "$session" mouse on
 
-  # Register keybindings for AI pane management
-  tmux bind-key -T prefix C-n run-shell "$HOME/.local/bin/llm-cycle next"
-  tmux bind-key -T prefix C-p run-shell "$HOME/.local/bin/llm-cycle prev"
-  tmux bind-key -T prefix C-x run-shell "$HOME/.local/bin/llm-remove current"
-  tmux bind-key -T prefix A run-shell "$HOME/.local/bin/llm-add"
-  tmux bind-key -T prefix S display-popup -E -w 80% -h 60% "$HOME/.local/bin/llm-sessions"
-  tmux bind-key -T prefix L display-popup -E -w 60% -h 50% "$HOME/.local/bin/llm-panes"
+  # Register keybindings — scoped to lazy-llm windows via if-shell check.
+  # In non-lazy-llm windows, C-n/C-p fall back to next/previous-window;
+  # other bindings are no-ops.
+  tmux bind-key -T prefix C-n if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell '$HOME/.local/bin/llm-cycle next'" \
+    "next-window"
+  tmux bind-key -T prefix C-p if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell '$HOME/.local/bin/llm-cycle prev'" \
+    "previous-window"
+  tmux bind-key -T prefix C-x if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell '$HOME/.local/bin/llm-remove current'"
+  tmux bind-key -T prefix A if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "display-menu -T 'Add AI Pane' \
+      claude '' \"run-shell '$HOME/.local/bin/llm-add -t claude'\" \
+      gemini '' \"run-shell '$HOME/.local/bin/llm-add -t gemini'\" \
+      codex  '' \"run-shell '$HOME/.local/bin/llm-add -t codex'\" \
+      grok   '' \"run-shell '$HOME/.local/bin/llm-add -t grok'\" \
+      aider  '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
+  tmux bind-key -T prefix S if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "display-popup -E -w 80% -h 60% '$HOME/.local/bin/llm-sessions'"
+  tmux bind-key -T prefix L if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "display-popup -E -w 60% -h 50% '$HOME/.local/bin/llm-panes'"
 
   # Set initial focus to prompt buffer pane
   tmux select-pane -t "$session:$win_idx.$prompt_pane"

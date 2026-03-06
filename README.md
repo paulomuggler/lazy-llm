@@ -217,14 +217,16 @@ This allows you to stay in the prompt pane and pull notes from whatever file you
 
 ### Tmux Keybindings
 
-Registered automatically when a workspace is created:
+Registered automatically when a workspace is created. Keybindings are **scoped to lazy-llm windows** — in non-lazy-llm windows, `C-n`/`C-p` fall back to tmux's default `next-window`/`previous-window` and other bindings are no-ops.
 
 | Key | Action |
 |-----|--------|
 | `Prefix + C-n` | Cycle to next AI pane |
 | `Prefix + C-p` | Cycle to previous AI pane |
-| `Prefix + A` | Add new AI pane (default: claude) |
+| `Prefix + A` | Add new AI pane (tool picker menu) |
 | `Prefix + C-x` | Remove current AI pane |
+| `Prefix + S` | Session manager popup |
+| `Prefix + L` | Pane manager popup |
 
 ### Multi-AI Pane Tabbing
 
