@@ -27,6 +27,7 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Scratch buffer**: Bottom pane opens in an empty markdown buffer ready for editing
 - **Instant sending**: Send buffers or selections to your LLM with keymaps
 - **Keypress forwarding**: Respond to LLM prompts directly from the prompt buffer
+- **Response pulling**: Pull the latest AI response back into your nvim buffer for annotation
 - **Context picker**: Reference specific lines/blocks of code in your prompts (`<leader>llmr`)
 - **File & folder references**: @ autocomplete with fuzzy picker supports both files and directories
 - **NOTE markers**: Insert `[NOTE: ]` markers in code, collect and send all notes to AI (`<leader>n` prefix)
@@ -34,6 +35,11 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Git integration**: Editor pane includes vim-fugitive, gitsigns, and vgit for tracking changes
 - **Multiple AI tools**: Supports Claude, Gemini, Codex, Grok, Aider, or any agentic TUI tool
 - **Multi-AI pane tabbing**: Run multiple AI tools side-by-side, cycling between them with keybindings
+- **Session manager**: List, kill, or fuzzy-pick lazy-llm sessions (`Prefix+S`)
+- **Pane manager**: View AI pane status and switch between them (`Prefix+L`)
+- **Scoped keybindings**: All tmux and nvim bindings are scoped — no interference outside lazy-llm workspaces
+- **Confirmation dialogs**: Removing AI panes requires confirmation (bypass with `--force`)
+- **Stale pane recovery**: Dead panes are auto-pruned; holding windows auto-recover if accidentally closed
 
 ## Installation
 
@@ -250,8 +256,11 @@ Inactive AI panes are held in a hidden tmux window. `tmux swap-pane` atomically 
 |---------|-------------|
 | `llm-add [-t tool]` | Add a new AI pane (default: claude) |
 | `llm-cycle [next\|prev\|N]` | Cycle between AI panes |
-| `llm-remove [current\|N]` | Remove an AI pane |
+| `llm-remove [-f] [current\|N]` | Remove an AI pane (`-f` skips confirmation) |
 | `llm-status` | Status line output for tmux (e.g. `[claude] gemini`) |
+| `llm-append [text]` | Append text to prompt buffer (supports stdin: `echo "foo" \| llm-append`) |
+| `llm-sessions` | Session manager: list, kill, or fuzzy-pick sessions |
+| `llm-panes` | Pane manager TUI: view status and switch AI panes |
 
 ### Workflow
 
@@ -296,17 +305,31 @@ While the AI makes edits, use the editor pane to review diffs, stage changes, an
 
 ## How It Works
 
-- **llm-send script**: Bash script that loads content into tmux clipboard and pastes it to the AI pane
-- **llm-append script**: Appends context references to prompt buffer without clearing or submitting
-- **Neovim plugin**: LazyVim plugin providing keymaps to trigger llm-send and other utilities
-- **Scroll-aware sending**: Auto-exits tmux copy-mode before sending to prevent key binding conflicts
-- **Scratch buffer**: No-file buffer that writes to temp files when sending
-- **Pane targeting**: Uses stable tmux pane IDs (`%N` format) stored as window-scoped options, which survive `swap-pane` operations:
+### Content Delivery
+
+- **llm-send**: Loads content into tmux buffer and pastes it to the AI pane via `load-buffer` + `paste-buffer`. Uses tool-specific strategies (e.g. Gemini's external editor mode).
+- **llm-append**: Appends context references to the prompt buffer using `load-buffer` + `paste-buffer`. Accepts text as argument or via stdin pipe.
+- **llm-pull**: Captures AI pane history and extracts the latest response after `### END PROMPT` markers.
+- **Scroll-aware sending**: Auto-exits tmux copy-mode before sending to prevent key binding conflicts.
+
+### Neovim Plugins
+
+- **llm-send plugin** (`llm-send.lua`): Keymaps for sending, pulling, cycling, context references, and @ path completion. All keymaps are gated on `$TMUX` — no interference in standalone nvim.
+- **note plugin** (`note.lua`): `[NOTE:]` marker insertion, collection, and cross-pane delivery. Delegates to `llm-append` for content delivery. Also gated on `$TMUX`.
+- **Error feedback**: All async `jobstart` calls include `on_exit` callbacks with error notifications. Temp file cleanup is handled in Lua, not shell.
+
+### Pane State Management
+
+- **Shared library** (`lazy-llm-lib.sh`): All 7 CLI scripts use a common library for pane resolution, validation, and state management.
+- **Stable pane IDs**: Uses `%N` format pane IDs stored as tmux window-scoped options, which survive `swap-pane` and window reordering:
   - `@AI_PANE_ID`: Currently active AI pane
   - `@PROMPT_PANE_ID`: Prompt buffer pane
   - `@AI_PANES`: Space-separated list of all AI pane IDs
   - `@AI_TOOLS`: Parallel list of tool names
   - `@AI_PANE_IDX`: Index of the active pane in the list
+  - `@AI_HOLD_WIN`: Window ID of the hidden holding window
+- **Stale pane pruning**: `lazy_llm_validate_pane()` checks if panes are alive; `lazy_llm_prune_stale_panes()` auto-removes dead entries and cleans up empty holding windows.
+- **Holding window resilience**: `lazy_llm_validate_hold_win()` auto-recovers if the holding window is accidentally closed. References use stable window IDs instead of names.
 
 ## Testing
 
