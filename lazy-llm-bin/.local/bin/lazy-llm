@@ -120,10 +120,15 @@ create_workspace_window() {
   local prompt_pane=$((pane_base_index + 2))
 
   # Split horizontally first (left/right)
-  tmux split-window -h -p 50 -t "$session:$win_idx" -c "$target_dir"
+  # Use -l percentage syntax for tmux 3.4+ compatibility (replaces -p)
+  tmux split-window -h -l 50% -t "$session:$win_idx" -c "$target_dir"
 
   # Split vertically with -f flag to create full-width bottom pane
-  tmux split-window -v -f -p 25 -t "$session:$win_idx.$ai_pane" -c "$target_dir"
+  tmux split-window -v -f -l 25% -t "$session:$win_idx.$ai_pane" -c "$target_dir"
+
+  # Clear CLAUDECODE env var in the AI pane to prevent nested session detection
+  # (when lazy-llm is invoked from within a Claude Code session)
+  tmux send-keys -t "$session:$win_idx.$ai_pane" "unset CLAUDECODE" C-m
 
   # Configure AI Tools pane (top-left)
   case "$ai_tool" in
