@@ -51,6 +51,13 @@ create_prompt_file() {
   echo "$prompt_file"
 }
 
+# Subcommand dispatch — route to llm-sessions for management commands
+case "${1:-}" in
+  list)     shift; exec "$HOME/.local/bin/llm-sessions" --list "$@" ;;
+  kill)     shift; exec "$HOME/.local/bin/llm-sessions" --kill "$@" ;;
+  sessions) shift; exec "$HOME/.local/bin/llm-sessions" "$@" ;;
+esac
+
 # Parse named parameters
 while getopts "s:d:t:wh" opt; do
   case $opt in
@@ -85,11 +92,13 @@ init_state_dirs
 cleanup_old_files
 
 # Generate session name from directory if not provided
+NAME_AUTO_GENERATED=false
 if [ -z "$SESSION_NAME" ]; then
   # Use basename of directory and replace dots/spaces with underscores
   DIR_NAME=$(basename "$TARGET_DIR" | sed 's/[. ]/_/g')
   # Add a 'dev-' prefix to make it clear it's a dev session
   SESSION_NAME="dev-${DIR_NAME}-${AI_TOOL}"
+  NAME_AUTO_GENERATED=true
 fi
 
 # Function to create a new window with 3-pane layout
@@ -171,7 +180,8 @@ create_workspace_window() {
   tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE "$session:$win_idx.$prompt_pane"
   tmux set-option -w -t "$session:$win_idx" @AI_TOOL "$ai_tool"
 
-  # Enable mouse support
+  # Mark session as lazy-llm managed and enable mouse
+  tmux set-option -t "$session" @lazy_llm 1
   tmux set-option -t "$session" mouse on
 
   # Register keybindings for AI pane management
@@ -179,6 +189,7 @@ create_workspace_window() {
   tmux bind-key -T prefix C-p run-shell "$HOME/.local/bin/llm-cycle prev"
   tmux bind-key -T prefix C-x run-shell "$HOME/.local/bin/llm-remove current"
   tmux bind-key -T prefix A run-shell "$HOME/.local/bin/llm-add"
+  tmux bind-key -T prefix S display-popup -E -w 80% -h 60% "$HOME/.local/bin/llm-sessions"
 
   # Set initial focus to prompt buffer pane
   tmux select-pane -t "$session:$win_idx.$prompt_pane"
@@ -244,11 +255,21 @@ if [ "$NEW_WINDOW" = true ] || [ "$IN_TMUX" = true ]; then
   fi
 fi
 
-# Check if tmux session already exists (and we're not in tmux)
+# Handle existing session: auto-generated names get a counter suffix,
+# explicitly named sessions (-s) just attach
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-  echo "Session '$SESSION_NAME' already exists. Attaching..."
-  tmux attach-session -t "$SESSION_NAME"
-  exit 0
+  if [ "$NAME_AUTO_GENERATED" = true ]; then
+    BASE_NAME="$SESSION_NAME"
+    COUNTER=2
+    while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
+      SESSION_NAME="${BASE_NAME}-${COUNTER}"
+      COUNTER=$((COUNTER + 1))
+    done
+  else
+    echo "Session '$SESSION_NAME' already exists. Attaching..."
+    tmux attach-session -t "$SESSION_NAME"
+    exit 0
+  fi
 fi
 
 echo "Creating session: $SESSION_NAME"

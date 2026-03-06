@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# llm-sessions - List, manage, and switch between lazy-llm sessions
+# Usage: llm-sessions [--list|--kill <name>]
+#
+# Modes:
+#   (no args)      Interactive fzf picker (designed for tmux display-popup)
+#   --list         Print session table to stdout
+#   --kill <name>  Kill a lazy-llm session by name
+
+set -euo pipefail
+
+# Collect all lazy-llm sessions into a structured list.
+# Each line: NAME<tab>DIR<tab>TOOLS<tab>PANES<tab>ATTACHED
+gather_sessions() {
+  local sessions
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 0
+
+  while IFS= read -r session; do
+    # Check if session is lazy-llm managed
+    local marker
+    marker=$(tmux show-option -sv -t "$session" @lazy_llm 2>/dev/null) || true
+    [[ "$marker" != "1" ]] && continue
+
+    # Get directory from first pane of first window
+    local dir
+    dir=$(tmux display-message -t "$session:" -p '#{pane_current_path}' 2>/dev/null) || dir="?"
+
+    # Get AI tools from first window's @AI_TOOLS option
+    local first_win tools
+    first_win=$(tmux list-windows -t "$session" -F '#{window_index}' 2>/dev/null | head -1)
+    tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOLS 2>/dev/null) || true
+    [[ -z "$tools" ]] && tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOL 2>/dev/null) || true
+    [[ -z "$tools" ]] && tools="?"
+
+    # Count workspace windows (exclude holding windows named _hold_*)
+    local win_count
+    win_count=$(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -cv '^_hold_' || echo 0)
+
+    # Check if attached
+    local attached
+    attached=$(tmux display-message -t "$session" -p '#{session_attached}' 2>/dev/null) || attached=0
+    if [[ "$attached" -gt 0 ]]; then
+      attached="*"
+    else
+      attached=""
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\n' "$session" "$dir" "$tools" "$win_count" "$attached"
+  done <<< "$sessions"
+}
+
+# Print sessions as a formatted table
+cmd_list() {
+  local data
+  data=$(gather_sessions)
+
+  if [[ -z "$data" ]]; then
+    echo "No lazy-llm sessions found."
+    return 0
+  fi
+
+  # Header
+  printf '%-30s %-40s %-20s %s  %s\n' "SESSION" "DIRECTORY" "AI TOOLS" "WIN" ""
+  printf '%-30s %-40s %-20s %s  %s\n' "-------" "---------" "--------" "---" ""
+
+  while IFS=$'\t' read -r name dir tools wins attached; do
+    # Shorten home directory
+    dir="${dir/#$HOME/\~}"
+    # Truncate long paths
+    if [[ ${#dir} -gt 38 ]]; then
+      dir="...${dir: -35}"
+    fi
+    printf '%-30s %-40s %-20s %s   %s\n' "$name" "$dir" "$tools" "$wins" "$attached"
+  done <<< "$data"
+}
+
+# Kill a lazy-llm session by name
+cmd_kill() {
+  local target="${1:-}"
+
+  if [[ -z "$target" ]]; then
+    echo "Usage: llm-sessions --kill <session_name>" >&2
+    exit 1
+  fi
+
+  if ! tmux has-session -t "$target" 2>/dev/null; then
+    echo "Error: Session '$target' does not exist" >&2
+    exit 1
+  fi
+
+  # Verify it's a lazy-llm session
+  local marker
+  marker=$(tmux show-option -sv -t "$target" @lazy_llm 2>/dev/null) || true
+  if [[ "$marker" != "1" ]]; then
+    echo "Error: '$target' is not a lazy-llm session" >&2
+    exit 1
+  fi
+
+  # Kill holding windows first (clean shutdown)
+  local wins
+  wins=$(tmux list-windows -t "$target" -F '#{window_name}' 2>/dev/null) || true
+  while IFS= read -r win; do
+    if [[ "$win" == _hold_* ]]; then
+      tmux kill-window -t "$target:$win" 2>/dev/null || true
+    fi
+  done <<< "$wins"
+
+  # Kill the session
+  tmux kill-session -t "$target"
+  echo "Killed session: $target"
+}
+
+# Interactive fzf session picker
+cmd_interactive() {
+  if ! command -v fzf &>/dev/null; then
+    echo "Error: fzf is required for interactive mode" >&2
+    echo "Run: llm-sessions --list for non-interactive output" >&2
+    exit 1
+  fi
+
+  local data
+  data=$(gather_sessions)
+
+  if [[ -z "$data" ]]; then
+    echo "No lazy-llm sessions. Press Enter to create one."
+    read -r
+    return 0
+  fi
+
+  # Format lines for fzf: "name | dir | tools | wins"
+  local lines=""
+  while IFS=$'\t' read -r name dir tools wins attached; do
+    dir="${dir/#$HOME/\~}"
+    if [[ ${#dir} -gt 35 ]]; then
+      dir="...${dir: -32}"
+    fi
+    local mark=""
+    [[ -n "$attached" ]] && mark=" *"
+    lines+=$(printf '%-28s  %-36s  %-16s  %sw%s\n' "$name" "$dir" "$tools" "$wins" "$mark")
+    lines+=$'\n'
+  done <<< "$data"
+  # Remove trailing newline
+  lines="${lines%$'\n'}"
+
+  local header
+  header="Enter: switch | ctrl-d: kill | ctrl-n: new | esc: cancel"
+
+  local selection key
+  selection=$(echo "$lines" | fzf \
+    --ansi \
+    --header="$header" \
+    --expect="ctrl-d,ctrl-n" \
+    --no-multi \
+    --reverse \
+    --border=rounded \
+    --prompt="session> " \
+  ) || return 0
+
+  # Parse fzf output: first line is the key pressed, second is the selected line
+  key=$(echo "$selection" | head -1)
+  local chosen_line
+  chosen_line=$(echo "$selection" | tail -1)
+
+  # Extract session name (first field, trimmed)
+  local chosen_name
+  chosen_name=$(echo "$chosen_line" | awk '{print $1}')
+
+  [[ -z "$chosen_name" ]] && return 0
+
+  case "$key" in
+    ctrl-d)
+      # Kill the selected session
+      cmd_kill "$chosen_name"
+      # Re-run to show updated list
+      exec "$0"
+      ;;
+    ctrl-n)
+      # Create new session — just launch lazy-llm in current directory
+      tmux display-popup -E "$HOME/.local/bin/lazy-llm"
+      ;;
+    *)
+      # Switch to the selected session
+      tmux switch-client -t "$chosen_name" 2>/dev/null || \
+        tmux attach-session -t "$chosen_name" 2>/dev/null || \
+        echo "Could not switch to $chosen_name"
+      ;;
+  esac
+}
+
+# Route to subcommand
+case "${1:-}" in
+  --list|-l)
+    cmd_list
+    ;;
+  --kill|-k)
+    shift
+    cmd_kill "$@"
+    ;;
+  --help|-h)
+    echo "Usage: llm-sessions [--list|--kill <name>]"
+    echo ""
+    echo "Modes:"
+    echo "  (no args)      Interactive fzf picker"
+    echo "  --list, -l     Print session table"
+    echo "  --kill, -k     Kill a lazy-llm session"
+    ;;
+  *)
+    cmd_interactive
+    ;;
+esac
