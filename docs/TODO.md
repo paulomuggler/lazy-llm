@@ -1,10 +1,8 @@
 ### P1 - High Priority
 
 - [ ] Split the llm-send.lua stuff into multiple plugin files, per feature, i.e. llm-send, at-path-autocomplete, response-pull, etc.. This will make it easier to maintain and extend in the future.
-- [ ] revisit features looking for code to refactor or better ways to do things as I learn more about nvim, tmux, etc.. I'm sure there's a bunch of stuff inthere bing done in a creepy dumb way.
 - [ ] Fix Codex autosubmit: Final Enter keypress not being received/processed. Need to investigate if Codex requires different submission mechanism (Ctrl+Enter?) or additional delay.
 - [ ] Autosubmit is still failing often, so when we do llms we get the prompt buffer sent to the LLM TUI prompt input, but the submit enter often does not go through, we want to investigate and improve this.
-- [ ] add <leader>llm/ shorctu to send raw slash commands
 
 ### P2 - Medium Priority
 
@@ -26,6 +24,24 @@
 
 ### Completed
 
+- [x] Unified pane resolution into shared library (`lazy-llm-lib.sh`) — all 7 scripts use common functions
+- [x] Added stale pane validation and auto-pruning across all scripts
+- [x] Built session manager (`llm-sessions`) with list/kill/fzf interactive modes + `Prefix+S` binding
+- [x] Built pane manager TUI (`llm-panes`) with status detection + `Prefix+L` binding
+- [x] Made nvim keymaps conditional on `$TMUX` (no interference in standalone nvim)
+- [x] Scoped tmux keybindings with `if-shell` (C-n/C-p fall back to next/previous-window outside lazy-llm)
+- [x] Replaced `Prefix+A` hardcoded claude with `display-menu` tool picker
+- [x] Added error feedback to all async nvim commands via `on_exit` callbacks
+- [x] Replaced keystroke injection in `llm-append` with `tmux load-buffer` + `paste-buffer`
+- [x] Added stdin support to `llm-append` (pipe content directly)
+- [x] Simplified note plugin to delegate to `llm-append` instead of inline bash
+- [x] Added confirmation dialogs before removing AI panes (nvim + tmux)
+- [x] Made holding window pattern resilient (window ID reference, auto-recovery, auto-cleanup)
+- [x] Added session naming conflict resolution (counter suffix for auto-generated names)
+- [x] Fixed install.sh to include nvim-note-plugin
+- [x] Fixed note plugin to use stable pane IDs
+- [x] add <leader>llm/ shortcut to send raw slash commands
+- [x] revisit features looking for code to refactor or better ways to do things
 - [x] The multiwindow sessions feature is breaking after we close a window in a session with multiple windows, apparently. I suspect because the window IDs in the variables might get stale? IDK. Needs more testing
 - [x] the feature to open new lazy-llm in new window of existing session wont work unless we can differentiate env vars AI_PANE and PROMPT_PANE, others, between different windows of the same session. We need to investigate if this is possible, and if so, implement it.
 - [x] Improve robustness regarding use of env vars AI_PANE, PROMPT_PANE, etc., these seem to be flaky when having multiple sessions or windows in a session, I've seen the whole thinkg go a bit crazy. But could have been about old stale sessions and windows tmux-ressurrext was trying to restore, IDK. Investigate.

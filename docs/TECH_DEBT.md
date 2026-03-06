@@ -10,189 +10,19 @@ This document tracks technical debt, known issues, and potential improvements fo
 
  
 
-### 1. Tmux Pane Reference Resilience
-
- 
-
-**Issue**: Pane references use indices instead of IDs, making them fragile to manual pane operations.
-
- 
-
-**Current Behavior**:
-
-- ✅ Works correctly for normal usage (no manual pane manipulation)
-
-- ✅ Handles multiple windows in same session (uses window-scoped user options)
-
-- ✅ Dynamically detects base-index and pane-base-index settings
-
-- ❌ Breaks when users manually reorder, kill, or create panes
-
-- ❌ Relies on specific 3-pane layout assumptions
-
- 
-
-**Root Cause**:
-
-- Code stores pane **indices** (0, 1, 2) in `@AI_PANE` and `@PROMPT_PANE`
-
-- Pane indices change when panes are reordered/deleted
-
-- Pane **IDs** (%0, %1, %2) persist through layout changes but aren't being used
-
- 
-
-**Example of Brittleness**:
-
-```bash
-
-# Initial setup:
-
-# @AI_PANE = "session:0.0"
-
-# @PROMPT_PANE = "session:0.2"
-
- 
-
-# User manually swaps pane 0 and pane 1
-
-# Now AI tool is at index 1, but @AI_PANE still points to index 0
-
-# llm-send now sends to wrong pane!
-
-```
-
- 
-
-**Impact**:
-
-- Medium severity: Affects advanced users who manually manage tmux layouts
-
-- Low frequency: Most users don't manually reorganize panes
-
-- Confusing when it happens: Commands send to wrong panes silently
-
- 
-
-**Proposed Solution**:
-
- 
-
-**Option A: Use Pane IDs (Recommended)**
-
-```bash
-
-# During setup in lazy-llm:
-
-AI_PANE_ID=$(tmux display-message -t "$session:$win_idx.$ai_pane" -p '#{pane_id}')
-
-tmux set-option -w -t "$session:$win_idx" @AI_PANE_ID "$AI_PANE_ID"
-
- 
-
-# In llm-send:
-
-AI_PANE_ID=$(tmux show-option -wv -t "$_session:$_window" @AI_PANE_ID 2>/dev/null)
-
-TARGET="${AI_PANE_ID:-:.+}"
-
-```
-
- 
-
-**Benefits**:
-
-- Pane IDs persist through reordering
-
-- Fully resilient to layout changes
-
-- Simple implementation change
-
- 
-
-**Option B: Pane Title Discovery**
-
-```bash
-
-# Find pane by title instead of stored reference
-
-AI_PANE=$(tmux list-panes -t "$_session:$_window" -F '#{pane_id}:#{pane_title}' | grep 'AI:' | cut -d: -f1)
-
-```
-
- 
-
-**Benefits**:
-
-- No storage needed
-
-- Auto-discovers panes
-
-- Works after any layout change
-
- 
-
-**Drawbacks**:
-
-- Slower (needs to scan panes each time)
-
-- Requires pane titles to be set correctly
-
-- Fails if user renames panes
-
- 
-
-**Option C: Hybrid Approach**
-
-1. Store pane IDs as primary reference
-
-2. Fall back to pane title discovery if ID not found
-
-3. Fall back to index-based for backwards compatibility
-
- 
-
-**Recommended**: Option A (pane IDs) for simplicity and performance.
-
- 
-
-**Implementation Checklist**:
-
-- [ ] Update `lazy-llm` to store pane IDs in `@AI_PANE_ID` and `@PROMPT_PANE_ID`
-
-- [ ] Update `llm-send` to use pane IDs
-
-- [ ] Update `llm-append` to use pane IDs
-
-- [ ] Update `llm-pull` to use pane IDs
-
-- [ ] Update nvim plugin to use pane IDs
-
-- [ ] Add migration logic for existing sessions (detect old format, update to new)
-
-- [ ] Add validation: check if pane ID still exists before using
-
-- [ ] Update documentation
-
-- [ ] Add tests for pane reordering scenarios
-
- 
-
-**Estimated Effort**: 4-6 hours
-
- 
-
-**Files to Modify**:
-
-- `lazy-llm-bin/.local/bin/lazy-llm` (lines 223-225)
-
-- `llm-send-bin/.local/bin/llm-send` (lines 4-16)
-
-- `llm-send-bin/.local/bin/llm-append` (lines 15-27)
-
-- `llm-send-bin/.local/bin/llm-pull` (lines 7-17)
-
-- `nvim-llm-send-plugin/.config/nvim/lua/plugins/llm-send.lua` (pane detection logic)
+### ~~1. Tmux Pane Reference Resilience~~ ✅ RESOLVED
+
+**Status**: Fully resolved. All scripts now use stable pane IDs (`%N` format) via a shared library (`lazy-llm-lib.sh`).
+
+**What was done**:
+- Created `lazy-llm-lib.sh` shared library with pane resolution, validation, and state management
+- All 7 scripts (`llm-send`, `llm-pull`, `llm-append`, `llm-add`, `llm-cycle`, `llm-remove`, `llm-status`) use the shared library
+- `@AI_PANE_ID` and `@PROMPT_PANE_ID` store stable pane IDs (persist through reordering)
+- Legacy `@AI_PANE` (index-based) kept for backward compatibility but not primary
+- `lazy_llm_validate_pane()` checks if pane IDs are still alive before use
+- `lazy_llm_prune_stale_panes()` automatically removes dead pane entries
+- `lazy_llm_validate_hold_win()` recovers if holding window is accidentally closed
+- Holding windows now referenced by window ID instead of name
 
  
 
@@ -474,9 +304,9 @@ From `docs/TODO.md`:
 
 ### 7. Plugin Modularization
 
- 
 
-**Issue**: `nvim-llm-send-plugin/.config/nvim/lua/plugins/llm-send.lua` is ~525 lines, could be split into feature modules.
+
+**Issue**: `nvim-llm-send-plugin/.config/nvim/lua/plugins/llm-send.lua` is ~650+ lines, could be split into feature modules.
 
  
 
@@ -612,11 +442,7 @@ These work correctly but could be improved:
 
  
 
-3. **Error handling**: Most scripts handle errors, but could be more robust
-
-   - Add better error messages for common failure modes
-
-   - Graceful degradation when tmux features unavailable
+3. ~~**Error handling**~~: ✅ Resolved — all nvim `jobstart` calls now use `on_exit` callbacks with error notifications. Temp file cleanup moved from shell to Lua. tmux `run-shell` commands scoped via `if-shell`.
 
  
 
