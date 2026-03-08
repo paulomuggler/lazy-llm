@@ -11,8 +11,11 @@ if [[ -n "${_CURRENT_PANE:-}" ]]; then
 fi
 if [[ -n "${_SESSION:-}" ]]; then
   TARGET=$(lazy_llm_get_ai_target)
+  # AI_TOOL is set inside lazy_llm_get_ai_target but lost due to $() subshell
+  AI_TOOL=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_TOOL 2>/dev/null) || true
 else
   TARGET=":.+"
+  AI_TOOL=""
 fi
 
 # Validate AI pane is still alive
