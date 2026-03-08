@@ -3,7 +3,7 @@
 # Source this file: source "$(dirname "$0")/lazy-llm-lib.sh"
 
 # Guard against double-sourcing
-[[ -n "$_LAZY_LLM_LIB_LOADED" ]] && return 0
+[[ -n "${_LAZY_LLM_LIB_LOADED:-}" ]] && return 0
 _LAZY_LLM_LIB_LOADED=1
 
 # Resolve current pane ID.
