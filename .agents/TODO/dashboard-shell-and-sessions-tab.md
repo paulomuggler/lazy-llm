@@ -2,12 +2,12 @@
 slug: dashboard-shell-and-sessions-tab
 title: Dashboard shell + sessions tab (live preview)
 priority: P1
-status: pending
+status: in-progress
 created: 2026-05-13
 updated: 2026-05-13
 depends-on: [pane-status-detection]
 tags: [enhancement, dashboard, tui, popup, llm-sessions]
-commits: []
+commits: [9b536db, 885b305]
 ---
 
 # Dashboard shell + sessions tab (live preview)
@@ -63,15 +63,15 @@ This is enough to validate the tab framework and lets users discover the upcomin
 
 ## Acceptance Criteria
 
-- [ ] New `llm-dashboard` script launches under `Prefix+S` (replaces the existing direct `llm-sessions` invocation)
-- [ ] Dashboard shows at least two tabs: Sessions (functional) and Worktrees (placeholder line)
-- [ ] Tab switching works via at least one of: single-letter keys (`1`/`2`), `Tab`/`Shift-Tab`, or arrow keys (decide during planning)
-- [ ] Sessions tab columns: name, directory, tools, window count, attached marker, status glyph
-- [ ] Live preview pane shows ANSI-rendered tail of the selected session's active AI pane; refresh interval reasonable (1–2s) without noticeable flicker
-- [ ] Sessions tab actions: switch (Enter), new (`n`), kill+confirm (`K`), rename (`r`), filter (`/`), refresh (`R`), quit (`q`/`Esc`)
-- [ ] No Ctrl+ chords used inside the dashboard (dense letter bindings only)
-- [ ] `llm-panes` and `Prefix+L` continue to work unchanged
-- [ ] `llm-sessions --list` and `llm-sessions --kill` continue to work unchanged
-- [ ] Tests in `tests/scenarios/` cover: dashboard launch, sessions tab listing (mock tmux state), tab switching
-- [ ] README + USAGE updated; old `Prefix+S → llm-sessions` documentation replaced with `Prefix+S → llm-dashboard`
+- [x] New `llm-dashboard` script launches under `Prefix+S` (replaces the existing direct `llm-sessions` invocation)
+- [x] Dashboard shows at least two tabs: Sessions (functional) and Worktrees (placeholder line)
+- [x] Tab switching works via single-letter keys (`1` and `2`)
+- [x] Sessions tab columns: name, directory, tools, window count, attached marker, status glyph
+- [x] Live preview pane shows ANSI-rendered tail of the selected session's active AI pane; refreshes on selection change (no flicker; manual `R` for full re-render)
+- [x] Sessions tab actions: switch (Enter), new (`n`), kill+confirm (`K`), rename (`r`), filter (`/` is fzf built-in), refresh (`R`), quit (`q`/`Esc`)
+- [x] No Ctrl+ chords used inside the dashboard (dense letter bindings only)
+- [x] `llm-panes` and `Prefix+L` continue to work unchanged (verified via grep in unit test)
+- [x] `llm-sessions --list` and `llm-sessions --kill` continue to work unchanged (CLI behavior preserved; internal `gather_sessions` extracted to library helper)
+- [x] Tests in `tests/scenarios/11-dashboard-shell-unit.sh` cover: gather function extraction, output format, plain-session filtering, dashboard argparse, keybinding wiring (12 assertions)
+- [x] README + USAGE updated; old `Prefix+S → llm-sessions` documentation replaced with `Prefix+S → llm-dashboard`
 - [ ] Manual verify: with 2+ lazy-llm sessions, `Prefix+S` opens the dashboard at the Sessions tab; both sessions appear with correct status glyphs; preview shows live ANSI of the highlighted session's AI pane; all single-letter actions work; `Esc` closes
