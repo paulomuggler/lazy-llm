@@ -2,17 +2,34 @@
 # llm-status - Output AI pane tab indicator for tmux status bar
 # Usage: llm-status
 #
-# Renders a tab indicator showing all AI panes with the active one highlighted.
+# Renders a tab indicator showing all AI panes with the active one highlighted
+# and a status glyph reflecting each pane's current state.
 # For use in tmux status-right: set -g status-right '#(llm-status)'
 #
+# Status glyphs:
+#   ● working (AI is generating)
+#   ○ idle    (prompt visible, no activity)
+#   ◐ waiting (permission / numbered-choice prompt)
+#   ? unknown (capture failed or unrecognized state)
+#
 # Output examples:
-#   Single pane:  "AI: claude"
-#   Multi pane:   "[claude] gemini"  (active pane is bracketed/bold)
+#   Single pane:  "AI: claude●"
+#   Multi pane:   "[claude●] gemini◐"  (active pane is bracketed/bold)
 
 set -euo pipefail
 
-# Source shared library for pane resolution
+# Source shared library for pane resolution + status detection
 source "$(dirname "$0")/lazy-llm-lib.sh"
+
+# Map status string to glyph
+glyph_for() {
+  case "$1" in
+    working) printf '●' ;;
+    idle)    printf '○' ;;
+    waiting) printf '◐' ;;
+    *)       printf '?' ;;
+  esac
+}
 
 # Resolve pane context (exit silently on failure — status bar must not error)
 lazy_llm_resolve_pane || exit 0
@@ -25,29 +42,38 @@ lazy_llm_read_multi_state
 if [ -z "$AI_PANES" ]; then
   AI_TOOL=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_TOOL 2>/dev/null) || true
   if [ -n "$AI_TOOL" ]; then
-    echo "AI: $AI_TOOL"
+    ai_pane_id=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_PANE_ID 2>/dev/null) || ai_pane_id=""
+    if [ -n "$ai_pane_id" ]; then
+      glyph=$(glyph_for "$(lazy_llm_detect_pane_status "$ai_pane_id" "$AI_TOOL")")
+    else
+      glyph="?"
+    fi
+    echo "AI: ${AI_TOOL}${glyph}"
   fi
   exit 0
 fi
 
 # Parse into arrays
+read -ra pane_arr <<< "$AI_PANES"
 read -ra tool_arr <<< "$AI_TOOLS"
 current_idx="${AI_PANE_IDX:-0}"
 total=${#tool_arr[@]}
 
 # Single pane: simple display
 if [ "$total" -le 1 ]; then
-  echo "AI: ${tool_arr[0]}"
+  glyph=$(glyph_for "$(lazy_llm_detect_pane_status "${pane_arr[0]}" "${tool_arr[0]}")")
+  echo "AI: ${tool_arr[0]}${glyph}"
   exit 0
 fi
 
-# Multi pane: render tab indicator
+# Multi pane: render tab indicator with per-pane status glyphs
 output=""
 for i in "${!tool_arr[@]}"; do
+  glyph=$(glyph_for "$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]}")")
   if [ "$i" -eq "$current_idx" ]; then
-    output+="#[bold][${tool_arr[$i]}]#[nobold]"
+    output+="#[bold][${tool_arr[$i]}${glyph}]#[nobold]"
   else
-    output+=" ${tool_arr[$i]}"
+    output+=" ${tool_arr[$i]}${glyph}"
   fi
 done
 

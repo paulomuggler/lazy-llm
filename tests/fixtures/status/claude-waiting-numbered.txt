@@ -1,0 +1,9 @@
+⏺ How should I handle the conflict in package.json?
+
+  1. Keep both versions and let npm dedupe
+  2. Use only the newer version (^4.2.0)
+  3. Use only the older version (^3.8.1)
+
+╭──────────────────────────────────────────────────────────────────────────╮
+│ ❯                                                                        │
+╰──────────────────────────────────────────────────────────────────────────╯

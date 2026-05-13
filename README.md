@@ -257,7 +257,7 @@ Inactive AI panes are held in a hidden tmux window. `tmux swap-pane` atomically 
 | `llm-add [-t tool]` | Add a new AI pane (default: claude) |
 | `llm-cycle [next\|prev\|N]` | Cycle between AI panes |
 | `llm-remove [-f] [current\|N]` | Remove an AI pane (`-f` skips confirmation) |
-| `llm-status` | Status line output for tmux (e.g. `[claude] gemini`) |
+| `llm-status` | Status line output for tmux (e.g. `[claude●] gemini◐` — glyphs reflect AI pane state) |
 | `llm-append [text]` | Append text to prompt buffer (supports stdin: `echo "foo" \| llm-append`) |
 | `llm-sessions` | Session manager: list, kill, or fuzzy-pick sessions |
 | `llm-panes` | Pane manager TUI: view status and switch AI panes |
@@ -311,6 +311,19 @@ While the AI makes edits, use the editor pane to review diffs, stage changes, an
 - **llm-append**: Appends context references to the prompt buffer using `load-buffer` + `paste-buffer`. Accepts text as argument or via stdin pipe.
 - **llm-pull**: Captures AI pane history and extracts the latest response after `### END PROMPT` markers.
 - **Scroll-aware sending**: Auto-exits tmux copy-mode before sending to prevent key binding conflicts.
+
+### Status Detection
+
+`llm-status` shows a glyph next to each AI tool name reflecting its current state, refreshed at tmux's `status-interval` (default 15s):
+
+| Glyph | State | Meaning |
+|-------|-------|---------|
+| `●` | working | AI is generating (interrupt hint visible in pane) |
+| `○` | idle | Prompt visible, waiting for input |
+| `◐` | waiting | Permission prompt (`[y/n]`) or numbered choice |
+| `?` | unknown | Pane capture failed or content unrecognized |
+
+Detection runs against the AI pane's content via `tmux capture-pane`. Patterns live in `lazy_llm_detect_status_from_content` in `lazy-llm-lib.sh` and default to Claude-tuned regexes; other tools (gemini, codex, grok, aider) fall through to the same defaults as best-effort.
 
 ### Neovim Plugins
 

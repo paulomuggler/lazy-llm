@@ -1,0 +1,10 @@
+⏺ I'll look into that now. Let me check the file structure first.
+
+  Reading file...
+
+  Found 42 references across 8 files. Analyzing patterns...
+
+╭──────────────────────────────────────────────────────────────────────────╮
+│ ❯ Continue writing the response...                                       │
+╰──────────────────────────────────────────────────────────────────────────╯
+  Press ctrl+c to interrupt · ? for shortcuts

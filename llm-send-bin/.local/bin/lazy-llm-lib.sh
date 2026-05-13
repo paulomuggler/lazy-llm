@@ -75,6 +75,57 @@ lazy_llm_validate_pane() {
   tmux display-message -t "$1" -p '#{pane_id}' &>/dev/null
 }
 
+# Classify AI pane content into a status.
+# Pure: no tmux side effects. Reads pane content from stdin.
+# Args:   $1 tool_name (default: claude)
+# Stdin:  pane content
+# Stdout: working | idle | waiting | unknown
+#
+# Precedence: working (interrupt hint visible) > waiting (permission prompt)
+# > idle (prompt glyph alone) > unknown.
+#
+# Per-tool overrides go in the case block below. Today only the default
+# (claude-tuned) patterns are used; gemini/codex/grok/aider fall through
+# because they typically use similar prompt + permission idioms.
+lazy_llm_detect_status_from_content() {
+  local tool="${1:-claude}"
+  local content
+  content=$(cat)
+
+  local interrupt_pat='ctrl\+c to interrupt'
+  local waiting_pat='\[[yY]/[yYnN]\]|^[[:space:]]*[1-9][.)][[:space:]]'
+  local prompt_pat='❯'
+
+  case "$tool" in
+    claude|*)
+      : # use defaults above
+      ;;
+  esac
+
+  if grep -qE "$interrupt_pat" <<< "$content"; then
+    echo working
+  elif grep -qE "$waiting_pat" <<< "$content"; then
+    echo waiting
+  elif grep -qF "$prompt_pat" <<< "$content"; then
+    echo idle
+  else
+    echo unknown
+  fi
+}
+
+# Capture a pane's recent content and classify it.
+# Args:   $1 pane_id   (required, %N format)
+#         $2 tool_name (optional, default: claude)
+# Stdout: working | idle | waiting | unknown
+# Returns 0 always; emits "unknown" if capture fails.
+lazy_llm_detect_pane_status() {
+  local pane_id="${1:?pane_id required}"
+  local tool="${2:-claude}"
+  local content
+  content=$(tmux capture-pane -p -t "$pane_id" -S -200 2>/dev/null) || { echo unknown; return 0; }
+  printf '%s' "$content" | lazy_llm_detect_status_from_content "$tool"
+}
+
 # Prune stale (dead) panes from AI_PANES/AI_TOOLS lists.
 # Updates tmux window options and global variables with cleaned-up state.
 # Requires: _SESSION, _WINDOW, AI_PANES, AI_TOOLS, AI_PANE_IDX (call lazy_llm_read_multi_state first)
