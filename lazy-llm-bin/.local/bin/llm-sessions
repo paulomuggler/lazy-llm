@@ -18,7 +18,7 @@ gather_sessions() {
   while IFS= read -r session; do
     # Check if session is lazy-llm managed
     local marker
-    marker=$(tmux show-option -sv -t "$session" @lazy_llm 2>/dev/null) || true
+    marker=$(tmux show-option -v -t "$session" @lazy_llm 2>/dev/null) || true
     [[ "$marker" != "1" ]] && continue
 
     # Get directory from first pane of first window
@@ -90,7 +90,7 @@ cmd_kill() {
 
   # Verify it's a lazy-llm session
   local marker
-  marker=$(tmux show-option -sv -t "$target" @lazy_llm 2>/dev/null) || true
+  marker=$(tmux show-option -v -t "$target" @lazy_llm 2>/dev/null) || true
   if [[ "$marker" != "1" ]]; then
     echo "Error: '$target' is not a lazy-llm session" >&2
     exit 1
@@ -121,29 +121,26 @@ cmd_interactive() {
   local data
   data=$(gather_sessions)
 
-  if [[ -z "$data" ]]; then
-    echo "No lazy-llm sessions. Press Enter to create one."
-    read -r
-    return 0
-  fi
-
   # Format lines for fzf: "name | dir | tools | wins"
-  local lines=""
-  while IFS=$'\t' read -r name dir tools wins attached; do
-    dir="${dir/#$HOME/\~}"
-    if [[ ${#dir} -gt 35 ]]; then
-      dir="...${dir: -32}"
-    fi
-    local mark=""
-    [[ -n "$attached" ]] && mark=" *"
-    lines+=$(printf '%-28s  %-36s  %-16s  %sw%s\n' "$name" "$dir" "$tools" "$wins" "$mark")
-    lines+=$'\n'
-  done <<< "$data"
-  # Remove trailing newline
-  lines="${lines%$'\n'}"
-
-  local header
-  header="Enter: switch | ctrl-d: kill | ctrl-n: new | esc: cancel"
+  # Empty input is fine — fzf shows an empty list and still honors esc/ctrl-n.
+  local lines="" header
+  if [[ -z "$data" ]]; then
+    header="No lazy-llm sessions. ctrl-n: new | esc: close"
+  else
+    while IFS=$'\t' read -r name dir tools wins attached; do
+      dir="${dir/#$HOME/\~}"
+      if [[ ${#dir} -gt 35 ]]; then
+        dir="...${dir: -32}"
+      fi
+      local mark=""
+      [[ -n "$attached" ]] && mark=" *"
+      lines+=$(printf '%-28s  %-36s  %-16s  %sw%s\n' "$name" "$dir" "$tools" "$wins" "$mark")
+      lines+=$'\n'
+    done <<< "$data"
+    # Remove trailing newline
+    lines="${lines%$'\n'}"
+    header="enter: switch | ctrl-d: kill | ctrl-n: new | esc: cancel"
+  fi
 
   local selection key
   selection=$(echo "$lines" | fzf \
@@ -165,21 +162,21 @@ cmd_interactive() {
   local chosen_name
   chosen_name=$(echo "$chosen_line" | awk '{print $1}')
 
-  [[ -z "$chosen_name" ]] && return 0
-
   case "$key" in
+    ctrl-n)
+      # Create new session — doesn't require a selection, works even with empty list
+      tmux display-popup -E "$HOME/.local/bin/lazy-llm"
+      ;;
     ctrl-d)
       # Kill the selected session
+      [[ -z "$chosen_name" ]] && return 0
       cmd_kill "$chosen_name"
       # Re-run to show updated list
       exec "$0"
       ;;
-    ctrl-n)
-      # Create new session — just launch lazy-llm in current directory
-      tmux display-popup -E "$HOME/.local/bin/lazy-llm"
-      ;;
     *)
       # Switch to the selected session
+      [[ -z "$chosen_name" ]] && return 0
       tmux switch-client -t "$chosen_name" 2>/dev/null || \
         tmux attach-session -t "$chosen_name" 2>/dev/null || \
         echo "Could not switch to $chosen_name"
