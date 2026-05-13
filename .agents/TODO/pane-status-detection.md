@@ -2,12 +2,12 @@
 slug: pane-status-detection
 title: Pane status detection helper + llm-status integration
 priority: P1
-status: pending
+status: in-progress
 created: 2026-05-13
 updated: 2026-05-13
 depends-on: []
 tags: [enhancement, status-detection, llm-status, library, tests]
-commits: []
+commits: [2301c86]
 ---
 
 # Pane status detection helper + llm-status integration
@@ -35,12 +35,12 @@ This task has **no UI changes** — the only user-visible difference is richer t
 
 ## Acceptance Criteria
 
-- [ ] `lazy_llm_detect_pane_status` helper in `lazy-llm-lib.sh` returns one of `working|idle|waiting|unknown`
-- [ ] Per-tool pattern table — at minimum claude (with the patterns above); structure supports adding gemini/codex/grok/aider entries without code changes
-- [ ] When tool name is omitted or unknown, falls back to the claude patterns (or a generic set — decide during planning)
-- [ ] `llm-status` consumes the helper; statusline output includes status glyphs per active AI pane (e.g. `[claude●] gemini◐`)
-- [ ] Glyph mapping documented and consistent: `●` working, `○` idle, `◐` waiting, `?` unknown (or alternates decided during planning)
-- [ ] Tests added under `tests/scenarios/` that feed canned pane content through the detection helper and assert the expected status
-- [ ] No live tmux required for the detection unit tests (use stdin fixture strings)
-- [ ] No regressions in existing `llm-status` output for users who have no AI panes (the output should still be clean, just without glyphs)
+- [x] `lazy_llm_detect_pane_status` helper in `lazy-llm-lib.sh` returns one of `working|idle|waiting|unknown`
+- [x] Per-tool pattern table — at minimum claude (with the patterns above); structure supports adding gemini/codex/grok/aider entries via a single `case` block in `lazy_llm_detect_status_from_content`
+- [x] When tool name is omitted or unknown, falls back to the claude patterns (default branch in the case statement)
+- [x] `llm-status` consumes the helper; statusline output includes status glyphs per active AI pane (e.g. `[claude●] gemini◐`)
+- [x] Glyph mapping documented and consistent: `●` working, `○` idle, `◐` waiting, `?` unknown
+- [x] Tests added under `tests/scenarios/10-pane-status-detection.sh` that feed canned pane content through the detection helper and assert the expected status (17 assertions, all passing)
+- [x] No live tmux required for the detection unit tests (fixtures piped through stdin)
+- [x] No regressions in existing `llm-status` output for users who have no AI panes (no-AI branch unchanged)
 - [ ] Manual verify: with `lazy-llm` running and an active claude session, the tmux statusline shows a status glyph reflecting reality (idle when not generating, working when claude is mid-stream)
