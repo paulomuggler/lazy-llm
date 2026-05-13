@@ -262,9 +262,8 @@ create_workspace_window() {
   tmux bind-key -T prefix S if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "display-popup -E -w 90% -h 70% '$HOME/.local/bin/llm-dashboard'"
-  tmux bind-key -T prefix L if-shell \
-    "tmux show-option -wqv @AI_PANES" \
-    "display-popup -E -w 60% -h 50% '$HOME/.local/bin/llm-panes'"
+  # Prefix+L retired — its surface (Panes tab) lives inside llm-dashboard now,
+  # reachable from any tab via the '3' key.
 
   # Set initial focus to prompt buffer pane
   tmux select-pane -t "$session:$win_idx.$prompt_pane"

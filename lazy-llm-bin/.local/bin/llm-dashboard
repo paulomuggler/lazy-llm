@@ -12,7 +12,7 @@
 # Sessions actions:   Enter (switch), n (new), K (kill), r (rename),
 #                     R (refresh), ? (help), q/Esc (quit)
 #
-# Usage: llm-dashboard [--tab sessions|worktrees] [--help]
+# Usage: llm-dashboard [--tab sessions|worktrees|panes] [--help]
 
 set -euo pipefail
 
@@ -59,7 +59,7 @@ render_sessions_tab() {
 
   local lines="" header
   if [[ -z "$data" ]]; then
-    header="[Sessions] No lazy-llm sessions. n: new │ 2: worktrees │ q/esc: close"
+    header="[Sessions] No lazy-llm sessions. n: new │ 2: worktrees │ 3: panes │ q/esc: close"
   else
     # Augment each row with a status glyph next to the tools column.
     while IFS=$'\t' read -r name dir tools wins attached; do
@@ -87,7 +87,7 @@ render_sessions_tab() {
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
-    header="[Sessions] enter: switch │ n: new │ K: kill │ r: rename │ R: refresh │ ?: help │ 2: worktrees │ q/esc: close"
+    header="[Sessions] enter: switch │ n: new │ K: kill │ r: rename │ R: refresh │ ?: help │ 2: worktrees │ 3: panes │ q/esc: close"
   fi
 
   # Preview command — takes the first column (session name) and shows the
@@ -112,7 +112,7 @@ render_sessions_tab() {
     --header="$header" \
     --preview="$preview_cmd" \
     --preview-window="right:55%:wrap:follow" \
-    --expect="1,2,n,K,r,R,?" \
+    --expect="1,2,3,n,K,r,R,?" \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
@@ -124,6 +124,7 @@ render_sessions_tab() {
   case "$key" in
     1)     echo "action:refresh" ;;
     2)     echo "tab:worktrees" ;;
+    3)     echo "tab:panes" ;;
     n)     echo "action:new" ;;
     K)     [[ -z "$chosen_name" ]] && echo "action:refresh" || echo "action:kill:$chosen_name" ;;
     r)     [[ -z "$chosen_name" ]] && echo "action:refresh" || echo "action:rename:$chosen_name" ;;
@@ -147,7 +148,7 @@ attached lazy-llm sessions, and PR state when gh is available. Cleanup action wi
 atomically tear down worktree + branch + session.
 
 See task: worktree-bridge-tab"
-  local header="[Worktrees] 1: sessions │ q/esc: close"
+  local header="[Worktrees] 1: sessions │ 3: panes │ q/esc: close"
 
   local selection key
   selection=$(echo "$body" | fzf \
@@ -156,14 +157,122 @@ See task: worktree-bridge-tab"
     --border=rounded \
     --prompt="worktrees> " \
     --header="$header" \
-    --expect="1,2" \
+    --expect="1,2,3" \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
   case "$key" in
     1)  echo "tab:sessions" ;;
     2)  echo "action:refresh" ;;  # no-op (already here)
+    3)  echo "tab:panes" ;;
     *)  echo "quit" ;;
+  esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Panes tab — list AI panes in the current session/window with live preview
+# ──────────────────────────────────────────────────────────────────────────
+
+render_panes_tab() {
+  # Resolve current tmux context. If we're not in a tmux session at all,
+  # the popup was launched from outside — graceful empty-state.
+  lazy_llm_resolve_pane 2>/dev/null || {
+    local body="(Not inside a tmux session. The Panes tab needs a current pane to read AI panes from.)"
+    local header="[Panes] q/esc: close │ 1: sessions │ 2: worktrees"
+    local selection key
+    selection=$(echo "$body" | fzf --ansi --reverse --border=rounded \
+      --prompt="panes> " --header="$header" --expect="1,2" \
+    ) || { echo "quit"; return 0; }
+    key=$(echo "$selection" | head -1)
+    case "$key" in
+      1) echo "tab:sessions" ;;
+      2) echo "tab:worktrees" ;;
+      *) echo "quit" ;;
+    esac
+    return 0
+  }
+  lazy_llm_resolve_session_window 2>/dev/null
+  lazy_llm_read_multi_state
+
+  local lines="" header empty=false
+  if [[ -z "$AI_PANES" ]]; then
+    # Window isn't a lazy-llm workspace. Discoverable empty-state.
+    lines="(No AI panes in this window. Run lazy-llm or press 'a' to bootstrap one.)"
+    header="[Panes] Not a lazy-llm workspace. a: add │ 1: sessions │ 2: worktrees │ q/esc: close"
+    empty=true
+  else
+    # Build per-pane rows with status glyph + pane ID column for preview indexing
+    local -a pane_arr tool_arr
+    read -ra pane_arr <<< "$AI_PANES"
+    read -ra tool_arr <<< "$AI_TOOLS"
+    local current_idx="${AI_PANE_IDX:-0}"
+    local total=${#pane_arr[@]}
+
+    local i
+    for i in "${!pane_arr[@]}"; do
+      local pid="${pane_arr[$i]}"
+      local tool="${tool_arr[$i]:-?}"
+      local glyph status
+      status=$(lazy_llm_detect_pane_status "$pid" "$tool")
+      glyph=$(glyph_for "$status")
+      local marker=""
+      [[ "$i" -eq "$current_idx" ]] && marker="(active)"
+      local idx_one=$((i + 1))
+      lines+=$(printf '%-3s %-12s %s %-10s %s\n' \
+        "$idx_one" "$tool" "$glyph" "$marker" "$pid")
+      lines+=$'\n'
+    done
+    lines="${lines%$'\n'}"
+
+    header="[Panes] enter: switch │ a: add │ K: kill │ ]/[: cycle │ R: refresh │ ?: help │ 1: sessions │ 2: worktrees │ q/esc: close"
+  fi
+
+  # Preview: take the pane id from column 5 (idx 5 in fzf field syntax),
+  # render its content with ANSI. Empty-state row has no pane id → skip.
+  local preview_cmd
+  if [[ "$empty" == "true" ]]; then
+    preview_cmd='echo "(no panes to preview)"'
+  else
+    preview_cmd='set -- {5}; pid="$1"; '
+    preview_cmd+='if [ -n "$pid" ]; then '
+    preview_cmd+='tmux capture-pane -p -e -S -200 -t "$pid" 2>/dev/null || echo "(could not capture pane $pid)"; '
+    preview_cmd+='else echo "(no pane id in row)"; fi'
+  fi
+
+  local selection key
+  selection=$(echo "$lines" | fzf \
+    --ansi \
+    --reverse \
+    --border=rounded \
+    --prompt="pane> " \
+    --header="$header" \
+    --preview="$preview_cmd" \
+    --preview-window="right:55%:wrap:follow" \
+    --expect="1,2,3,a,K,],[,R,?" \
+  ) || { echo "quit"; return 0; }
+
+  key=$(echo "$selection" | head -1)
+  local chosen_line
+  chosen_line=$(echo "$selection" | tail -1)
+  # First column is the 1-indexed pane number (or empty for the placeholder)
+  local chosen_idx
+  chosen_idx=$(echo "$chosen_line" | awk '{print $1}')
+  # Sanitize: only digits, otherwise treat as empty (e.g. for the placeholder row)
+  [[ "$chosen_idx" =~ ^[0-9]+$ ]] || chosen_idx=""
+
+  case "$key" in
+    1)     echo "tab:sessions" ;;
+    2)     echo "tab:worktrees" ;;
+    3)     echo "action:refresh" ;;
+    a)     echo "action:pane-add" ;;
+    K)     [[ -z "$chosen_idx" ]] && echo "action:refresh" || echo "action:pane-remove:$chosen_idx" ;;
+    "]")   echo "action:pane-next" ;;
+    "[")   echo "action:pane-prev" ;;
+    R)     echo "action:refresh" ;;
+    "?")   echo "action:help" ;;
+    *)
+      [[ -z "$chosen_idx" ]] && echo "quit" || echo "action:pane-cycle:$chosen_idx"
+      ;;
   esac
 }
 
@@ -217,6 +326,33 @@ dispatch_action() {
     action:refresh)
       : # outer loop re-renders the current tab
       ;;
+    action:pane-cycle:*)
+      local idx="${action#action:pane-cycle:}"
+      [[ -n "$idx" ]] && "$HOME/.local/bin/llm-cycle" "$idx" >&2 || true
+      ;;
+    action:pane-add)
+      local tool
+      tool=$(printf 'claude\ngemini\ncodex\ngrok\naider' | fzf \
+        --reverse --border=rounded --prompt="tool> " \
+        --header="Pick an AI tool to add (esc to cancel):" \
+        --no-info)
+      [[ -n "$tool" ]] && "$HOME/.local/bin/llm-add" -t "$tool" >&2 || true
+      ;;
+    action:pane-remove:*)
+      local idx="${action#action:pane-remove:}"
+      [[ -z "$idx" ]] && return 0
+      local confirm
+      confirm=$(printf 'no\nyes' | fzf \
+        --reverse --border=rounded --header="Remove pane $idx?" \
+        --prompt="confirm> " || echo no)
+      [[ "$confirm" == "yes" ]] && "$HOME/.local/bin/llm-remove" -f "$idx" >&2 || true
+      ;;
+    action:pane-next)
+      "$HOME/.local/bin/llm-cycle" next >&2 || true
+      ;;
+    action:pane-prev)
+      "$HOME/.local/bin/llm-cycle" prev >&2 || true
+      ;;
   esac
 }
 
@@ -227,6 +363,7 @@ show_help_overlay() {
   Tabs
     1            switch to Sessions tab
     2            switch to Worktrees tab
+    3            switch to Panes tab
 
   Sessions tab
     Enter        switch to selected session
@@ -235,6 +372,14 @@ show_help_overlay() {
     r            rename selected session
     R            refresh list
     ?            this help
+
+  Panes tab
+    Enter        cycle to selected AI pane
+    a            add a new AI pane (tool picker)
+    K            remove selected pane (with confirmation)
+    ]            cycle to next AI pane
+    [            cycle to previous AI pane
+    R            refresh list
 
   Global
     q / Esc      close the dashboard
@@ -254,16 +399,18 @@ EOF
 
 usage() {
   cat <<'EOF'
-Usage: llm-dashboard [--tab sessions|worktrees] [--help]
+Usage: llm-dashboard [--tab sessions|worktrees|panes] [--help]
 
 Tabbed popup dashboard for lazy-llm. Launches Sessions tab by default.
 
 Inside the dashboard:
-  1, 2       switch tabs (Sessions, Worktrees)
-  Enter      primary action (switch session)
-  n          new session
-  K          kill (with confirmation)
-  r          rename
+  1, 2, 3    switch tabs (Sessions, Worktrees, Panes)
+  Enter      primary action (switch session / cycle pane)
+  n          new session (Sessions tab)
+  a          add new AI pane (Panes tab)
+  K          kill / remove (with confirmation)
+  r          rename (Sessions tab)
+  ], [       cycle next / prev AI pane (Panes tab)
   R          refresh
   ?          help
   q, Esc     close
@@ -277,7 +424,7 @@ while [[ $# -gt 0 ]]; do
     --tab)
       shift
       case "$1" in
-        sessions|worktrees) current_tab="$1" ;;
+        sessions|worktrees|panes) current_tab="$1" ;;
         *) echo "Unknown tab: $1" >&2; exit 2 ;;
       esac
       shift
@@ -300,6 +447,7 @@ while true; do
   case "$current_tab" in
     sessions)  result=$(render_sessions_tab) ;;
     worktrees) result=$(render_worktrees_tab) ;;
+    panes)     result=$(render_panes_tab) ;;
     *)         echo "Unknown tab: $current_tab" >&2; exit 1 ;;
   esac
 
@@ -307,7 +455,7 @@ while true; do
     tab:*)
       current_tab="${result#tab:}"
       ;;
-    action:switch:*|action:kill:*|action:rename:*|action:new|action:help|action:refresh)
+    action:switch:*|action:kill:*|action:rename:*|action:new|action:help|action:refresh|action:pane-cycle:*|action:pane-add|action:pane-remove:*|action:pane-next|action:pane-prev)
       dispatch_action "$result"
       # Switch action exits the popup; for others we re-enter the current tab
       [[ "$result" == action:switch:* ]] && break

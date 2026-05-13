@@ -126,15 +126,16 @@ assert_contains "$bogus_out" "Unknown arg" "should report unknown arg"
 
 # ──────────────────────────────────────────────────────────────────────────
 # 5. Prefix+S binding now launches llm-dashboard
+# Note: Prefix+L was retired in the dashboard-panes-tab task — the Panes tab
+# now lives inside the dashboard, reachable from any tab via the '3' key.
+# That assertion has moved to 13-dashboard-panes-tab-unit.sh.
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
-echo "Test 9: Prefix+S launches llm-dashboard, Prefix+L still launches llm-panes..."
+echo "Test 9: Prefix+S launches llm-dashboard..."
 prefix_s=$(command grep -A2 'bind-key -T prefix S if-shell' "$LAZY_LLM" | tail -1)
-prefix_l=$(command grep -A2 'bind-key -T prefix L if-shell' "$LAZY_LLM" | tail -1)
 
 assert_contains "$prefix_s" "llm-dashboard" "Prefix+S should launch llm-dashboard"
 assert_not_contains "$prefix_s" "llm-sessions" "Prefix+S should no longer reference llm-sessions"
-assert_contains "$prefix_l" "llm-panes" "Prefix+L still launches llm-panes (untouched)"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Summary

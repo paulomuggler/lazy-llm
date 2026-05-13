@@ -32,9 +32,9 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Remove without confirmation              │ llm-remove -f from the shell                                                                     │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ See all AI panes and their status        │ Prefix+L — opens pane manager popup                                                              │
+  │ See all AI panes and their status        │ Prefix+S → 3 — opens the Panes tab in the dashboard                                              │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Manage lazy-llm sessions                 │ Prefix+S — opens the dashboard (Sessions tab; press 2 for Worktrees)                             │
+  │ Manage lazy-llm sessions                 │ Prefix+S — opens the dashboard (Sessions=1, Worktrees=2, Panes=3 tabs)                           │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Spawn session bound to a worktree        │ lazy-llm -W <branch> — creates branch+worktree if needed, always spawns a new session            │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
