@@ -63,9 +63,11 @@ render_sessions_tab() {
   else
     # Augment each row with a status glyph next to the tools column.
     while IFS=$'\t' read -r name dir tools wins attached; do
-      # Resolve the active AI pane id for the first window of this session
-      local ai_pane_id status glyph
-      ai_pane_id=$(tmux show-option -wv -t "$name:0" @AI_PANE_ID 2>/dev/null) || ai_pane_id=""
+      # Resolve the active AI pane id for the first workspace window of this session.
+      # First window index is base-index dependent (0 or 1) — query it.
+      local first_win ai_pane_id status glyph
+      first_win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1)
+      ai_pane_id=$(tmux show-option -wv -t "$name:$first_win" @AI_PANE_ID 2>/dev/null) || ai_pane_id=""
       if [[ -n "$ai_pane_id" ]]; then
         local first_tool="${tools%% *}"
         status=$(lazy_llm_detect_pane_status "$ai_pane_id" "$first_tool")
@@ -94,7 +96,8 @@ render_sessions_tab() {
   preview_cmd='set -- {1}; '
   preview_cmd+='session="$1"; '
   preview_cmd+='if [ -n "$session" ]; then '
-  preview_cmd+='pid=$(tmux show-option -wv -t "$session:0" @AI_PANE_ID 2>/dev/null); '
+  preview_cmd+='win=$(tmux list-windows -t "$session" -F "#{window_index}" 2>/dev/null | head -1); '
+  preview_cmd+='pid=$(tmux show-option -wv -t "$session:$win" @AI_PANE_ID 2>/dev/null); '
   preview_cmd+='if [ -n "$pid" ]; then '
   preview_cmd+='tmux capture-pane -p -e -S -200 -t "$pid" 2>/dev/null || echo "(could not capture pane $pid)"; '
   preview_cmd+='else echo "(no AI pane registered for $session)"; fi; '
