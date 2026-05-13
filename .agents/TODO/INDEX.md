@@ -8,7 +8,6 @@ _Auto-maintained. Edits will be overwritten by `/todo lint`._
 
 | Slug | Title | Status | Updated | Depends |
 |------|-------|--------|---------|---------|
-| [dashboard-panes-tab-and-prefix-l-retire](dashboard-panes-tab-and-prefix-l-retire.md) | Dashboard panes tab + retire Prefix+L | pending | 2026-05-13 | dashboard-shell-and-sessions-tab ✓ |
 | [worktree-bridge-tab](worktree-bridge-tab.md) | Worktree bridge tab in unified dashboard (lazy-llm ↔ worktree view + cleanup) | pending | 2026-05-13 | dashboard-shell-and-sessions-tab ✓, worktree-per-task-primitive ✓ |
 
 ## Backlog
@@ -23,6 +22,7 @@ _Auto-maintained. Edits will be overwritten by `/todo lint`._
 
 | Slug | Title | Completed |
 |------|-------|-----------|
+| [dashboard-panes-tab-and-prefix-l-retire](done/dashboard-panes-tab-and-prefix-l-retire.md) | Dashboard panes tab + retire Prefix+L | 2026-05-13 |
 | [worktree-per-task-primitive](done/worktree-per-task-primitive.md) | Add worktree-per-task primitive to lazy-llm | 2026-05-13 |
 | [dashboard-shell-and-sessions-tab](done/dashboard-shell-and-sessions-tab.md) | Dashboard shell + sessions tab (live preview) | 2026-05-13 |
 | [pane-status-detection](done/pane-status-detection.md) | Pane status detection helper + llm-status integration | 2026-05-13 |
