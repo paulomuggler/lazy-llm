@@ -4,17 +4,11 @@ _Auto-maintained. Edits will be overwritten by `/todo lint`._
 
 ## Active
 
-### P0 — Critical
-
-| Slug | Title | Status | Updated | Depends |
-|------|-------|--------|---------|---------|
-| [fix-llm-sessions-marker-bug](fix-llm-sessions-marker-bug.md) | Fix llm-sessions @lazy_llm marker scope mismatch (Prefix+S broken) | pending | 2026-05-13 | — |
-
 ### P1 — High
 
 | Slug | Title | Status | Updated | Depends |
 |------|-------|--------|---------|---------|
-| [unified-llm-dashboard](unified-llm-dashboard.md) | Unified lazy-llm dashboard popup (sessions / panes / worktrees tabs) | pending | 2026-05-13 | fix-llm-sessions-marker-bug |
+| [unified-llm-dashboard](unified-llm-dashboard.md) | Unified lazy-llm dashboard popup (sessions / panes / worktrees tabs) | pending | 2026-05-13 | fix-llm-sessions-marker-bug ✓ |
 | [worktree-per-task-primitive](worktree-per-task-primitive.md) | Add worktree-per-task primitive to lazy-llm | pending | 2026-05-13 | — |
 
 ### P2 — Normal
@@ -31,3 +25,9 @@ _Auto-maintained. Edits will be overwritten by `/todo lint`._
 | Slug | Title | Status | Updated | Depends |
 |------|-------|--------|---------|---------|
 | [lazy-llm-refinement-pass](backlog/lazy-llm-refinement-pass.md) | Refinement pass over lazy-llm feature space and codebase | backlog | 2026-05-13 | — |
+
+## Done
+
+| Slug | Title | Completed |
+|------|-------|-----------|
+| [fix-llm-sessions-marker-bug](done/fix-llm-sessions-marker-bug.md) | Fix llm-sessions @lazy_llm marker scope mismatch (Prefix+S broken) | 2026-05-13 |
