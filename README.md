@@ -231,7 +231,7 @@ Registered automatically when a workspace is created. Keybindings are **scoped t
 | `Prefix + C-p` | Cycle to previous AI pane |
 | `Prefix + A` | Add new AI pane (tool picker menu) |
 | `Prefix + C-x` | Remove current AI pane |
-| `Prefix + S` | Session manager popup |
+| `Prefix + S` | Dashboard popup (Sessions tab; switch to Worktrees with `2`) |
 | `Prefix + L` | Pane manager popup |
 
 ### Multi-AI Pane Tabbing
@@ -259,7 +259,8 @@ Inactive AI panes are held in a hidden tmux window. `tmux swap-pane` atomically 
 | `llm-remove [-f] [current\|N]` | Remove an AI pane (`-f` skips confirmation) |
 | `llm-status` | Status line output for tmux (e.g. `[claude●] gemini◐` — glyphs reflect AI pane state) |
 | `llm-append [text]` | Append text to prompt buffer (supports stdin: `echo "foo" \| llm-append`) |
-| `llm-sessions` | Session manager: list, kill, or fuzzy-pick sessions |
+| `llm-dashboard` | Tabbed popup dashboard (Sessions, Worktrees) with live ANSI preview. Bound to `Prefix+S`. |
+| `llm-sessions` | CLI helper for non-interactive listing/killing (`--list`, `--kill <name>`). Interactive mode subsumed by `llm-dashboard`. |
 | `llm-panes` | Pane manager TUI: view status and switch AI panes |
 
 ### Workflow

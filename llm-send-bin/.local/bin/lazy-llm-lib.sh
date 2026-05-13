@@ -182,6 +182,49 @@ lazy_llm_prune_stale_panes() {
   fi
 }
 
+# Gather all lazy-llm-marked tmux sessions into a structured list.
+# Each output line is tab-separated: NAME<tab>DIR<tab>TOOLS<tab>WINS<tab>ATTACHED
+# (ATTACHED is "*" when attached, empty otherwise.)
+# Lists nothing if no sessions exist or no tmux server is running.
+lazy_llm_gather_sessions() {
+  local sessions
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 0
+  [[ -z "$sessions" ]] && return 0
+
+  while IFS= read -r session; do
+    # Only include lazy-llm-marked sessions (session-scoped @lazy_llm option)
+    local marker
+    marker=$(tmux show-option -v -t "$session" @lazy_llm 2>/dev/null) || true
+    [[ "$marker" != "1" ]] && continue
+
+    # Directory from first pane of first window
+    local dir
+    dir=$(tmux display-message -t "$session:" -p '#{pane_current_path}' 2>/dev/null) || dir="?"
+
+    # AI tools from the first window's @AI_TOOLS (or legacy @AI_TOOL)
+    local first_win tools
+    first_win=$(tmux list-windows -t "$session" -F '#{window_index}' 2>/dev/null | head -1)
+    tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOLS 2>/dev/null) || true
+    [[ -z "$tools" ]] && tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOL 2>/dev/null) || true
+    [[ -z "$tools" ]] && tools="?"
+
+    # Workspace window count (exclude holding windows named _hold_*)
+    local win_count
+    win_count=$(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -cv '^_hold_' || echo 0)
+
+    # Attached marker
+    local attached
+    attached=$(tmux display-message -t "$session" -p '#{session_attached}' 2>/dev/null) || attached=0
+    if [[ "$attached" -gt 0 ]]; then
+      attached="*"
+    else
+      attached=""
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\n' "$session" "$dir" "$tools" "$win_count" "$attached"
+  done <<< "$sessions"
+}
+
 # Validate that the holding window exists; recreate if missing.
 # Requires: _SESSION, _WINDOW, AI_HOLD_WIN (call lazy_llm_read_multi_state first)
 lazy_llm_validate_hold_win() {

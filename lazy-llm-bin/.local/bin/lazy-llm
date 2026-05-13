@@ -213,7 +213,7 @@ create_workspace_window() {
       aider  '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
   tmux bind-key -T prefix S if-shell \
     "tmux show-option -wqv @AI_PANES" \
-    "display-popup -E -w 80% -h 60% '$HOME/.local/bin/llm-sessions'"
+    "display-popup -E -w 90% -h 70% '$HOME/.local/bin/llm-dashboard'"
   tmux bind-key -T prefix L if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "display-popup -E -w 60% -h 50% '$HOME/.local/bin/llm-panes'"

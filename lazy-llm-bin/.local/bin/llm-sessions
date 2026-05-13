@@ -9,50 +9,20 @@
 
 set -euo pipefail
 
-# Collect all lazy-llm sessions into a structured list.
-# Each line: NAME<tab>DIR<tab>TOOLS<tab>PANES<tab>ATTACHED
-gather_sessions() {
-  local sessions
-  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 0
-
-  while IFS= read -r session; do
-    # Check if session is lazy-llm managed
-    local marker
-    marker=$(tmux show-option -v -t "$session" @lazy_llm 2>/dev/null) || true
-    [[ "$marker" != "1" ]] && continue
-
-    # Get directory from first pane of first window
-    local dir
-    dir=$(tmux display-message -t "$session:" -p '#{pane_current_path}' 2>/dev/null) || dir="?"
-
-    # Get AI tools from first window's @AI_TOOLS option
-    local first_win tools
-    first_win=$(tmux list-windows -t "$session" -F '#{window_index}' 2>/dev/null | head -1)
-    tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOLS 2>/dev/null) || true
-    [[ -z "$tools" ]] && tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOL 2>/dev/null) || true
-    [[ -z "$tools" ]] && tools="?"
-
-    # Count workspace windows (exclude holding windows named _hold_*)
-    local win_count
-    win_count=$(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -cv '^_hold_' || echo 0)
-
-    # Check if attached
-    local attached
-    attached=$(tmux display-message -t "$session" -p '#{session_attached}' 2>/dev/null) || attached=0
-    if [[ "$attached" -gt 0 ]]; then
-      attached="*"
-    else
-      attached=""
-    fi
-
-    printf '%s\t%s\t%s\t%s\t%s\n' "$session" "$dir" "$tools" "$win_count" "$attached"
-  done <<< "$sessions"
-}
+# Resolve lib path: try sibling first (post-install via stow), else the dev location
+_lib_sibling="$(dirname "$0")/lazy-llm-lib.sh"
+if [[ -f "$_lib_sibling" ]]; then
+  # shellcheck source=/dev/null
+  source "$_lib_sibling"
+else
+  # shellcheck source=/dev/null
+  source "$(dirname "$0")/../../../llm-send-bin/.local/bin/lazy-llm-lib.sh"
+fi
 
 # Print sessions as a formatted table
 cmd_list() {
   local data
-  data=$(gather_sessions)
+  data=$(lazy_llm_gather_sessions)
 
   if [[ -z "$data" ]]; then
     echo "No lazy-llm sessions found."
@@ -119,7 +89,7 @@ cmd_interactive() {
   fi
 
   local data
-  data=$(gather_sessions)
+  data=$(lazy_llm_gather_sessions)
 
   # Format lines for fzf: "name | dir | tools | wins"
   # Empty input is fine — fzf shows an empty list and still honors esc/ctrl-n.

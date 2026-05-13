@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+# llm-dashboard - Tabbed popup dashboard for lazy-llm
+#
+# Tabs:
+#   1. Sessions  - list lazy-llm sessions with status glyphs + live ANSI preview
+#   2. Worktrees - placeholder (real content lands in worktree-bridge-tab)
+#
+# Designed to be launched via `tmux display-popup -E`; binds to Prefix+S.
+# All keybindings inside the popup are popup-scoped, single-letter, dense.
+#
+# Tab keys:           1 (Sessions), 2 (Worktrees)
+# Sessions actions:   Enter (switch), n (new), K (kill), r (rename),
+#                     R (refresh), ? (help), q/Esc (quit)
+#
+# Usage: llm-dashboard [--tab sessions|worktrees] [--help]
+
+set -euo pipefail
+
+# Resolve lib path: try sibling first (post-install via stow), else dev location
+_lib_sibling="$(dirname "$0")/lazy-llm-lib.sh"
+if [[ -f "$_lib_sibling" ]]; then
+  # shellcheck source=/dev/null
+  source "$_lib_sibling"
+else
+  # shellcheck source=/dev/null
+  source "$(dirname "$0")/../../../llm-send-bin/.local/bin/lazy-llm-lib.sh"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
+# Glyph mapping (shared with llm-status; kept here too so the dashboard
+# doesn't pull in another source file just for one tiny function).
+# ──────────────────────────────────────────────────────────────────────────
+glyph_for() {
+  case "$1" in
+    working) printf '●' ;;
+    idle)    printf '○' ;;
+    waiting) printf '◐' ;;
+    *)       printf '?' ;;
+  esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Sessions tab
+# ──────────────────────────────────────────────────────────────────────────
+
+# Render the sessions tab fzf list.
+# Returns (echoes) one of:
+#   "tab:worktrees" — switch to worktrees tab
+#   "action:switch:<session>" — switch to selected session
+#   "action:kill:<session>"   — kill selected session
+#   "action:rename:<session>" — rename selected session
+#   "action:new"              — launch new lazy-llm session
+#   "action:refresh"          — re-render the tab
+#   "action:help"             — show help overlay
+#   "quit"                    — exit dashboard
+render_sessions_tab() {
+  local data
+  data=$(lazy_llm_gather_sessions)
+
+  local lines="" header
+  if [[ -z "$data" ]]; then
+    header="[Sessions] No lazy-llm sessions. n: new │ 2: worktrees │ q/esc: close"
+  else
+    # Augment each row with a status glyph next to the tools column.
+    while IFS=$'\t' read -r name dir tools wins attached; do
+      # Resolve the active AI pane id for the first window of this session
+      local ai_pane_id status glyph
+      ai_pane_id=$(tmux show-option -wv -t "$name:0" @AI_PANE_ID 2>/dev/null) || ai_pane_id=""
+      if [[ -n "$ai_pane_id" ]]; then
+        local first_tool="${tools%% *}"
+        status=$(lazy_llm_detect_pane_status "$ai_pane_id" "$first_tool")
+        glyph=$(glyph_for "$status")
+      else
+        glyph="?"
+      fi
+
+      local short_dir="${dir/#$HOME/\~}"
+      [[ ${#short_dir} -gt 40 ]] && short_dir="...${short_dir: -37}"
+
+      local mark=""
+      [[ -n "$attached" ]] && mark=" *"
+
+      lines+=$(printf '%-28s  %-42s  %s %-14s %sw%s\n' \
+        "$name" "$short_dir" "$glyph" "$tools" "$wins" "$mark")
+      lines+=$'\n'
+    done <<< "$data"
+    lines="${lines%$'\n'}"
+    header="[Sessions] enter: switch │ n: new │ K: kill │ r: rename │ R: refresh │ ?: help │ 2: worktrees │ q/esc: close"
+  fi
+
+  # Preview command — takes the first column (session name) and shows the
+  # tail of its active AI pane content, ANSI-rendered.
+  local preview_cmd
+  preview_cmd='set -- {1}; '
+  preview_cmd+='session="$1"; '
+  preview_cmd+='if [ -n "$session" ]; then '
+  preview_cmd+='pid=$(tmux show-option -wv -t "$session:0" @AI_PANE_ID 2>/dev/null); '
+  preview_cmd+='if [ -n "$pid" ]; then '
+  preview_cmd+='tmux capture-pane -p -e -S -200 -t "$pid" 2>/dev/null || echo "(could not capture pane $pid)"; '
+  preview_cmd+='else echo "(no AI pane registered for $session)"; fi; '
+  preview_cmd+='fi'
+
+  local selection key
+  selection=$(echo "$lines" | fzf \
+    --ansi \
+    --reverse \
+    --border=rounded \
+    --prompt="session> " \
+    --header="$header" \
+    --preview="$preview_cmd" \
+    --preview-window="right:55%:wrap:follow" \
+    --expect="1,2,n,K,r,R,?" \
+  ) || { echo "quit"; return 0; }
+
+  key=$(echo "$selection" | head -1)
+  local chosen_line
+  chosen_line=$(echo "$selection" | tail -1)
+  local chosen_name
+  chosen_name=$(echo "$chosen_line" | awk '{print $1}')
+
+  case "$key" in
+    1)     echo "action:refresh" ;;
+    2)     echo "tab:worktrees" ;;
+    n)     echo "action:new" ;;
+    K)     [[ -z "$chosen_name" ]] && echo "action:refresh" || echo "action:kill:$chosen_name" ;;
+    r)     [[ -z "$chosen_name" ]] && echo "action:refresh" || echo "action:rename:$chosen_name" ;;
+    R)     echo "action:refresh" ;;
+    "?")   echo "action:help" ;;
+    *)
+      [[ -z "$chosen_name" ]] && echo "quit" || echo "action:switch:$chosen_name"
+      ;;
+  esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Worktrees tab (placeholder)
+# ──────────────────────────────────────────────────────────────────────────
+
+render_worktrees_tab() {
+  local body="Worktrees tab — coming soon.
+
+Will show worktrees in the current repo, their integration state (ahead/behind, dirty),
+attached lazy-llm sessions, and PR state when gh is available. Cleanup action will
+atomically tear down worktree + branch + session.
+
+See task: worktree-bridge-tab"
+  local header="[Worktrees] 1: sessions │ q/esc: close"
+
+  local selection key
+  selection=$(echo "$body" | fzf \
+    --ansi \
+    --reverse \
+    --border=rounded \
+    --prompt="worktrees> " \
+    --header="$header" \
+    --expect="1,2" \
+  ) || { echo "quit"; return 0; }
+
+  key=$(echo "$selection" | head -1)
+  case "$key" in
+    1)  echo "tab:sessions" ;;
+    2)  echo "action:refresh" ;;  # no-op (already here)
+    *)  echo "quit" ;;
+  esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Action dispatch
+# ──────────────────────────────────────────────────────────────────────────
+
+dispatch_action() {
+  local action="$1"
+  case "$action" in
+    action:new)
+      tmux display-popup -E "$HOME/.local/bin/lazy-llm"
+      ;;
+    action:switch:*)
+      local name="${action#action:switch:}"
+      tmux switch-client -t "$name" 2>/dev/null \
+        || tmux attach-session -t "$name" 2>/dev/null \
+        || echo "Could not switch to $name" >&2
+      # switching exits the popup naturally
+      ;;
+    action:kill:*)
+      local name="${action#action:kill:}"
+      # Use llm-sessions --kill for the validated kill path (checks @lazy_llm marker)
+      local confirm
+      confirm=$(printf 'no\nyes' | fzf \
+        --reverse --border=rounded --header="Kill session '$name'?" \
+        --prompt="confirm> " || echo no)
+      if [[ "$confirm" == "yes" ]]; then
+        "$HOME/.local/bin/llm-sessions" --kill "$name" >&2 || true
+      fi
+      ;;
+    action:rename:*)
+      local name="${action#action:rename:}"
+      local new_name
+      new_name=$(echo "" | fzf --print-query \
+        --reverse --border=rounded \
+        --header="Rename session '$name' to:" \
+        --prompt="new name> " \
+        --query="$name" \
+        --no-info \
+        --bind 'enter:accept-non-empty' \
+        --expect=enter | head -1 || true)
+      if [[ -n "$new_name" ]] && [[ "$new_name" != "$name" ]]; then
+        tmux rename-session -t "$name" "$new_name" 2>/dev/null \
+          || echo "Could not rename to $new_name" >&2
+      fi
+      ;;
+    action:help)
+      show_help_overlay
+      ;;
+    action:refresh)
+      : # outer loop re-renders the current tab
+      ;;
+  esac
+}
+
+show_help_overlay() {
+  local help_text
+  help_text="lazy-llm dashboard — keybindings
+
+  Tabs
+    1            switch to Sessions tab
+    2            switch to Worktrees tab
+
+  Sessions tab
+    Enter        switch to selected session
+    n            new lazy-llm session
+    K            kill selected session (with confirmation)
+    r            rename selected session
+    R            refresh list
+    ?            this help
+
+  Global
+    q / Esc      close the dashboard
+
+Press any key to dismiss."
+  tmux display-popup -E -w 60% -h 50% bash -c "
+    cat <<'EOF'
+$help_text
+EOF
+    read -rsn1
+  "
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# CLI handling
+# ──────────────────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<'EOF'
+Usage: llm-dashboard [--tab sessions|worktrees] [--help]
+
+Tabbed popup dashboard for lazy-llm. Launches Sessions tab by default.
+
+Inside the dashboard:
+  1, 2       switch tabs (Sessions, Worktrees)
+  Enter      primary action (switch session)
+  n          new session
+  K          kill (with confirmation)
+  r          rename
+  R          refresh
+  ?          help
+  q, Esc     close
+EOF
+}
+
+# Parse args
+current_tab=sessions
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tab)
+      shift
+      case "$1" in
+        sessions|worktrees) current_tab="$1" ;;
+        *) echo "Unknown tab: $1" >&2; exit 2 ;;
+      esac
+      shift
+      ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+# ──────────────────────────────────────────────────────────────────────────
+# Main outer loop — tab dispatch
+# ──────────────────────────────────────────────────────────────────────────
+
+if ! command -v fzf &>/dev/null; then
+  echo "Error: fzf is required" >&2
+  exit 1
+fi
+
+while true; do
+  case "$current_tab" in
+    sessions)  result=$(render_sessions_tab) ;;
+    worktrees) result=$(render_worktrees_tab) ;;
+    *)         echo "Unknown tab: $current_tab" >&2; exit 1 ;;
+  esac
+
+  case "$result" in
+    tab:*)
+      current_tab="${result#tab:}"
+      ;;
+    action:switch:*|action:kill:*|action:rename:*|action:new|action:help|action:refresh)
+      dispatch_action "$result"
+      # Switch action exits the popup; for others we re-enter the current tab
+      [[ "$result" == action:switch:* ]] && break
+      ;;
+    quit|"")
+      break
+      ;;
+    *)
+      echo "Unexpected result: $result" >&2
+      break
+      ;;
+  esac
+done
