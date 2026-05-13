@@ -141,31 +141,77 @@ render_sessions_tab() {
 # ──────────────────────────────────────────────────────────────────────────
 
 render_worktrees_tab() {
-  local body="Worktrees tab — coming soon.
+  local data lines header
+  data=$(lazy_llm_gather_worktrees)
 
-Will show worktrees in the current repo, their integration state (ahead/behind, dirty),
-attached lazy-llm sessions, and PR state when gh is available. Cleanup action will
-atomically tear down worktree + branch + session.
+  if [[ -z "$data" ]]; then
+    lines="(No worktrees in this repo, or not inside a git repo.)"
+    header="[Worktrees] n: new │ R: refresh │ 1: sessions │ 3: panes │ q/esc: close"
+  else
+    lines=""
+    while IFS=$'\t' read -r path branch dirty ahead behind session pr; do
+      local short_path="${path/#$HOME/\~}"
+      [[ ${#short_path} -gt 38 ]] && short_path="...${short_path: -35}"
 
-See task: worktree-bridge-tab"
-  local header="[Worktrees] 1: sessions │ 3: panes │ q/esc: close"
+      local dirty_mark="${dirty:- }"
+      local ab="↑${ahead} ↓${behind}"
+      local sess_mark=" "
+      [[ -n "$session" ]] && sess_mark="●"
+      local pr_mark="   "
+      case "$pr" in
+        OPEN)   pr_mark="PR●" ;;
+        MERGED) pr_mark="PR✓" ;;
+        CLOSED) pr_mark="PRx" ;;
+      esac
+
+      lines+=$(printf '%-38s  %-24s %s  %-10s %s  %s' \
+        "$short_path" "$branch" "$dirty_mark" "$ab" "$sess_mark" "$pr_mark")
+      lines+=$'\n'
+    done <<< "$data"
+    lines="${lines%$'\n'}"
+    header="[Worktrees] enter: open/attach │ n: new │ g: lazygit │ K: cleanup │ R: refresh │ ?: help │ 1: sessions │ 3: panes │ q/esc: close"
+  fi
+
+  # Preview: git status -sb + recent log for the selected worktree path.
+  local preview_cmd
+  preview_cmd='set -- {1}; '
+  preview_cmd+='wt="$1"; wt="${wt/#\~/$HOME}"; '
+  preview_cmd+='if git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then '
+  preview_cmd+='echo "=== git status ==="; git -C "$wt" -c color.status=always status -sb 2>&1 | head -20; '
+  preview_cmd+='echo; echo "=== git log -10 ==="; git -C "$wt" -c color.ui=always log --oneline -10 2>&1; '
+  preview_cmd+='else echo "(preview unavailable: $wt)"; fi'
 
   local selection key
-  selection=$(echo "$body" | fzf \
+  selection=$(echo "$lines" | fzf \
     --ansi \
     --reverse \
     --border=rounded \
-    --prompt="worktrees> " \
+    --prompt="worktree> " \
     --header="$header" \
-    --expect="1,2,3" \
+    --preview="$preview_cmd" \
+    --preview-window="right:55%:wrap:follow" \
+    --expect="1,2,3,n,g,K,R,?" \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
+  local chosen_line chosen_path
+  chosen_line=$(echo "$selection" | tail -1)
+  chosen_path=$(echo "$chosen_line" | awk '{print $1}')
+  chosen_path="${chosen_path/#\~/$HOME}"
+  [[ -d "$chosen_path" ]] || chosen_path=""
+
   case "$key" in
-    1)  echo "tab:sessions" ;;
-    2)  echo "action:refresh" ;;  # no-op (already here)
-    3)  echo "tab:panes" ;;
-    *)  echo "quit" ;;
+    1)   echo "tab:sessions" ;;
+    2)   echo "action:refresh" ;;
+    3)   echo "tab:panes" ;;
+    n)   echo "action:worktree-new" ;;
+    g)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-lazygit:$chosen_path" ;;
+    K)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-cleanup:$chosen_path" ;;
+    R)   echo "action:refresh" ;;
+    "?") echo "action:help" ;;
+    *)
+      [[ -z "$chosen_path" ]] && echo "quit" || echo "action:worktree-open:$chosen_path"
+      ;;
   esac
 }
 
@@ -353,7 +399,92 @@ dispatch_action() {
     action:pane-prev)
       "$HOME/.local/bin/llm-cycle" prev >&2 || true
       ;;
+    action:worktree-open:*)
+      local path="${action#action:worktree-open:}"
+      local branch
+      branch=$(git -C "$path" branch --show-current 2>/dev/null)
+      if [[ -n "$branch" ]]; then
+        "$HOME/.local/bin/lazy-llm" -W "$branch" >&2 || true
+      fi
+      ;;
+    action:worktree-new)
+      local new_branch
+      new_branch=$(echo "" | fzf --print-query --reverse --border=rounded \
+        --header="New worktree — branch name (will be created from HEAD if it doesn't exist):" \
+        --prompt="branch> " --no-info \
+        --bind 'enter:accept-non-empty' | head -1)
+      if [[ -n "$new_branch" ]]; then
+        "$HOME/.local/bin/lazy-llm" -W "$new_branch" >&2 || true
+      fi
+      ;;
+    action:worktree-lazygit:*)
+      local path="${action#action:worktree-lazygit:}"
+      if command -v lazygit >/dev/null 2>&1; then
+        tmux display-popup -E -w 95% -h 90% "lazygit -p '$path'"
+      else
+        tmux display-message "lazygit not installed"
+      fi
+      ;;
+    action:worktree-cleanup:*)
+      local path="${action#action:worktree-cleanup:}"
+      _dashboard_worktree_cleanup_flow "$path"
+      ;;
   esac
+}
+
+# Cleanup flow with pre-flight warnings and dual confirms.
+# Lives in the dashboard (not the lib) because the prompts are fzf-bound.
+_dashboard_worktree_cleanup_flow() {
+  local path="$1"
+  local repo branch session ahead_count default warnings_text=""
+  repo=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || return 1
+  branch=$(git -C "$path" branch --show-current 2>/dev/null)
+  if [[ -z "$branch" ]]; then
+    tmux display-message "Detached worktree — refusing to cleanup"
+    return 1
+  fi
+
+  default=$(lazy_llm_default_branch "$repo")
+
+  if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]]; then
+    warnings_text+="⚠  Worktree has uncommitted changes"$'\n'
+  fi
+  ahead_count=$(git -C "$path" rev-list --count "origin/$default..HEAD" 2>/dev/null || echo 0)
+  if [[ "$ahead_count" -gt 0 ]]; then
+    warnings_text+="⚠  Branch is $ahead_count commits ahead of origin/$default — they will be lost if branch is deleted"$'\n'
+  fi
+  if ! git -C "$path" rev-parse --verify "@{u}" >/dev/null 2>&1; then
+    warnings_text+="⚠  Branch has no upstream — local-only commits will be lost"$'\n'
+  fi
+  session=$(lazy_llm_find_session_for_path "$path")
+  if [[ -n "$session" ]]; then
+    warnings_text+="⚠  Will kill attached lazy-llm session '$session'"$'\n'
+  fi
+  if command -v gh >/dev/null 2>&1; then
+    local pr_state
+    pr_state=$(gh pr view "$branch" --json state -q .state 2>/dev/null) || pr_state=""
+    [[ "$pr_state" == "OPEN" ]] && warnings_text+="⚠  Open PR — branch deletion may close it remotely"$'\n'
+  fi
+
+  local confirm body
+  body=$(printf 'Cleanup worktree: %s\nBranch: %s\n%s' "$path" "$branch" "${warnings_text:-(no warnings — clean removal)}")
+  confirm=$(printf 'no\nyes' | fzf --reverse --border=rounded \
+    --header="$body" --prompt="remove worktree? " || echo no)
+  [[ "$confirm" != "yes" ]] && return 0
+
+  local default_choice="yes"
+  [[ -n "$warnings_text" ]] && default_choice="no"
+  local del_branch
+  del_branch=$(printf 'no\nyes' | fzf --reverse --border=rounded \
+    --header="Also delete branch '$branch'? (data loss risk if warnings shown)" \
+    --prompt="delete branch ($default_choice)? " || echo "$default_choice")
+
+  local force="no"
+  [[ -n "$warnings_text" ]] && force="yes"
+
+  if lazy_llm_cleanup_worktree "$path" "$del_branch" "$force"; then
+    tmux display-message "Cleaned up '$path'"
+  fi
 }
 
 show_help_overlay() {
@@ -372,6 +503,13 @@ show_help_overlay() {
     r            rename selected session
     R            refresh list
     ?            this help
+
+  Worktrees tab
+    Enter        open/attach lazy-llm session in worktree (via lazy-llm -W)
+    n            new worktree + session (prompts for branch)
+    g            launch lazygit pointed at the worktree
+    K            atomic cleanup (session + worktree + optional branch)
+    R            refresh list
 
   Panes tab
     Enter        cycle to selected AI pane
@@ -405,12 +543,13 @@ Tabbed popup dashboard for lazy-llm. Launches Sessions tab by default.
 
 Inside the dashboard:
   1, 2, 3    switch tabs (Sessions, Worktrees, Panes)
-  Enter      primary action (switch session / cycle pane)
-  n          new session (Sessions tab)
-  a          add new AI pane (Panes tab)
-  K          kill / remove (with confirmation)
-  r          rename (Sessions tab)
-  ], [       cycle next / prev AI pane (Panes tab)
+  Enter      primary action (switch session / open worktree / cycle pane)
+  n          new session (Sessions) / new worktree+session (Worktrees)
+  a          add new AI pane (Panes)
+  g          launch lazygit (Worktrees)
+  K          kill / remove / cleanup (with confirmation)
+  r          rename (Sessions)
+  ], [       cycle next / prev AI pane (Panes)
   R          refresh
   ?          help
   q, Esc     close
@@ -455,7 +594,7 @@ while true; do
     tab:*)
       current_tab="${result#tab:}"
       ;;
-    action:switch:*|action:kill:*|action:rename:*|action:new|action:help|action:refresh|action:pane-cycle:*|action:pane-add|action:pane-remove:*|action:pane-next|action:pane-prev)
+    action:switch:*|action:kill:*|action:rename:*|action:new|action:help|action:refresh|action:pane-cycle:*|action:pane-add|action:pane-remove:*|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
       dispatch_action "$result"
       # Switch action exits the popup; for others we re-enter the current tab
       [[ "$result" == action:switch:* ]] && break

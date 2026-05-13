@@ -113,7 +113,18 @@ LAZY_LLM_WORKTREE_DIR=$HOME/wt lazy-llm -W feature/foo
 
 If the branch doesn't exist, it's created from current `HEAD`. If a worktree for it already exists, it's reused. If a lazy-llm session is already pointed at that worktree, you're attached to it instead of duplicating. Worktree binding is **session-scoped** — all panes (AI, editor, prompt) start in the worktree path, so `@` path completion and code references resolve correctly.
 
-When using the in-repo default (`.worktrees/`), the path is automatically added to `.gitignore`. Cleanup is via standard git: `git worktree remove .worktrees/feature-foo && git branch -d feature/foo`.
+When using the in-repo default (`.worktrees/`), the path is automatically added to `.gitignore`. For cleanup, prefer the dashboard's Worktrees tab `K` action (atomic: kills attached session, removes worktree, optionally deletes branch — with safety prompts for dirty/ahead/open-PR cases) or fall back to `git worktree remove .worktrees/feature-foo && git branch -d feature/foo` from the shell.
+
+### Worktree dashboard
+
+`Prefix+S` → `2` opens the Worktrees tab. Lists all worktrees in the current repo with branch, dirty marker, ahead/behind vs default branch, attached lazy-llm session (`●`), and PR state (when `gh` is installed and the remote is GitHub).
+
+Actions:
+- `Enter` — open / attach a lazy-llm session in the highlighted worktree (via `lazy-llm -W`)
+- `n` — new worktree + session (prompts for branch name)
+- `g` — launch `lazygit` pointed at the highlighted worktree (delegates lifecycle ops)
+- `K` — atomic cleanup with safety prompts: shows warnings for dirty / ahead-of-default / no-upstream / attached-session / open-PR, asks separately whether to also delete the branch
+- `R` — refresh; `?` — help; `q`/`Esc` — close
 
 ### Keymaps
 

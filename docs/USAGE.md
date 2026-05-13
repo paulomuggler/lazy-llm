@@ -38,6 +38,8 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Spawn session bound to a worktree        │ lazy-llm -W <branch> — creates branch+worktree if needed, always spawns a new session            │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Tear down a worktree (atomic)            │ Prefix+S → 2 → highlight → K — kills attached session, removes worktree, optionally branch       │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Pipe text into the prompt buffer         │ echo "add tests" | llm-append or llm-append "some context" from any shell                        │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Clear the prompt buffer                  │ <leader>llmd                                                                                     │
