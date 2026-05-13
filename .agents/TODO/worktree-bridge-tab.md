@@ -5,7 +5,7 @@ priority: P2
 status: pending
 created: 2026-05-13
 updated: 2026-05-13
-depends-on: [unified-llm-dashboard, worktree-per-task-primitive]
+depends-on: [dashboard-shell-and-sessions-tab, worktree-per-task-primitive]
 tags: [enhancement, git, worktree, dashboard, gh, lazygit]
 commits: []
 ---

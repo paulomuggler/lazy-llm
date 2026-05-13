@@ -2,7 +2,7 @@
 slug: unified-llm-dashboard
 title: Unified lazy-llm dashboard popup (sessions / panes / worktrees tabs)
 priority: P1
-status: pending
+status: closed
 created: 2026-05-13
 updated: 2026-05-13
 depends-on: [fix-llm-sessions-marker-bug]
@@ -12,7 +12,15 @@ commits: []
 
 # Unified lazy-llm dashboard popup (sessions / panes / worktrees tabs)
 
-## Context
+**Closed (split, not done).** Scope was too large for a single task. Split into three sequential pieces to keep each one comfortably implementable with room to handle edge cases:
+
+1. [[pane-status-detection]] — detection helper + `llm-status` integration (no UI changes)
+2. [[dashboard-shell-and-sessions-tab]] — new dashboard popup, sessions tab with live preview, worktrees placeholder, `Prefix+S` retargeted (no regression on `Prefix+L`/`llm-panes`)
+3. [[dashboard-panes-tab-and-prefix-l-retire]] — panes tab, `Prefix+L` retirement, `llm-panes` script consolidation
+
+Together they deliver the full original vision. `worktree-bridge-tab` now depends on slice 2 instead of this task.
+
+## Context (original — preserved for reference)
 
 Today we have two separate popups under two separate tmux prefix bindings:
 - `Prefix+S` → `llm-sessions` (session manager)

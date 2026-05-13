@@ -2,7 +2,7 @@
 slug: dense-keybindings-popup-scopes
 title: Dense single-letter keybindings within lazy-llm popups (replace Ctrl+ chords)
 priority: P2
-status: pending
+status: closed
 created: 2026-05-13
 updated: 2026-05-13
 depends-on: []
@@ -12,7 +12,9 @@ commits: []
 
 # Dense single-letter keybindings within lazy-llm popups (replace Ctrl+ chords)
 
-## Context
+**Closed — absorbed into the dashboard split.** With `unified-llm-dashboard` now split into `pane-status-detection` + `dashboard-shell-and-sessions-tab` + `dashboard-panes-tab-and-prefix-l-retire`, the new dashboard is built with dense single-letter bindings from inception. The legacy `llm-sessions` interactive mode either redirects to the new dashboard or stays unchanged (P0 fix already in main); the legacy `llm-panes` is retired or aliased in the third slice. No remaining surface needs a standalone sweep.
+
+## Context (original — preserved for reference)
 
 Inside our popup scopes (`llm-sessions`, `llm-panes`, and the upcoming [[unified-llm-dashboard]] + [[worktree-bridge-tab]]) the popup-local keymap currently uses `Ctrl+`-style chords for destructive/secondary actions (e.g. `ctrl-d` to kill, `ctrl-n` for new). These are unnecessarily heavy when the keymap is fully scoped to a modal popup that consumes all keys.
 

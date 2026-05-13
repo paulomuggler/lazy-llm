@@ -1,2 +1,3 @@
 tmp/
 .lazy-llm/
+.agents/TODO/.work-state
