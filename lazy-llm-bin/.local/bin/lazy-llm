@@ -1,13 +1,25 @@
 #!/bin/bash
 
 # dev-session - Launch tmux development session with AI tools, editor, and prompt buffer
-# Usage: dev-session [-s session_name] [-d directory] [-t ai_tool] [-w]
+# Usage: dev-session [-s session_name] [-d directory] [-t ai_tool] [-w] [-W branch]
+
+# Source shared library (worktree + session helpers).
+# Sibling-first (post-install via stow), then dev-fallback to in-repo path.
+_lib_sibling="$(dirname "$0")/lazy-llm-lib.sh"
+if [[ -f "$_lib_sibling" ]]; then
+  # shellcheck source=/dev/null
+  source "$_lib_sibling"
+else
+  # shellcheck source=/dev/null
+  source "$(dirname "$0")/../../../llm-send-bin/.local/bin/lazy-llm-lib.sh"
+fi
 
 # Default values
 SESSION_NAME=""
 TARGET_DIR="$(pwd)"
 AI_TOOL="claude"
 NEW_WINDOW=false
+WORKTREE_BRANCH=""
 
 # File retention periods (in days)
 PROMPT_RETENTION_DAYS=7
@@ -59,25 +71,32 @@ case "${1:-}" in
 esac
 
 # Parse named parameters
-while getopts "s:d:t:wh" opt; do
+while getopts "s:d:t:wW:h" opt; do
   case $opt in
   s) SESSION_NAME="$OPTARG" ;;
   d) TARGET_DIR="$OPTARG" ;;
   t) AI_TOOL="$OPTARG" ;;
   w) NEW_WINDOW=true ;;
+  W) WORKTREE_BRANCH="$OPTARG" ;;
   h)
-    echo "Usage: lazy-llm [-s session_name] [-d directory] [-t ai_tool] [-w]"
+    echo "Usage: lazy-llm [-s session_name] [-d directory] [-t ai_tool] [-w] [-W branch]"
     echo ""
     echo "Options:"
     echo "  -s  Session name (auto-generated if not provided)"
     echo "  -d  Working directory (default: current directory)"
     echo "  -t  AI tool to launch (claude, gemini, codex, grok, etc.)"
     echo "  -w  Force new window mode (otherwise auto-detected when in tmux)"
+    echo "  -W  Spawn a session bound to a git worktree for <branch>"
+    echo "       Creates branch (from HEAD) and worktree (under .worktrees/<branch>)"
+    echo "       if needed. Always spawns a new session, even from inside tmux."
+    echo "       Override worktree base path with LAZY_LLM_WORKTREE_DIR."
     echo ""
     echo "Behavior:"
     echo "  - Outside tmux: Creates new session or attaches to existing one"
     echo "  - Inside tmux: Adds new window to current session"
     echo "  - With -s <existing>: Adds window to that session (attaches if needed)"
+    echo "  - With -W <branch>: Always creates a new session bound to the worktree;"
+    echo "    attaches to an existing lazy-llm session there if one exists"
     exit 0
     ;;
   *)
@@ -86,6 +105,35 @@ while getopts "s:d:t:wh" opt; do
     ;;
   esac
 done
+
+# Worktree setup: must run AFTER argparse (to know WORKTREE_BRANCH) and
+# BEFORE init_state_dirs (which depends on TARGET_DIR).
+if [[ -n "$WORKTREE_BRANCH" ]]; then
+  TARGET_DIR=$(lazy_llm_setup_worktree "$WORKTREE_BRANCH") || exit $?
+
+  # If a lazy-llm session is already pointed at this worktree, attach to it
+  # instead of creating a duplicate. Use realpath comparison via the lib helper.
+  EXISTING=$(lazy_llm_find_session_for_path "$TARGET_DIR")
+  if [[ -n "$EXISTING" ]]; then
+    echo "Existing lazy-llm session '$EXISTING' is already at this worktree; attaching..."
+    if [[ -n "${TMUX:-}" ]]; then
+      exec tmux switch-client -t "$EXISTING"
+    else
+      exec tmux attach-session -t "$EXISTING"
+    fi
+  fi
+
+  # Force new-session mode regardless of TMUX context. Worktree binding is
+  # session-scoped — never add as a window to an existing session.
+  unset TMUX
+  NEW_WINDOW=false
+
+  # Auto-derive session name from branch if user didn't pass -s.
+  if [[ -z "$SESSION_NAME" ]]; then
+    SANITIZED="${WORKTREE_BRANCH//\//-}"
+    SESSION_NAME="dev-${SANITIZED}-${AI_TOOL}"
+  fi
+fi
 
 # Initialize state directories and cleanup old files
 init_state_dirs

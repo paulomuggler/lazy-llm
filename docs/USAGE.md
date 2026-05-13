@@ -36,6 +36,8 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Manage lazy-llm sessions                 │ Prefix+S — opens the dashboard (Sessions tab; press 2 for Worktrees)                             │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Spawn session bound to a worktree        │ lazy-llm -W <branch> — creates branch+worktree if needed, always spawns a new session            │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Pipe text into the prompt buffer         │ echo "add tests" | llm-append or llm-append "some context" from any shell                        │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Clear the prompt buffer                  │ <leader>llmd                                                                                     │

@@ -94,6 +94,26 @@ Options:
 - **Outside tmux**: Creates new session or attaches to existing one
 - **Inside tmux**: Automatically adds new window to current session
 - **With `-s <existing>`**: Adds window to that session (attaches if needed)
+- **With `-W <branch>`**: Always creates a new session bound to a git worktree for `<branch>`; attaches to an existing lazy-llm session there if one already exists
+
+### Worktree-per-task
+
+For parallel work on multiple branches without stepping on each other:
+
+```bash
+# Create branch + worktree at .worktrees/feature-foo/, then spawn a session there
+lazy-llm -W feature/foo
+
+# Spawn with a specific AI tool
+lazy-llm -W bugfix/auth -t gemini
+
+# Override the worktree base path
+LAZY_LLM_WORKTREE_DIR=$HOME/wt lazy-llm -W feature/foo
+```
+
+If the branch doesn't exist, it's created from current `HEAD`. If a worktree for it already exists, it's reused. If a lazy-llm session is already pointed at that worktree, you're attached to it instead of duplicating. Worktree binding is **session-scoped** — all panes (AI, editor, prompt) start in the worktree path, so `@` path completion and code references resolve correctly.
+
+When using the in-repo default (`.worktrees/`), the path is automatically added to `.gitignore`. Cleanup is via standard git: `git worktree remove .worktrees/feature-foo && git branch -d feature/foo`.
 
 ### Keymaps
 

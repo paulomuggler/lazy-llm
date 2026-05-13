@@ -182,6 +182,90 @@ lazy_llm_prune_stale_panes() {
   fi
 }
 
+# Append a pattern to a .gitignore file if not already present.
+# Args: $1 repo_root, $2 pattern (e.g. ".worktrees/")
+lazy_llm_ensure_gitignore() {
+  local repo="$1" pat="$2"
+  local gi="$repo/.gitignore"
+  if [[ -f "$gi" ]] && command grep -qxF "$pat" "$gi" 2>/dev/null; then
+    return 0
+  fi
+  printf '%s\n' "$pat" >> "$gi"
+  echo "Added $pat to $gi" >&2
+}
+
+# Find the lazy-llm session (if any) whose first-pane path equals the given path.
+# Compares via realpath so symlinks don't fool the match.
+# Args: $1 target_path
+# Stdout: session name or empty
+lazy_llm_find_session_for_path() {
+  local target="$1" realtarget
+  realtarget=$(realpath "$target" 2>/dev/null) || realtarget="$target"
+  while IFS=$'\t' read -r name dir _ _ _; do
+    local realdir
+    realdir=$(realpath "$dir" 2>/dev/null) || realdir="$dir"
+    if [[ "$realdir" == "$realtarget" ]]; then
+      printf '%s\n' "$name"
+      return 0
+    fi
+  done < <(lazy_llm_gather_sessions)
+}
+
+# Create or locate a git worktree for the given branch.
+# - If branch exists: create worktree pointing at it (error if already checked out elsewhere)
+# - If branch doesn't exist: create branch from HEAD and create the worktree
+# - Worktree base path: $LAZY_LLM_WORKTREE_DIR or "$repo_root/.worktrees"
+# - When using the in-repo default, ensure .worktrees/ is in .gitignore
+# Args: $1 branch_name
+# Stdout: absolute worktree path on success
+# Exit: 0 success, non-zero failure (with message on stderr)
+lazy_llm_setup_worktree() {
+  local branch="$1"
+  [[ -z "$branch" ]] && { echo "Error: branch name required" >&2; return 2; }
+
+  local repo
+  repo=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || { echo "Error: not inside a git repository" >&2; return 2; }
+
+  local sanitized="${branch//\//-}"
+  local base="${LAZY_LLM_WORKTREE_DIR:-$repo/.worktrees}"
+  local wt="$base/$sanitized"
+
+  # If the default in-repo path is in use, make sure .worktrees/ is gitignored
+  if [[ "$base" == "$repo/.worktrees" ]]; then
+    lazy_llm_ensure_gitignore "$repo" ".worktrees/"
+  fi
+
+  # Already exists as a registered worktree?
+  if [[ -d "$wt" ]]; then
+    if git -C "$repo" worktree list --porcelain 2>/dev/null | command grep -qxF "worktree $wt"; then
+      printf '%s\n' "$wt"
+      return 0
+    fi
+    echo "Error: $wt exists but is not a registered git worktree" >&2
+    return 1
+  fi
+
+  mkdir -p "$base"
+
+  if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+    # Branch exists — refuse if it's checked out elsewhere
+    if git -C "$repo" worktree list --porcelain 2>/dev/null \
+        | command grep -qxF "branch refs/heads/$branch"; then
+      echo "Error: branch '$branch' is already checked out in another worktree" >&2
+      echo "       Hint: remove the other worktree first, or create a new branch" >&2
+      return 1
+    fi
+    git -C "$repo" worktree add "$wt" "$branch" >&2 \
+      || { echo "Error: git worktree add failed" >&2; return 1; }
+  else
+    git -C "$repo" worktree add -b "$branch" "$wt" >&2 \
+      || { echo "Error: git worktree add -b failed" >&2; return 1; }
+  fi
+
+  printf '%s\n' "$wt"
+}
+
 # Gather all lazy-llm-marked tmux sessions into a structured list.
 # Each output line is tab-separated: NAME<tab>DIR<tab>TOOLS<tab>WINS<tab>ATTACHED
 # (ATTACHED is "*" when attached, empty otherwise.)
