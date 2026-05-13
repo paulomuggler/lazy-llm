@@ -4,11 +4,7 @@ _Auto-maintained. Edits will be overwritten by `/todo lint`._
 
 ## Active
 
-### P2 — Normal
-
-| Slug | Title | Status | Updated | Depends |
-|------|-------|--------|---------|---------|
-| [worktree-bridge-tab](worktree-bridge-tab.md) | Worktree bridge tab in unified dashboard (lazy-llm ↔ worktree view + cleanup) | pending | 2026-05-13 | dashboard-shell-and-sessions-tab ✓, worktree-per-task-primitive ✓ |
+(none — all active P0–P2 tasks complete)
 
 ## Backlog
 
@@ -22,6 +18,7 @@ _Auto-maintained. Edits will be overwritten by `/todo lint`._
 
 | Slug | Title | Completed |
 |------|-------|-----------|
+| [worktree-bridge-tab](done/worktree-bridge-tab.md) | Worktree bridge tab in unified dashboard (lazy-llm ↔ worktree view + cleanup) | 2026-05-13 |
 | [dashboard-panes-tab-and-prefix-l-retire](done/dashboard-panes-tab-and-prefix-l-retire.md) | Dashboard panes tab + retire Prefix+L | 2026-05-13 |
 | [worktree-per-task-primitive](done/worktree-per-task-primitive.md) | Add worktree-per-task primitive to lazy-llm | 2026-05-13 |
 | [dashboard-shell-and-sessions-tab](done/dashboard-shell-and-sessions-tab.md) | Dashboard shell + sessions tab (live preview) | 2026-05-13 |
@@ -32,5 +29,5 @@ _Auto-maintained. Edits will be overwritten by `/todo lint`._
 
 | Slug | Title | Reason |
 |------|-------|--------|
-| [unified-llm-dashboard](closed/unified-llm-dashboard.md) | Unified lazy-llm dashboard popup (sessions / panes / worktrees tabs) | Split into 3 smaller tasks |
+| [unified-llm-dashboard](closed/unified-llm-dashboard.md) | Unified lazy-llm dashboard popup (sessions / panes / worktrees tabs) | Split into 3 smaller tasks (all done) |
 | [dense-keybindings-popup-scopes](closed/dense-keybindings-popup-scopes.md) | Dense single-letter keybindings within lazy-llm popups (replace Ctrl+ chords) | Absorbed into the dashboard split (built dense from inception) |
