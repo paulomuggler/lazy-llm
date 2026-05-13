@@ -8,8 +8,7 @@ _Auto-maintained. Edits will be overwritten by `/todo lint`._
 
 | Slug | Title | Status | Updated | Depends |
 |------|-------|--------|---------|---------|
-| [pane-status-detection](pane-status-detection.md) | Pane status detection helper + llm-status integration | pending | 2026-05-13 | — |
-| [dashboard-shell-and-sessions-tab](dashboard-shell-and-sessions-tab.md) | Dashboard shell + sessions tab (live preview) | pending | 2026-05-13 | pane-status-detection |
+| [dashboard-shell-and-sessions-tab](dashboard-shell-and-sessions-tab.md) | Dashboard shell + sessions tab (live preview) | pending | 2026-05-13 | pane-status-detection ✓ |
 | [worktree-per-task-primitive](worktree-per-task-primitive.md) | Add worktree-per-task primitive to lazy-llm | pending | 2026-05-13 | — |
 
 ### P2 — Normal
@@ -31,6 +30,7 @@ _Auto-maintained. Edits will be overwritten by `/todo lint`._
 
 | Slug | Title | Completed |
 |------|-------|-----------|
+| [pane-status-detection](done/pane-status-detection.md) | Pane status detection helper + llm-status integration | 2026-05-13 |
 | [fix-llm-sessions-marker-bug](done/fix-llm-sessions-marker-bug.md) | Fix llm-sessions @lazy_llm marker scope mismatch (Prefix+S broken) | 2026-05-13 |
 
 ## Closed
