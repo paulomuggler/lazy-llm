@@ -35,7 +35,7 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Git integration**: Editor pane includes vim-fugitive, gitsigns, and vgit for tracking changes
 - **Multiple AI tools**: Supports Claude, Gemini, Codex, Grok, Aider, or any agentic TUI tool
 - **Multi-AI pane tabbing**: Run multiple AI tools side-by-side, cycling between them with keybindings
-- **Session manager**: List, kill, or fuzzy-pick lazy-llm sessions (`Prefix+S`)
+- **Dashboard popup**: List sessions with status glyphs + live ANSI preview; tabbed (Sessions / Worktrees) (`Prefix+S`)
 - **Pane manager**: View AI pane status and switch between them (`Prefix+L`)
 - **Scoped keybindings**: All tmux and nvim bindings are scoped — no interference outside lazy-llm workspaces
 - **Confirmation dialogs**: Removing AI panes requires confirmation (bypass with `--force`)
