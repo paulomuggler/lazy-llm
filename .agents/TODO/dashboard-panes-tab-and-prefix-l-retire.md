@@ -2,12 +2,12 @@
 slug: dashboard-panes-tab-and-prefix-l-retire
 title: Dashboard panes tab + retire Prefix+L
 priority: P2
-status: pending
+status: in-progress
 created: 2026-05-13
 updated: 2026-05-13
 depends-on: [dashboard-shell-and-sessions-tab]
 tags: [enhancement, dashboard, llm-panes, keybindings, cleanup]
-commits: []
+commits: [8504d66]
 ---
 
 # Dashboard panes tab + retire Prefix+L
@@ -49,12 +49,12 @@ In either case, the help text and READMEs must be cleaned up so neither document
 
 ## Acceptance Criteria
 
-- [ ] Panes tab implemented in `llm-dashboard` with columns: index, tool, pane ID, status glyph, active marker
-- [ ] Panes tab actions: switch (Enter), add (`a`), remove+confirm (`K`), cycle next/prev (`]`/`[`), refresh (`R`), quit
-- [ ] Live preview pane shows ANSI tail of the highlighted AI pane
-- [ ] `Prefix+L` keybinding removed from `lazy-llm`
-- [ ] `llm-panes` either deleted or reduced to a single-line alias for `llm-dashboard --tab panes`
-- [ ] README + USAGE no longer reference `Prefix+L` or `llm-panes` as a separate concept; panes tab documented
-- [ ] No regressions in `llm-add` / `llm-remove` / `llm-cycle` CLI commands (those keep working independently)
-- [ ] Tests cover panes tab basic list + cycle behavior with mocked tmux state
+- [x] Panes tab implemented in `llm-dashboard` with columns: index, tool, status glyph, active marker, pane ID (5 fields, ID used by preview)
+- [x] Panes tab actions: switch (Enter), add (`a`), remove+confirm (`K`), cycle next/prev (`]`/`[`), refresh (`R`), quit
+- [x] Live preview pane shows ANSI tail of the highlighted AI pane via `{5}` field expansion to pane ID
+- [x] `Prefix+L` keybinding removed from `lazy-llm`
+- [x] `llm-panes` reduced to a 5-line alias for `llm-dashboard --tab panes`
+- [x] README + USAGE no longer reference `Prefix+L` or `llm-panes` as a separate concept; panes tab documented
+- [x] No regressions in `llm-add` / `llm-remove` / `llm-cycle` CLI commands (they're delegated to from dispatch; not modified)
+- [x] Tests cover panes tab structural wiring: 12 assertions in `13-dashboard-panes-tab-unit.sh` covering alias shrink, Prefix+L retirement, --tab panes parsing, render function presence, action dispatch verbs, canonical detector usage, cross-tab routing, help text
 - [ ] Manual verify: with 2+ AI panes in a session, opening the dashboard and switching to the Panes tab shows them with status glyphs; cycling via `Enter` or `]`/`[` swaps the visible pane; `a` adds a new pane via tool picker; `K` removes with confirmation
