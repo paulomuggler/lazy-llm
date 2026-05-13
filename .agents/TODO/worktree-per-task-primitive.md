@@ -2,12 +2,12 @@
 slug: worktree-per-task-primitive
 title: Add worktree-per-task primitive to lazy-llm
 priority: P1
-status: pending
+status: in-progress
 created: 2026-05-13
 updated: 2026-05-13
 depends-on: []
 tags: [enhancement, git, worktree, lazy-llm]
-commits: []
+commits: [3a3e54f]
 ---
 
 # Add worktree-per-task primitive to lazy-llm
@@ -56,13 +56,13 @@ Companion lifecycle management lives in [[worktrees-dashboard]].
 
 ## Acceptance Criteria
 
-- [ ] `lazy-llm -W <branch>` (or equivalent) creates a worktree if needed and opens a lazy-llm **session** bound to it
-- [ ] Worktree binding is session-scoped: all panes in the spawned session start in the worktree path
-- [ ] When invoked from inside an existing tmux session, `-W` still spawns a new session (does not add a window to the current one) — and this is documented in help text and README
-- [ ] If a lazy-llm session already exists pointing at the same worktree, attach to it instead of duplicating
-- [ ] If the branch is new, the branch is created from current HEAD; if it exists, the existing branch is used
-- [ ] Refuses gracefully if the branch is already checked out in another worktree (with an actionable message — e.g. "session `<name>` is already running there; attach with `lazy-llm -s <name>`")
-- [ ] Worktree base path is configurable (env var or flag); has a sensible default (e.g. `.worktrees/<branch>/`)
-- [ ] Worktree path is added to `.gitignore` automatically if using the in-repo default, OR the default lives outside the repo — decide during planning and document the choice
-- [ ] Help text (`lazy-llm -h`) documents the new flag/subcommand and the session-scoped behavior
+- [x] `lazy-llm -W <branch>` creates a worktree if needed and opens a lazy-llm **session** bound to it
+- [x] Worktree binding is session-scoped: panes start in the worktree path via `unset TMUX` short-circuit + auto-derived session name
+- [x] When invoked from inside an existing tmux session, `-W` still spawns a new session (does not add a window) — documented in help text and README
+- [x] If a lazy-llm session already exists pointing at the same worktree, attach to it instead of duplicating (via `lazy_llm_find_session_for_path` with realpath comparison)
+- [x] If the branch is new, the branch is created from current HEAD; if it exists, the existing branch is used
+- [x] Refuses gracefully if the branch is already checked out in another worktree (clear error + hint about removing the other worktree first)
+- [x] Worktree base path configurable via `LAZY_LLM_WORKTREE_DIR` env var; default is `.worktrees/<sanitized-branch>/` inside the repo
+- [x] Worktree path is added to `.gitignore` automatically when using the in-repo default; override path leaves `.gitignore` untouched
+- [x] Help text (`lazy-llm -h`) documents `-W`, `LAZY_LLM_WORKTREE_DIR`, and the always-new-session behavior
 - [ ] Manual verify: from a clean repo with `main` checked out, run `lazy-llm -W feature/foo` from inside an existing tmux session — a new session is created (not a new window), worktree exists at the default location, all panes are rooted there
