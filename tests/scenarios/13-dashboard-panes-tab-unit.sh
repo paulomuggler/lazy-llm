@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Test: Structural unit checks for the dashboard Panes tab + Prefix+L retirement +
-# llm-panes alias shrink. Live fzf flow isn't unit-testable (PTY-dependent);
-# we verify the wiring is correct.
+# Test: Structural unit checks for the dashboard's Workspaces tree tab (AI panes
+# nested under their workspace — dashboard-tree-view-consolidation folded the old
+# separate Panes tab into this tree) + Prefix+L retirement + llm-panes alias
+# shrink. Live fzf flow isn't unit-testable (PTY-dependent); we verify the wiring
+# is correct.
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$TESTS_DIR/lib/assertions.sh"
@@ -14,7 +16,7 @@ LLM_PANES="$REPO_ROOT/lazy-llm-bin/.local/bin/llm-panes"
 LAZY_LLM="$REPO_ROOT/lazy-llm-bin/.local/bin/lazy-llm"
 
 # ──────────────────────────────────────────────────────────────────────────
-# 1. llm-panes is now a thin alias
+# 1. llm-panes is now a thin alias for --tab workspaces (panes live there now)
 # ──────────────────────────────────────────────────────────────────────────
 echo "Test 1: llm-panes shrunk to alias..."
 lines=$(wc -l < "$LLM_PANES")
@@ -24,10 +26,10 @@ else
     print_fail "llm-panes is $lines lines (expected ≤ 10 for alias)"
 fi
 
-if command grep -q 'exec.*llm-dashboard.*--tab panes' "$LLM_PANES"; then
-    print_pass "llm-panes execs llm-dashboard --tab panes"
+if command grep -q 'exec.*llm-dashboard.*--tab workspaces' "$LLM_PANES"; then
+    print_pass "llm-panes execs llm-dashboard --tab workspaces"
 else
-    print_fail "llm-panes does NOT exec llm-dashboard --tab panes"
+    print_fail "llm-panes does NOT exec llm-dashboard --tab workspaces"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -47,11 +49,10 @@ prefix_s=$(command grep -A2 'bind-key -T prefix S if-shell' "$LAZY_LLM" | tail -
 assert_contains "$prefix_s" "llm-dashboard" "Prefix+S still launches llm-dashboard"
 
 # ──────────────────────────────────────────────────────────────────────────
-# 3. Dashboard accepts --tab panes
+# 3. Dashboard accepts --tab panes as a compat alias for --tab workspaces
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
-echo "Test 4: --tab panes parsed correctly..."
-# Use --help after --tab panes; should print usage and exit 0 (panes is valid)
+echo "Test 4: --tab panes still accepted (compat alias)..."
 out=$("$DASHBOARD" --tab panes --help 2>&1)
 rc=$?
 assert_equals "$rc" "0" "--tab panes --help exits 0"
@@ -67,19 +68,40 @@ assert_pattern "$bogus_rc" "^[1-9]" "rejected with non-zero exit"
 assert_contains "$bogus_out" "Unknown tab" "error message mentions Unknown tab"
 
 # ──────────────────────────────────────────────────────────────────────────
-# 4. Structural: render_panes_tab + action verbs present
+# 4. Structural: AI panes are rendered as nested rows under render_sessions_tab,
+#    not a separate render_panes_tab (which no longer exists).
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
-echo "Test 6: render_panes_tab defined..."
+echo "Test 6: render_panes_tab no longer exists (folded into the tree)..."
 if command grep -qE '^render_panes_tab\(\)' "$DASHBOARD"; then
-    print_pass "render_panes_tab() defined"
+    print_fail "render_panes_tab() still defined — should be folded into render_sessions_tab"
 else
-    print_fail "render_panes_tab() NOT defined"
+    print_pass "render_panes_tab() removed"
 fi
 
 echo ""
-echo "Test 7: dispatch_action has pane verbs..."
-for verb in pane-cycle pane-add pane-remove pane-next pane-prev; do
+echo "Test 6b: tree row-id scheme present (ws:/pane: prefixes)..."
+if command grep -q '"ws:\${name}"' "$DASHBOARD" && command grep -q 'pane:\${name}:\${i}:\${pid}' "$DASHBOARD"; then
+    print_pass "workspace + pane row id construction present"
+else
+    print_fail "tree row-id construction (ws:/pane: prefixes) not found"
+fi
+
+echo ""
+echo "Test 6c: per-workspace pane list uses lazy_llm_read_multi_state_for..."
+if command grep -q 'lazy_llm_read_multi_state_for' "$DASHBOARD"; then
+    print_pass "dashboard reads every workspace's full pane list (not just the first pane)"
+else
+    print_fail "dashboard does not use lazy_llm_read_multi_state_for — likely still first-pane-only"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
+# 5. dispatch_action has the tree's action verbs (pane-cycle retired — Enter on
+#    a pane row now emits switch-pane, composed with a workspace switch)
+# ──────────────────────────────────────────────────────────────────────────
+echo ""
+echo "Test 7: dispatch_action has tree action verbs..."
+for verb in switch-pane toggle pane-add pane-remove pane-remove-unsupported pane-next pane-prev; do
     if command grep -q "action:$verb" "$DASHBOARD"; then
         print_pass "dispatch handles action:$verb"
     else
@@ -87,17 +109,25 @@ for verb in pane-cycle pane-add pane-remove pane-next pane-prev; do
     fi
 done
 
+if command grep -q 'action:pane-cycle' "$DASHBOARD"; then
+    print_fail "stale action:pane-cycle still referenced (should be action:switch-pane now)"
+else
+    print_pass "action:pane-cycle retired (superseded by action:switch-pane)"
+fi
+
 echo ""
-echo "Test 8: main loop allowlist includes pane verbs..."
-loop_arm=$(command grep -E 'action:switch:\*\|action:kill' "$DASHBOARD")
-assert_contains "$loop_arm" "pane-cycle:" "loop arm includes pane-cycle"
+echo "Test 8: main loop allowlist includes the tree's action verbs..."
+loop_arm=$(command grep -E 'action:switch:\*\|action:switch-pane' "$DASHBOARD")
+assert_contains "$loop_arm" "switch-pane:" "loop arm includes switch-pane"
+assert_contains "$loop_arm" "toggle:" "loop arm includes toggle"
 assert_contains "$loop_arm" "pane-add" "loop arm includes pane-add"
 assert_contains "$loop_arm" "pane-remove:" "loop arm includes pane-remove"
+assert_contains "$loop_arm" "pane-remove-unsupported" "loop arm includes pane-remove-unsupported"
 assert_contains "$loop_arm" "pane-next" "loop arm includes pane-next"
 assert_contains "$loop_arm" "pane-prev" "loop arm includes pane-prev"
 
 # ──────────────────────────────────────────────────────────────────────────
-# 5. Canonical status detection (not duplicated)
+# 6. Canonical status detection (not duplicated)
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
 echo "Test 9: dashboard uses canonical lazy_llm_detect_pane_status..."
@@ -115,25 +145,36 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
-# 6. Tab routing: 3 is handled in all tabs' key dispatch
+# 7. Fold/unfold state: declared once at script scope, toggled by dispatch_action
+#    (render_sessions_tab runs in a subshell and must only read it)
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
-echo "Test 10: 3 routes to panes from sessions/worktrees tabs..."
-# Sessions tab: 3) echo "tab:panes" should be present
-if command grep -A1 -E '3\)\s*echo "tab:panes"' "$DASHBOARD" >/dev/null; then
-    print_pass "3 → tab:panes routing present"
+echo "Test 10: fold state (_collapsed) declared once, mutated only in dispatch_action..."
+if command grep -q 'declare -A _collapsed' "$DASHBOARD"; then
+    print_pass "_collapsed associative array declared"
 else
-    print_fail "3 → tab:panes routing missing"
+    print_fail "_collapsed associative array not found"
+fi
+if command grep -q '_collapsed\[\$name\]=1' "$DASHBOARD"; then
+    print_pass "toggle action sets _collapsed"
+else
+    print_fail "toggle action does not set _collapsed"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
-# 7. Help text mentions panes
+# 8. Help text documents the tree (fold key, pane-row Enter behavior) instead
+#    of a separate Panes tab
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
-echo "Test 11: help text documents Panes tab actions..."
+echo "Test 11: help text documents the workspace tree, not a separate Panes tab..."
 help_out=$("$DASHBOARD" --help 2>&1)
-assert_contains "$help_out" "Panes" "help mentions Panes"
-assert_contains "$help_out" "panes" "help mentions panes (lowercase, in --tab list)"
+assert_contains "$help_out" "fold" "help mentions fold/unfold (z key)"
+assert_contains "$help_out" "CURRENT workspace" "help clarifies a/]/[  scope to the current workspace"
+if echo "$help_out" | command grep -qE '^\s*3\s'; then
+    print_fail "help still documents a tab-3 keybinding (Panes tab should be gone)"
+else
+    print_pass "help no longer documents a separate tab-3 (Panes) keybinding"
+fi
 
 # ──────────────────────────────────────────────────────────────────────────
 # Summary

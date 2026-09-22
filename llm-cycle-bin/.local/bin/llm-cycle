@@ -65,26 +65,13 @@ if [ "$target_idx" -eq "$current_idx" ]; then
   exit 0
 fi
 
-current_pane="${pane_arr[$current_idx]}"
-target_pane="${pane_arr[$target_idx]}"
-
-# Save the currently focused pane so we can restore it after title update
+# Save the currently focused pane so we can restore focus after the swap
+# (lazy_llm_cycle_to_index leaves selection on the target pane; llm-cycle's own
+# contract is to keep the caller's focus where it was).
 original_pane="$_CURRENT_PANE"
 
-# Swap the currently visible pane with the target held pane
-tmux swap-pane -d -s "$current_pane" -t "$target_pane"
+# Swap + state-update logic is shared with the dashboard's cross-workspace pane
+# switch — see lazy_llm_cycle_to_index in lazy-llm-lib.sh (single source of truth).
+lazy_llm_cycle_to_index "$_SESSION" "$_WINDOW" "$target_idx"
 
-# Update state
-tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_IDX "$target_idx"
-tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_ID "$target_pane"
-tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOL "${tool_arr[$target_idx]}"
-
-# Update legacy option to point to the pane that is now visible
-# After swap-pane, the target pane content is now in the current pane's position
-# But pane IDs follow the content, so target_pane is still the correct ID
-tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE "$_SESSION:$_WINDOW.$(tmux display-message -t "$target_pane" -p '#{pane_index}')"
-
-# Update pane title with position indicator (select-pane -T also selects, so restore after)
-target_tool="${tool_arr[$target_idx]}"
-tmux select-pane -t "$target_pane" -T "AI: $target_tool [$((target_idx + 1))/$total]"
 tmux select-pane -t "$original_pane"

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# llm-panes - thin alias for `llm-dashboard --tab panes`.
+# llm-panes - thin alias for `llm-dashboard --tab workspaces`.
 # Preserved so CLI muscle memory (`llm-panes` from any shell) keeps working.
+# AI panes are no longer a separate tab — they're nested under each
+# workspace in the Workspaces tab's tree (see dashboard-tree-view-consolidation
+# in .agents/TODO) — `--tab panes` still works as a compat alias for this.
 # The actual implementation lives in llm-dashboard.
-exec "$(dirname "$0")/llm-dashboard" --tab panes "$@"
+exec "$(dirname "$0")/llm-dashboard" --tab workspaces "$@"

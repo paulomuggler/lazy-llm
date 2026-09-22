@@ -35,8 +35,7 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Git integration**: Editor pane includes vim-fugitive, gitsigns, and vgit for tracking changes
 - **Multiple AI tools**: Supports Claude, Gemini, Codex, Grok, Aider, or any agentic TUI tool
 - **Multi-AI pane tabbing**: Run multiple AI tools side-by-side, cycling between them with keybindings
-- **Dashboard popup**: List workspaces with status glyphs + live ANSI preview; tabbed (Workspaces / Worktrees) (`Prefix+S`)
-- **Panes tab in dashboard**: View AI pane status and switch between them — opens via `Prefix+S` then `3`
+- **Dashboard popup**: `Prefix+S` opens a tabbed popup (Workspaces / Worktrees). The Workspaces tab is a collapsible tree — every workspace with its AI panes nested beneath it, each with its own status glyph and live ANSI preview, `z` to fold/unfold
 - **Scoped keybindings**: All tmux and nvim bindings are scoped — no interference outside lazy-llm workspaces
 - **Confirmation dialogs**: Removing AI panes requires confirmation (bypass with `--force`)
 - **Stale pane recovery**: Dead panes are auto-pruned; holding windows auto-recover if accidentally closed
@@ -262,7 +261,7 @@ Registered automatically when a workspace is created. Keybindings are **scoped t
 | `Prefix + C-p` | Cycle to previous AI pane |
 | `Prefix + A` | Add new AI pane (tool picker menu) |
 | `Prefix + C-x` | Remove current AI pane |
-| `Prefix + S` | Dashboard popup (Workspaces / Worktrees / Panes tabs; switch with `1`/`2`/`3`) |
+| `Prefix + S` | Dashboard popup (Workspaces tree / Worktrees tabs; switch with `1`/`2`) |
 
 ### Multi-AI Pane Tabbing
 
@@ -291,7 +290,7 @@ Inactive AI panes are held in a hidden tmux window. `tmux swap-pane` atomically 
 | `llm-append [text]` | Append text to prompt buffer (supports stdin: `echo "foo" \| llm-append`) |
 | `llm-dashboard` | Tabbed popup dashboard (Workspaces, Worktrees) with live ANSI preview. Bound to `Prefix+S`. |
 | `llm-sessions` | CLI helper for non-interactive listing/killing of workspaces (`--list`, `--kill <name>`). Interactive mode subsumed by `llm-dashboard`. |
-| `llm-panes` | Alias for `llm-dashboard --tab panes` (kept for CLI muscle memory) |
+| `llm-panes` | Alias for `llm-dashboard --tab workspaces` — AI panes live nested in the Workspaces tree now, not a separate tab (kept for CLI muscle memory) |
 
 ### Workflow
 

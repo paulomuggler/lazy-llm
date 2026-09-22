@@ -475,6 +475,67 @@ lazy_llm_gather_sessions() {
   done <<< "$sessions"
 }
 
+# Read the AI pane list for an ARBITRARY session:window, not just the current one.
+# Unlike lazy_llm_read_multi_state (which requires _SESSION/_WINDOW to already be
+# resolved from the current tmux context), this takes an explicit target — used by
+# the dashboard's workspace tree to show every pane of every workspace, not just
+# the one the popup happened to be launched from.
+# Args:   $1 session, $2 window
+# Sets:   REPLY_PANES, REPLY_TOOLS, REPLY_IDX (arrays/index for that window; empty
+#         REPLY_PANES if the window isn't a lazy-llm multi-pane workspace)
+lazy_llm_read_multi_state_for() {
+  local session="$1" window="$2"
+  REPLY_PANES=$(tmux show-option -wv -t "$session:$window" @AI_PANES 2>/dev/null) || REPLY_PANES=""
+  REPLY_TOOLS=$(tmux show-option -wv -t "$session:$window" @AI_TOOLS 2>/dev/null) || REPLY_TOOLS=""
+  REPLY_IDX=$(tmux show-option -wv -t "$session:$window" @AI_PANE_IDX 2>/dev/null) || REPLY_IDX="0"
+}
+
+# Swap the visible AI pane in <session:window> to the pane at <target_idx> in its
+# @AI_PANES list. This is llm-cycle's core swap-pane logic, factored out so it can
+# be driven with an EXPLICIT target instead of llm-cycle's ambient "current pane"
+# resolution (lazy_llm_resolve_pane / lazy_llm_resolve_session_window) — needed by
+# the dashboard, where "current pane" means the pane that launched the popup, not
+# whatever workspace the user just picked from the tree. llm-cycle itself resolves
+# ambient context, computes the target index, then calls this — single source of
+# truth for the swap, per the two callers.
+# Args:   $1 session, $2 window, $3 target_idx (0-based)
+# No-op (silent, returns 0) if the window has <=1 AI pane, target_idx is out of
+# range or malformed, or it's already the active pane.
+lazy_llm_cycle_to_index() {
+  local session="$1" window="$2" target_idx="$3"
+
+  [[ "$target_idx" =~ ^[0-9]+$ ]] || return 0
+
+  local ai_panes ai_tools ai_pane_idx
+  ai_panes=$(tmux show-option -wv -t "$session:$window" @AI_PANES 2>/dev/null) || return 0
+  [[ -z "$ai_panes" ]] && return 0
+  ai_tools=$(tmux show-option -wv -t "$session:$window" @AI_TOOLS 2>/dev/null) || ai_tools=""
+  ai_pane_idx=$(tmux show-option -wv -t "$session:$window" @AI_PANE_IDX 2>/dev/null) || ai_pane_idx="0"
+
+  local -a pane_arr tool_arr
+  read -ra pane_arr <<< "$ai_panes"
+  read -ra tool_arr <<< "$ai_tools"
+  local current_idx="${ai_pane_idx:-0}"
+  local total=${#pane_arr[@]}
+
+  [[ "$target_idx" -ge "$total" ]] && return 0
+  [[ "$target_idx" -eq "$current_idx" ]] && return 0
+
+  local current_pane="${pane_arr[$current_idx]}"
+  local target_pane="${pane_arr[$target_idx]}"
+
+  tmux swap-pane -d -s "$current_pane" -t "$target_pane" 2>/dev/null || return 0
+
+  tmux set-option -w -t "$session:$window" @AI_PANE_IDX "$target_idx"
+  tmux set-option -w -t "$session:$window" @AI_PANE_ID "$target_pane"
+  tmux set-option -w -t "$session:$window" @AI_TOOL "${tool_arr[$target_idx]}"
+  tmux set-option -w -t "$session:$window" @AI_PANE \
+    "$session:$window.$(tmux display-message -t "$target_pane" -p '#{pane_index}')"
+
+  local target_tool="${tool_arr[$target_idx]}"
+  tmux select-pane -t "$target_pane" -T "AI: $target_tool [$((target_idx + 1))/$total]"
+}
+
 # Validate that the holding window exists; recreate if missing.
 # Requires: _SESSION, _WINDOW, AI_HOLD_WIN (call lazy_llm_read_multi_state first)
 lazy_llm_validate_hold_win() {

@@ -6,17 +6,24 @@
 # LLM chat/conversation. See docs/USAGE.md.
 #
 # Tabs:
-#   1. Workspaces - list lazy-llm workspaces with status glyphs + live ANSI preview
-#   2. Worktrees  - placeholder (real content lands in worktree-bridge-tab)
+#   1. Workspaces - collapsible tree: every lazy-llm workspace, its AI panes
+#                   nested beneath it, status glyphs + live ANSI preview.
+#                   Folds the old separate Panes tab in (that tab only ever
+#                   showed the current window's panes anyway — this shows
+#                   every workspace's panes, which is the point).
+#   2. Worktrees  - worktree lifecycle (see worktree-bridge-tab)
 #
 # Designed to be launched via `tmux display-popup -E`; binds to Prefix+S.
 # All keybindings inside the popup are popup-scoped, single-letter, dense.
 #
 # Tab keys:            1 (Workspaces), 2 (Worktrees)
-# Workspaces actions:  Enter (switch), n (new), K (kill), r (rename),
-#                     R (refresh), ? (help), q/Esc (quit)
+# Workspaces actions:  Enter (switch, or switch+focus-pane on a pane row),
+#                     n (new), K (kill workspace / remove pane), r (rename),
+#                     z (fold/unfold), a (add pane, current workspace),
+#                     ]/[ (cycle pane, current workspace), R (refresh),
+#                     ? (help), q/Esc (quit)
 #
-# Usage: llm-dashboard [--tab workspaces|worktrees|panes] [--help]
+# Usage: llm-dashboard [--tab workspaces|worktrees] [--help]
 
 set -euo pipefail
 
@@ -47,95 +54,213 @@ glyph_for() {
 # Workspaces tab
 # ──────────────────────────────────────────────────────────────────────────
 
-# Render the workspaces tab fzf list.
+# Row model: each line is "<id>\t<display text>". <id> is hidden from view via
+# --with-nth=2 (fzf still returns the full line on selection, and {1} in the
+# preview command always refers to the hidden id field regardless of
+# --with-nth). This is what lets a single fzf list mix two row types:
+#   ws:<name>                    — a workspace row
+#   pane:<name>:<idx0>:<pane_id> — an AI pane row nested under workspace <name>,
+#                                  <idx0> is its 0-based index into that
+#                                  workspace's @AI_PANES list
+#
+# Collapse state (_collapsed[name] set = collapsed) is a script-global
+# associative array declared near the bottom of this file, mutated by
+# dispatch_action so it survives across re-renders of this tab within one
+# dashboard invocation (render_workspaces_tab itself runs in a subshell via
+# command substitution, so it can only READ _collapsed, never write it).
+#
 # Returns (echoes) one of:
-#   "tab:worktrees" — switch to worktrees tab
-#   "action:switch:<session>" — switch to selected workspace
-#   "action:kill:<session>"   — kill selected workspace
-#   "action:rename:<session>" — rename selected workspace
-#   "action:new"              — launch new lazy-llm workspace
-#   "action:refresh"          — re-render the tab
-#   "action:help"             — show help overlay
-#   "quit"                    — exit dashboard
+#   "tab:worktrees"                      — switch to worktrees tab
+#   "action:switch:<name>"               — switch to selected workspace
+#   "action:switch-pane:<name>:<idx0>"   — switch to workspace + focus that pane
+#   "action:kill:<name>"                 — kill selected workspace
+#   "action:rename:<name>"               — rename selected workspace
+#   "action:toggle:<name>"               — collapse/expand that workspace's panes
+#   "action:new"                         — launch new lazy-llm workspace
+#   "action:pane-add"                    — add AI pane to the CURRENT workspace
+#                                           (the one this dashboard was opened
+#                                           from — not whatever's highlighted;
+#                                           see help text)
+#   "action:pane-remove:<idx0>"          — remove a pane from the CURRENT workspace
+#   "action:pane-remove-unsupported"     — K pressed on a pane row belonging to a
+#                                           workspace other than the current one
+#   "action:pane-next" / "action:pane-prev" — cycle panes in the CURRENT workspace
+#   "action:refresh"                     — re-render the tab
+#   "action:help"                        — show help overlay
+#   "quit"                               — exit dashboard
 render_sessions_tab() {
+  # Resolve the workspace this dashboard was launched from, if any — needed to
+  # scope 'a' / ']' / '[' / pane-row 'K' to the current workspace only (see
+  # header comment). A popup opened from outside any lazy-llm window (or from
+  # no tmux session at all) leaves this empty; the tree still renders fine,
+  # those specific actions just become unavailable/no-ops, same as they'd be
+  # unreachable entirely in the pre-merge Panes tab under the same condition.
+  local launch_ws=""
+  if lazy_llm_resolve_pane 2>/dev/null && lazy_llm_resolve_session_window 2>/dev/null; then
+    launch_ws="$_SESSION"
+  fi
+
   local data
   data=$(lazy_llm_gather_sessions)
 
   local lines="" header
   if [[ -z "$data" ]]; then
-    header="[Workspaces] No lazy-llm workspaces. n: new │ 2: worktrees │ 3: panes │ q/esc: close"
+    header="[Workspaces] No lazy-llm workspaces. n: new │ 2: worktrees │ q/esc: close"
   else
-    # Augment each row with a status glyph next to the tools column.
     while IFS=$'\t' read -r name dir tools wins attached; do
-      # Resolve the active AI pane id for the first workspace window of this session.
-      # First window index is base-index dependent (0 or 1) — query it.
-      local first_win ai_pane_id status glyph
+      local first_win
       first_win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1)
-      ai_pane_id=$(tmux show-option -wv -t "$name:$first_win" @AI_PANE_ID 2>/dev/null) || ai_pane_id=""
-      if [[ -n "$ai_pane_id" ]]; then
-        local first_tool="${tools%% *}"
-        status=$(lazy_llm_detect_pane_status "$ai_pane_id" "$first_tool")
-        glyph=$(glyph_for "$status")
+
+      # Full per-pane list for this workspace's first window — every AI pane
+      # gets its own row + glyph, not just the first (the old Sessions tab's
+      # limitation this task exists to fix).
+      local reply_panes reply_tools reply_idx
+      lazy_llm_read_multi_state_for "$name" "$first_win"
+      reply_panes="$REPLY_PANES"; reply_tools="$REPLY_TOOLS"; reply_idx="${REPLY_IDX:-0}"
+
+      local -a pane_arr=() tool_arr=()
+      if [[ -n "$reply_panes" ]]; then
+        read -ra pane_arr <<< "$reply_panes"
+        read -ra tool_arr <<< "$reply_tools"
       else
-        glyph="?"
+        # Legacy/single-pane fallback: @AI_PANES was never set for this window
+        # (e.g. a workspace that's never had a second pane added).
+        local single_pane_id
+        single_pane_id=$(tmux show-option -wv -t "$name:$first_win" @AI_PANE_ID 2>/dev/null) || single_pane_id=""
+        if [[ -n "$single_pane_id" ]]; then
+          local single_tool
+          single_tool=$(tmux show-option -wv -t "$name:$first_win" @AI_TOOL 2>/dev/null) || single_tool="${tools%% *}"
+          pane_arr=("$single_pane_id")
+          tool_arr=("$single_tool")
+        fi
+      fi
+
+      # Workspace row's aggregate glyph: worst-case across its panes, in the
+      # order a human would want to notice — needs-you beats busy beats idle.
+      local saw_waiting=false saw_working=false saw_idle=false
+      local i st
+      for i in "${!pane_arr[@]}"; do
+        st=$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]:-claude}")
+        case "$st" in
+          waiting) saw_waiting=true ;;
+          working) saw_working=true ;;
+          idle)    saw_idle=true ;;
+        esac
+      done
+      local agg_glyph="?"
+      if   [[ "$saw_waiting" == true ]]; then agg_glyph=$(glyph_for waiting)
+      elif [[ "$saw_working" == true ]]; then agg_glyph=$(glyph_for working)
+      elif [[ "$saw_idle"    == true ]]; then agg_glyph=$(glyph_for idle)
       fi
 
       local short_dir="${dir/#$HOME/\~}"
       [[ ${#short_dir} -gt 40 ]] && short_dir="...${short_dir: -37}"
-
       local mark=""
       [[ -n "$attached" ]] && mark=" *"
 
-      lines+=$(printf '%-28s  %-42s  %s %-14s %sw%s\n' \
-        "$name" "$short_dir" "$glyph" "$tools" "$wins" "$mark")
-      lines+=$'\n'
+      local fold_glyph="▾"
+      [[ -n "${_collapsed[$name]:-}" ]] && fold_glyph="▸"
+
+      local ws_display
+      ws_display=$(printf '%s %-26s  %-40s  %s %-14s %sw%s' \
+        "$fold_glyph" "$name" "$short_dir" "$agg_glyph" "$tools" "$wins" "$mark")
+      lines+="ws:${name}"$'\t'"${ws_display}"$'\n'
+
+      if [[ -z "${_collapsed[$name]:-}" ]]; then
+        for i in "${!pane_arr[@]}"; do
+          local pid="${pane_arr[$i]}" tool="${tool_arr[$i]:-?}" glyph
+          st=$(lazy_llm_detect_pane_status "$pid" "$tool")
+          glyph=$(glyph_for "$st")
+          local active_mark=""
+          [[ "$i" -eq "$reply_idx" ]] && active_mark=" (active)"
+          local pane_display
+          pane_display=$(printf '    ↳ %-12s %s%s' "$tool" "$glyph" "$active_mark")
+          lines+="pane:${name}:${i}:${pid}"$'\t'"${pane_display}"$'\n'
+        done
+      fi
     done <<< "$data"
     lines="${lines%$'\n'}"
-    header="[Workspaces] enter: switch │ n: new │ K: kill │ r: rename │ R: refresh │ ?: help │ 2: worktrees │ 3: panes │ q/esc: close"
+    header="[Workspaces] enter: switch │ n: new │ K: kill │ r: rename │ z: fold │ a: add pane │ ]/[: cycle pane │ R: refresh │ ?: help │ 2: worktrees │ q/esc: close"
   fi
 
-  # Preview command — takes the first column (session name) and shows the
-  # tail of its active AI pane content, ANSI-rendered.
+  # Preview: branch on the row's hidden id (field 1) to find the right pane —
+  # a workspace row previews its active pane, a pane row previews itself.
   local preview_cmd
-  preview_cmd='set -- {1}; '
-  preview_cmd+='session="$1"; '
-  preview_cmd+='if [ -n "$session" ]; then '
-  preview_cmd+='win=$(tmux list-windows -t "$session" -F "#{window_index}" 2>/dev/null | head -1); '
-  preview_cmd+='pid=$(tmux show-option -wv -t "$session:$win" @AI_PANE_ID 2>/dev/null); '
+  preview_cmd='set -- {1}; id="$1"; pid=""; '
+  preview_cmd+='case "$id" in '
+  preview_cmd+='ws:*) ws="${id#ws:}"; win=$(tmux list-windows -t "$ws" -F "#{window_index}" 2>/dev/null | head -1); '
+  preview_cmd+='pid=$(tmux show-option -wv -t "$ws:$win" @AI_PANE_ID 2>/dev/null) ;; '
+  preview_cmd+='pane:*) rest="${id#pane:}"; pid="${rest##*:}" ;; '
+  preview_cmd+='esac; '
   preview_cmd+='if [ -n "$pid" ]; then '
   preview_cmd+='tmux capture-pane -p -e -S -200 -t "$pid" 2>/dev/null || echo "(could not capture pane $pid)"; '
-  preview_cmd+='else echo "(no AI pane registered for $session)"; fi; '
-  preview_cmd+='fi'
+  preview_cmd+='else echo "(no AI pane to preview)"; fi'
 
   local selection key
-  selection=$(echo "$lines" | fzf \
+  selection=$(printf '%s\n' "$lines" | fzf \
     --ansi \
     --reverse \
     --border=rounded \
     --prompt="workspace> " \
     --header="$header" \
+    --delimiter=$'\t' \
+    --with-nth=2 \
+    --nth=2 \
     --preview="$preview_cmd" \
     --preview-window="right:55%:wrap:follow" \
-    --expect="1,2,3,n,K,r,R,?" \
+    --expect="1,2,n,K,r,R,z,a,],[,?" \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
-  local chosen_line
+  local chosen_line chosen_id
   chosen_line=$(echo "$selection" | tail -1)
-  local chosen_name
-  chosen_name=$(echo "$chosen_line" | awk '{print $1}')
+  chosen_id=$(printf '%s' "$chosen_line" | cut -f1)
+
+  local chosen_ws="" chosen_pane_idx=""
+  case "$chosen_id" in
+    ws:*)
+      chosen_ws="${chosen_id#ws:}"
+      ;;
+    pane:*)
+      local rest="${chosen_id#pane:}"
+      chosen_ws="${rest%%:*}"
+      local rest2="${rest#*:}"
+      chosen_pane_idx="${rest2%%:*}"
+      ;;
+  esac
 
   case "$key" in
     1)     echo "action:refresh" ;;
     2)     echo "tab:worktrees" ;;
-    3)     echo "tab:panes" ;;
     n)     echo "action:new" ;;
-    K)     [[ -z "$chosen_name" ]] && echo "action:refresh" || echo "action:kill:$chosen_name" ;;
-    r)     [[ -z "$chosen_name" ]] && echo "action:refresh" || echo "action:rename:$chosen_name" ;;
+    K)
+      if [[ -n "$chosen_pane_idx" ]]; then
+        if [[ -n "$launch_ws" && "$chosen_ws" == "$launch_ws" ]]; then
+          echo "action:pane-remove:$chosen_pane_idx"
+        else
+          echo "action:pane-remove-unsupported"
+        fi
+      elif [[ -n "$chosen_ws" ]]; then
+        echo "action:kill:$chosen_ws"
+      else
+        echo "action:refresh"
+      fi
+      ;;
+    r)     [[ -z "$chosen_ws" ]] && echo "action:refresh" || echo "action:rename:$chosen_ws" ;;
     R)     echo "action:refresh" ;;
+    z)     [[ -z "$chosen_ws" ]] && echo "action:refresh" || echo "action:toggle:$chosen_ws" ;;
+    a)     echo "action:pane-add" ;;
+    "]")   echo "action:pane-next" ;;
+    "[")   echo "action:pane-prev" ;;
     "?")   echo "action:help" ;;
     *)
-      [[ -z "$chosen_name" ]] && echo "quit" || echo "action:switch:$chosen_name"
+      if [[ -z "$chosen_ws" ]]; then
+        echo "quit"
+      elif [[ -n "$chosen_pane_idx" ]]; then
+        echo "action:switch-pane:$chosen_ws:$chosen_pane_idx"
+      else
+        echo "action:switch:$chosen_ws"
+      fi
       ;;
   esac
 }
@@ -150,7 +275,7 @@ render_worktrees_tab() {
 
   if [[ -z "$data" ]]; then
     lines="(No worktrees in this repo, or not inside a git repo.)"
-    header="[Worktrees] n: new │ R: refresh │ 1: workspaces │ 3: panes │ q/esc: close"
+    header="[Worktrees] n: new │ R: refresh │ 1: workspaces │ q/esc: close"
   else
     lines=""
     while IFS=$'\t' read -r path branch dirty ahead behind session pr; do
@@ -173,7 +298,7 @@ render_worktrees_tab() {
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
-    header="[Worktrees] enter: open/attach │ n: new │ g: lazygit │ K: cleanup │ R: refresh │ ?: help │ 1: workspaces │ 3: panes │ q/esc: close"
+    header="[Worktrees] enter: open/attach │ n: new │ g: lazygit │ K: cleanup │ R: refresh │ ?: help │ 1: workspaces │ q/esc: close"
   fi
 
   # Preview: git status -sb + recent log for the selected worktree path.
@@ -194,7 +319,7 @@ render_worktrees_tab() {
     --header="$header" \
     --preview="$preview_cmd" \
     --preview-window="right:55%:wrap:follow" \
-    --expect="1,2,3,n,g,K,R,?" \
+    --expect="1,2,n,g,K,R,?" \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
@@ -207,7 +332,6 @@ render_worktrees_tab() {
   case "$key" in
     1)   echo "tab:workspaces" ;;
     2)   echo "action:refresh" ;;
-    3)   echo "tab:panes" ;;
     n)   echo "action:worktree-new" ;;
     g)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-lazygit:$chosen_path" ;;
     K)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-cleanup:$chosen_path" ;;
@@ -215,113 +339,6 @@ render_worktrees_tab() {
     "?") echo "action:help" ;;
     *)
       [[ -z "$chosen_path" ]] && echo "quit" || echo "action:worktree-open:$chosen_path"
-      ;;
-  esac
-}
-
-# ──────────────────────────────────────────────────────────────────────────
-# Panes tab — list AI panes in the current session/window with live preview
-# ──────────────────────────────────────────────────────────────────────────
-
-render_panes_tab() {
-  # Resolve current tmux context. If we're not in a tmux session at all,
-  # the popup was launched from outside — graceful empty-state.
-  lazy_llm_resolve_pane 2>/dev/null || {
-    local body="(Not inside a tmux session. The Panes tab needs a current pane to read AI panes from.)"
-    local header="[Panes] q/esc: close │ 1: workspaces │ 2: worktrees"
-    local selection key
-    selection=$(echo "$body" | fzf --ansi --reverse --border=rounded \
-      --prompt="panes> " --header="$header" --expect="1,2" \
-    ) || { echo "quit"; return 0; }
-    key=$(echo "$selection" | head -1)
-    case "$key" in
-      1) echo "tab:workspaces" ;;
-      2) echo "tab:worktrees" ;;
-      *) echo "quit" ;;
-    esac
-    return 0
-  }
-  lazy_llm_resolve_session_window 2>/dev/null
-  lazy_llm_read_multi_state
-
-  local lines="" header empty=false
-  if [[ -z "$AI_PANES" ]]; then
-    # Window isn't a lazy-llm workspace. Discoverable empty-state.
-    lines="(No AI panes in this window. Run lazy-llm or press 'a' to bootstrap one.)"
-    header="[Panes] Not a lazy-llm workspace. a: add │ 1: workspaces │ 2: worktrees │ q/esc: close"
-    empty=true
-  else
-    # Build per-pane rows with status glyph + pane ID column for preview indexing
-    local -a pane_arr tool_arr
-    read -ra pane_arr <<< "$AI_PANES"
-    read -ra tool_arr <<< "$AI_TOOLS"
-    local current_idx="${AI_PANE_IDX:-0}"
-    local total=${#pane_arr[@]}
-
-    local i
-    for i in "${!pane_arr[@]}"; do
-      local pid="${pane_arr[$i]}"
-      local tool="${tool_arr[$i]:-?}"
-      local glyph status
-      status=$(lazy_llm_detect_pane_status "$pid" "$tool")
-      glyph=$(glyph_for "$status")
-      local marker=""
-      [[ "$i" -eq "$current_idx" ]] && marker="(active)"
-      local idx_one=$((i + 1))
-      lines+=$(printf '%-3s %-12s %s %-10s %s\n' \
-        "$idx_one" "$tool" "$glyph" "$marker" "$pid")
-      lines+=$'\n'
-    done
-    lines="${lines%$'\n'}"
-
-    header="[Panes] enter: switch │ a: add │ K: kill │ ]/[: cycle │ R: refresh │ ?: help │ 1: workspaces │ 2: worktrees │ q/esc: close"
-  fi
-
-  # Preview: take the pane id from column 5 (idx 5 in fzf field syntax),
-  # render its content with ANSI. Empty-state row has no pane id → skip.
-  local preview_cmd
-  if [[ "$empty" == "true" ]]; then
-    preview_cmd='echo "(no panes to preview)"'
-  else
-    preview_cmd='set -- {5}; pid="$1"; '
-    preview_cmd+='if [ -n "$pid" ]; then '
-    preview_cmd+='tmux capture-pane -p -e -S -200 -t "$pid" 2>/dev/null || echo "(could not capture pane $pid)"; '
-    preview_cmd+='else echo "(no pane id in row)"; fi'
-  fi
-
-  local selection key
-  selection=$(echo "$lines" | fzf \
-    --ansi \
-    --reverse \
-    --border=rounded \
-    --prompt="pane> " \
-    --header="$header" \
-    --preview="$preview_cmd" \
-    --preview-window="right:55%:wrap:follow" \
-    --expect="1,2,3,a,K,],[,R,?" \
-  ) || { echo "quit"; return 0; }
-
-  key=$(echo "$selection" | head -1)
-  local chosen_line
-  chosen_line=$(echo "$selection" | tail -1)
-  # First column is the 1-indexed pane number (or empty for the placeholder)
-  local chosen_idx
-  chosen_idx=$(echo "$chosen_line" | awk '{print $1}')
-  # Sanitize: only digits, otherwise treat as empty (e.g. for the placeholder row)
-  [[ "$chosen_idx" =~ ^[0-9]+$ ]] || chosen_idx=""
-
-  case "$key" in
-    1)     echo "tab:workspaces" ;;
-    2)     echo "tab:worktrees" ;;
-    3)     echo "action:refresh" ;;
-    a)     echo "action:pane-add" ;;
-    K)     [[ -z "$chosen_idx" ]] && echo "action:refresh" || echo "action:pane-remove:$chosen_idx" ;;
-    "]")   echo "action:pane-next" ;;
-    "[")   echo "action:pane-prev" ;;
-    R)     echo "action:refresh" ;;
-    "?")   echo "action:help" ;;
-    *)
-      [[ -z "$chosen_idx" ]] && echo "quit" || echo "action:pane-cycle:$chosen_idx"
       ;;
   esac
 }
@@ -342,6 +359,33 @@ dispatch_action() {
         || tmux attach-session -t "$name" 2>/dev/null \
         || echo "Could not switch to $name" >&2
       # switching exits the popup naturally
+      ;;
+    action:switch-pane:*)
+      # Switch to the workspace AND focus a specific pane in it. Uses
+      # lazy_llm_cycle_to_index with an explicit session:window target rather
+      # than llm-cycle's ambient "current pane" resolution — after
+      # switch-client, ambient resolution from inside this popup process
+      # can't be trusted to follow the client to the new window (untested
+      # tmux edge case; explicit targeting sidesteps the question entirely).
+      # Order matters: cycle BEFORE switching, so the pane is already in
+      # place by the time the client lands on the window.
+      local rest="${action#action:switch-pane:}"
+      local name="${rest%%:*}"
+      local idx="${rest#*:}"
+      local win
+      win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1)
+      [[ -n "$win" ]] && lazy_llm_cycle_to_index "$name" "$win" "$idx"
+      tmux switch-client -t "$name" 2>/dev/null \
+        || tmux attach-session -t "$name" 2>/dev/null \
+        || echo "Could not switch to $name" >&2
+      ;;
+    action:toggle:*)
+      local name="${action#action:toggle:}"
+      if [[ -n "${_collapsed[$name]:-}" ]]; then
+        unset "_collapsed[$name]"
+      else
+        _collapsed[$name]=1
+      fi
       ;;
     action:kill:*)
       local name="${action#action:kill:}"
@@ -376,10 +420,6 @@ dispatch_action() {
     action:refresh)
       : # outer loop re-renders the current tab
       ;;
-    action:pane-cycle:*)
-      local idx="${action#action:pane-cycle:}"
-      [[ -n "$idx" ]] && "$HOME/.local/bin/llm-cycle" "$idx" >&2 || true
-      ;;
     action:pane-add)
       local tool
       tool=$(printf 'claude\ngemini\ncodex\ngrok\naider' | fzf \
@@ -402,6 +442,9 @@ dispatch_action() {
       ;;
     action:pane-prev)
       "$HOME/.local/bin/llm-cycle" prev >&2 || true
+      ;;
+    action:pane-remove-unsupported)
+      tmux display-message "Pane removal only works for the current workspace's panes today — switch to it first (Enter), then K."
       ;;
     action:worktree-open:*)
       local path="${action#action:worktree-open:}"
@@ -498,29 +541,32 @@ show_help_overlay() {
   Tabs
     1            switch to Workspaces tab
     2            switch to Worktrees tab
-    3            switch to Panes tab
 
-  Workspaces tab
-    Enter        switch to selected workspace
+  Workspaces tab — a tree: every lazy-llm workspace, its AI panes nested
+  beneath it. Row-dependent keys act on whatever's highlighted.
+    Enter        on a workspace row: switch to it
+                 on a pane row: switch to its workspace AND focus that pane
+    z            fold/unfold the highlighted workspace's panes
     n            new lazy-llm workspace
-    K            kill selected workspace (with confirmation)
-    r            rename selected workspace
+    r            rename the highlighted workspace
+    K            on a workspace row: kill it (with confirmation)
+                 on a pane row: remove that pane — only for the CURRENT
+                 workspace (the one this dashboard was opened from); on
+                 another workspace's pane row, shows why it's unsupported
     R            refresh list
     ?            this help
+
+  Workspaces tab — these three always act on the CURRENT workspace (the one
+  this dashboard was opened from), regardless of what's highlighted:
+    a            add an AI pane (tool picker)
+    ]            cycle to next AI pane
+    [            cycle to previous AI pane
 
   Worktrees tab
     Enter        open/attach lazy-llm workspace in worktree (via lazy-llm -W)
     n            new worktree + workspace (prompts for branch)
     g            launch lazygit pointed at the worktree
     K            atomic cleanup (workspace + worktree + optional branch)
-    R            refresh list
-
-  Panes tab
-    Enter        cycle to selected AI pane
-    a            add a new AI pane (tool picker)
-    K            remove selected pane (with confirmation)
-    ]            cycle to next AI pane
-    [            cycle to previous AI pane
     R            refresh list
 
   Global
@@ -541,19 +587,26 @@ EOF
 
 usage() {
   cat <<'EOF'
-Usage: llm-dashboard [--tab workspaces|worktrees|panes] [--help]
+Usage: llm-dashboard [--tab workspaces|worktrees] [--help]
 
-Tabbed popup dashboard for lazy-llm. Launches Workspaces tab by default.
+Tabbed popup dashboard for lazy-llm. Launches Workspaces tab by default. The
+Workspaces tab is a tree: every lazy-llm workspace, with its AI panes nested
+beneath it (press z to fold/unfold). The old separate Panes tab is folded
+into this tree — '--tab panes' is still accepted as a compat alias for
+'--tab workspaces'.
 
 Inside the dashboard:
-  1, 2, 3    switch tabs (Workspaces, Worktrees, Panes)
-  Enter      primary action (switch workspace / open worktree / cycle pane)
+  1, 2       switch tabs (Workspaces, Worktrees)
+  Enter      primary action (switch workspace, or workspace+pane on a pane
+             row / open worktree)
   n          new workspace (Workspaces) / new worktree+workspace (Worktrees)
-  a          add new AI pane (Panes)
+  z          fold/unfold a workspace's panes (Workspaces)
+  a          add an AI pane to the CURRENT workspace (Workspaces — the one
+             this dashboard was opened from, not whatever's highlighted)
   g          launch lazygit (Worktrees)
-  K          kill / remove / cleanup (with confirmation)
+  K          kill workspace / remove pane / cleanup worktree (with confirmation)
   r          rename (Workspaces)
-  ], [       cycle next / prev AI pane (Panes)
+  ], [       cycle next / prev AI pane in the CURRENT workspace (Workspaces)
   R          refresh
   ?          help
   q, Esc     close
@@ -567,7 +620,9 @@ while [[ $# -gt 0 ]]; do
     --tab)
       shift
       case "$1" in
-        workspaces|worktrees|panes) current_tab="$1" ;;
+        workspaces) current_tab="workspaces" ;;
+        panes) current_tab="workspaces" ;; # compat alias — panes now live in the Workspaces tree
+        worktrees) current_tab="worktrees" ;;
         *) echo "Unknown tab: $1" >&2; exit 2 ;;
       esac
       shift
@@ -586,11 +641,16 @@ if ! command -v fzf &>/dev/null; then
   exit 1
 fi
 
+# Per-workspace fold state for the Workspaces tree tab. render_sessions_tab
+# runs in a subshell (command substitution) and can only READ this; only
+# dispatch_action (run directly, in this shell) mutates it — see the header
+# comment on render_sessions_tab.
+declare -A _collapsed=()
+
 while true; do
   case "$current_tab" in
     workspaces) result=$(render_sessions_tab) ;;
     worktrees) result=$(render_worktrees_tab) ;;
-    panes)     result=$(render_panes_tab) ;;
     *)         echo "Unknown tab: $current_tab" >&2; exit 1 ;;
   esac
 
@@ -598,10 +658,10 @@ while true; do
     tab:*)
       current_tab="${result#tab:}"
       ;;
-    action:switch:*|action:kill:*|action:rename:*|action:new|action:help|action:refresh|action:pane-cycle:*|action:pane-add|action:pane-remove:*|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
+    action:switch:*|action:switch-pane:*|action:toggle:*|action:kill:*|action:rename:*|action:new|action:help|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
       dispatch_action "$result"
       # Switch action exits the popup; for others we re-enter the current tab
-      [[ "$result" == action:switch:* ]] && break
+      [[ "$result" == action:switch:* || "$result" == action:switch-pane:* ]] && break
       ;;
     quit|"")
       break

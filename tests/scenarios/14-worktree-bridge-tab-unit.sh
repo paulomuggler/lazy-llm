@@ -196,7 +196,7 @@ done
 
 echo ""
 echo "Test 11: main loop allowlist includes worktree verbs..."
-loop_arm=$(command grep -E 'action:switch:\*\|action:kill' "$DASHBOARD")
+loop_arm=$(command grep -E 'action:switch:\*\|action:switch-pane' "$DASHBOARD")
 assert_contains "$loop_arm" "worktree-open:" "loop arm includes worktree-open"
 assert_contains "$loop_arm" "worktree-new" "loop arm includes worktree-new"
 assert_contains "$loop_arm" "worktree-lazygit:" "loop arm includes worktree-lazygit"
