@@ -2,9 +2,9 @@
 slug: dashboard-preview-render-fix
 title: Fix dashboard layout — header truncation and corrupted ANSI preview rendering
 priority: P2
-status: pending
+status: in-progress
 created: 2026-09-22_04:37
-updated: 2026-09-22_04:37
+updated: 2026-09-22_05:05
 depends-on: [dashboard-tree-view-consolidation]
 tags: [ux, dashboard, tui, rendering]
 commits: []
