@@ -2,12 +2,12 @@
 slug: dashboard-layout-status-redesign
 title: Dashboard layout + status bar redesign in response to user feedback
 priority: P1
-status: in-progress
+status: done
 created: 2026-09-22_15:06
-updated: 2026-09-23_01:10
+updated: 2026-09-23_01:45
 depends-on: []
 tags: [ux, dashboard, statusbar, design]
-commits: [1b9b401, 24de3f1, 27ac16d, d9c4252, 7d661b2, 6f0524a, 948d2c6, 2425da2, 4d36241, fa7cbac, af5c805, 2df5daa, 4921bb0, 91c748b, 1cc5c84, 2a7e206]
+commits: [1b9b401, 24de3f1, 27ac16d, d9c4252, 7d661b2, 6f0524a, 948d2c6, 2425da2, 4d36241, fa7cbac, af5c805, 2df5daa, 4921bb0, 91c748b, 1cc5c84, 2a7e206, f7f0b3d]
 model: inline
 ---
 
@@ -243,6 +243,8 @@ against the usual discipline, corrected here rather than silently backfilled.
   as contradictory at a skim but are two distinct, correctly-scoped asks.
 
 ### Commits
+- `f7f0b3d` — dashboard: fuzzy-search mode ('/') that doesn't fight action keybindings
+  (this round's last open item — see Follow-up below for the discovery process)
 - `d9c4252` — dashboard+lib: fix broken fuzzy search and stale "working" detection
 - `7d661b2` — dashboard: reverse the popup-height change — go generous, not content-fit
 - `6f0524a` — dashboard: move universal nav into the popup's own title bar
@@ -257,9 +259,22 @@ against the usual discipline, corrected here rather than silently backfilled.
 - `1cc5c84` — dashboard: 'r' renames the highlighted pane too, not just the workspace
 - `2a7e206` — status: three-segment color scheme (chip/content/cap) with literal separators
 
-### Follow-up (still open from the 14-item list)
-- **Fuzzy-search mode shortcut** (e.g. `/`) so typing filter characters doesn't
-  trigger single-letter action keybindings mid-search — not started.
+### Follow-up
+
+**Done in commit `f7f0b3d`** — fuzzy-search mode shortcut. First attempt
+(`--disabled --no-input` + `/:enable-search+show-input`) looked right in
+isolated testing but was wrong: `--expect` keys intercept unconditionally,
+regardless of input-shown/search-enabled state — confirmed by direct
+testing, not assumed. Real fix required retiring `--expect` for
+`print(KEY)+accept` --bind entries plus `unbind(...)`/`rebind(...)` to
+actually add/remove those bindings on `/`/`esc`. Recorded the full gotcha
+chain in `dotfiles/claude/dot-claude/coding-standards/frameworks/
+tmux-fzf.md` (dev-env repo, commit `0183d5e`) so this doesn't need
+re-discovering.
+
+**Still open from the 14-item list** — both need the user's own
+eyes/screenshot; this session's tooling has hit its verification ceiling
+on both:
 - **Vertical space still reported broken** — measured the popup's actual pty
   via `stty -F <pty> size` at 57 rows for a 66-row client, which appears to
   contradict the report; not reconciled with the user's direct observation.
@@ -269,3 +284,8 @@ against the usual discipline, corrected here rather than silently backfilled.
   further visual confirmation; not reconciled with the user's report that it
   isn't visible. Same class of blocker as the item above — needs the user's
   own eyes or a different verification path this environment doesn't have.
+
+**Closing this task**: every item from the 14-item list that was actionable
+without the user's own eyes is shipped and verified above. The two items
+left are handed back directly rather than kept open here — no further
+engineering to do until there's a fresh repro/screenshot for either.
