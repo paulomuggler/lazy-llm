@@ -1,33 +1,46 @@
 #!/usr/bin/env bash
-# llm-status - Output AI pane tab indicator for tmux status bar
+# llm-status - AI pane status segment for tmux status-right
 # Usage: llm-status
 #
-# Renders a tab indicator showing all AI panes with the active one highlighted
-# and a status glyph reflecting each pane's current state.
+# A labeled "AI" chip, then one tile per AI pane (tool name, a real space,
+# then a color-coded status glyph), the active pane highlighted with a
+# filled background instead of bare brackets, then a dim "Prefix+S" hint.
+#
 # For use in tmux status-right: set -g status-right '#(llm-status)'
 #
+# Colors reuse this project's own tmux theme palette (see tmux.conf.local's
+# tmux_conf_theme_colour_* table) rather than inventing a new one, so this
+# segment reads as part of the same UI instead of a bolted-on afterthought:
+#   colour_4  #00afff light blue — the "AI" chip (matches active-pane-border)
+#   colour_5  #ffff00 yellow     — working (generating)
+#   colour_10 #ff00af pink       — waiting (needs you)
+#   colour_11 #5fff00 green      — idle (ready)
+#   colour_3  #8a8a8a light gray — unknown / dim text
+#
 # Status glyphs:
-#   ● working (AI is generating)
-#   ○ idle    (prompt visible, no activity)
-#   ◐ waiting (permission / numbered-choice prompt)
-#   ? unknown (capture failed or unrecognized state)
+#   ● working   ○ idle   ◐ waiting   ? unknown
 #
-# Output examples:
-#   Single pane:  "AI: claude●  S:dash"
-#   Multi pane:   "[claude●] gemini◐  S:dash"  (active pane is bracketed/bold)
-#
-# "S:dash" is a static reminder of Prefix+S (opens the dashboard popup) — lazy-llm
-# has no LazyVim-style always-on keymap display, so this is the cheap always-visible
-# substitute for the one binding people forget. Appended inside the same
-# already-lazy-llm-gated branches below (not before them), so it never appears in
-# plain tmux windows.
+# Output examples (tmux #[..] style codes, interpreted once substituted into
+# status-right — same mechanism this script already relied on for #[bold]):
+#   Single pane:  [AI] claude ●   Prefix+S
+#   Multi pane:   [AI] (claude ●) gemini ◐   Prefix+S   (active pane filled)
 
 set -euo pipefail
 
 # Source shared library for pane resolution + status detection
 source "$(dirname "$0")/lazy-llm-lib.sh"
 
-# Map status string to glyph
+readonly C_BG="#080808"
+readonly C_CHIP="#00afff"
+readonly C_CHIP_FG="#080808"
+readonly C_ACTIVE_BG="#303030"
+readonly C_TEXT="#e4e4e4"
+readonly C_DIM="#8a8a8a"
+readonly C_WORKING="#ffff00"
+readonly C_WAITING="#ff00af"
+readonly C_IDLE="#5fff00"
+readonly C_UNKNOWN="#8a8a8a"
+
 glyph_for() {
   case "$1" in
     working) printf '●' ;;
@@ -35,6 +48,36 @@ glyph_for() {
     waiting) printf '◐' ;;
     *)       printf '?' ;;
   esac
+}
+
+glyph_color() {
+  case "$1" in
+    working) printf '%s' "$C_WORKING" ;;
+    waiting) printf '%s' "$C_WAITING" ;;
+    idle)    printf '%s' "$C_IDLE" ;;
+    *)       printf '%s' "$C_UNKNOWN" ;;
+  esac
+}
+
+# Render one pane's tile. Args: tool status is-active(0|1)
+render_tile() {
+  local tool="$1" status="$2" active="$3"
+  local color glyph
+  color=$(glyph_color "$status")
+  glyph=$(glyph_for "$status")
+  if [ "$active" = "1" ]; then
+    printf '#[fg=%s,bg=%s,bold] %s #[fg=%s,bg=%s,bold]%s#[fg=%s,bg=%s,nobold] ' \
+      "$C_TEXT" "$C_ACTIVE_BG" "$tool" "$color" "$C_ACTIVE_BG" "$glyph" "$C_ACTIVE_BG" "$C_BG"
+  else
+    printf '#[fg=%s,bg=%s] %s #[fg=%s,bg=%s]%s#[default] ' \
+      "$C_TEXT" "$C_BG" "$tool" "$color" "$C_BG" "$glyph"
+  fi
+}
+
+emit() {
+  local body="$1"
+  printf '#[fg=%s,bg=%s,bold] AI #[fg=%s,bg=%s,nobold]#[fg=%s,bg=%s]%s#[fg=%s,bg=%s] Prefix+S #[default]\n' \
+    "$C_CHIP_FG" "$C_CHIP" "$C_CHIP" "$C_BG" "$C_TEXT" "$C_BG" "$body" "$C_DIM" "$C_BG"
 }
 
 # Resolve pane context (exit silently on failure — status bar must not error)
@@ -49,12 +92,9 @@ if [ -z "$AI_PANES" ]; then
   AI_TOOL=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_TOOL 2>/dev/null) || true
   if [ -n "$AI_TOOL" ]; then
     ai_pane_id=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_PANE_ID 2>/dev/null) || ai_pane_id=""
-    if [ -n "$ai_pane_id" ]; then
-      glyph=$(glyph_for "$(lazy_llm_detect_pane_status "$ai_pane_id" "$AI_TOOL")")
-    else
-      glyph="?"
-    fi
-    echo "AI: ${AI_TOOL}${glyph}  S:dash"
+    status="unknown"
+    [ -n "$ai_pane_id" ] && status=$(lazy_llm_detect_pane_status "$ai_pane_id" "$AI_TOOL")
+    emit "$(render_tile "$AI_TOOL" "$status" 1)"
   fi
   exit 0
 fi
@@ -65,23 +105,19 @@ read -ra tool_arr <<< "$AI_TOOLS"
 current_idx="${AI_PANE_IDX:-0}"
 total=${#tool_arr[@]}
 
-# Single pane: simple display
+# Single pane: simple tile
 if [ "$total" -le 1 ]; then
-  glyph=$(glyph_for "$(lazy_llm_detect_pane_status "${pane_arr[0]}" "${tool_arr[0]}")")
-  echo "AI: ${tool_arr[0]}${glyph}  S:dash"
+  status=$(lazy_llm_detect_pane_status "${pane_arr[0]}" "${tool_arr[0]}")
+  emit "$(render_tile "${tool_arr[0]}" "$status" 1)"
   exit 0
 fi
 
-# Multi pane: render tab indicator with per-pane status glyphs
-output=""
+# Multi pane: one tile per pane, active one filled
+body=""
 for i in "${!tool_arr[@]}"; do
-  glyph=$(glyph_for "$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]}")")
-  if [ "$i" -eq "$current_idx" ]; then
-    output+="#[bold][${tool_arr[$i]}${glyph}]#[nobold]"
-  else
-    output+=" ${tool_arr[$i]}${glyph}"
-  fi
+  status=$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]}")
+  active=0
+  [ "$i" -eq "$current_idx" ] && active=1
+  body+=$(render_tile "${tool_arr[$i]}" "$status" "$active")
 done
-
-# Trim leading space, append the dashboard-open hint
-echo "${output# }  S:dash"
+emit "$body"
