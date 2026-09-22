@@ -48,6 +48,28 @@ status=$(lazy_llm_detect_pane_status "$pane_id" "$tool")
 color=$(glyph_color "$status")
 glyph=$(glyph_for "$status")
 
+# This pane's display label -- its dashboard rename if one's set, else the
+# plain tool name (lazy_llm_pane_display_label, shared with llm-status and
+# the dashboard tree, so a pane rename shows up everywhere consistently).
+# Resolve session:window FROM pane_id -- this script only ever receives the
+# target pane's own id/tool, not its window context.
+display_label="$tool"
+sw=$(tmux display-message -t "$pane_id" -p '#S:#I' 2>/dev/null) || sw=""
+if [ -n "$sw" ]; then
+  ai_panes=$(tmux show-option -wv -t "$sw" @AI_PANES 2>/dev/null) || ai_panes=""
+  ai_names=$(tmux show-option -wv -t "$sw" @AI_PANE_NAMES 2>/dev/null) || ai_names=""
+  if [ -n "$ai_panes" ]; then
+    idx=0
+    for p in $ai_panes; do
+      if [ "$p" = "$pane_id" ]; then
+        display_label=$(lazy_llm_pane_display_label "$tool" "$ai_names" "$idx")
+        break
+      fi
+      idx=$((idx + 1))
+    done
+  fi
+fi
+
 read -r ws_count waiting_count < <(lazy_llm_compute_summary)
 summary="${ws_count}ws"
 if [ "$waiting_count" -gt 0 ]; then
@@ -62,4 +84,4 @@ fi
 # bug) — everything here now has an explicit color that doesn't fade with
 # focus, matching the status-right segment's own tiles.
 printf ' #[fg=%s]%s#[default] │ #[fg=%s]%s #[fg=%s]%s#[default] ' \
-  "$C_DIM" "$summary" "$C_TEXT" "$tool" "$color" "$glyph"
+  "$C_DIM" "$summary" "$C_TEXT" "$display_label" "$color" "$glyph"
