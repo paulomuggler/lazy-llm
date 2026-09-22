@@ -105,7 +105,7 @@ render_sessions_tab() {
 
   local lines="" header
   if [[ -z "$data" ]]; then
-    header="[Workspaces] No lazy-llm workspaces. n: new │ 2: worktrees │ q/esc: close"
+    header="[Workspaces] none yet. n:new ?:help q:close"
   else
     while IFS=$'\t' read -r name dir tools wins attached; do
       local first_win
@@ -180,10 +180,15 @@ render_sessions_tab() {
       fi
     done <<< "$data"
     lines="${lines%$'\n'}"
-    # Two lines (fzf's --header displays each line of a multi-line string as
-    # its own sticky row) so the full hint list stays readable instead of
-    # fzf hard-truncating one long line with '..' at narrower popup widths.
-    header="[Workspaces] enter: switch │ n: new │ K: kill │ r: rename │ z: fold │ q/esc: close"$'\n'"a: add pane │ ]/[: cycle pane │ R: refresh │ ?: help │ 2: worktrees"
+    # Deliberately short and static — NOT an enumeration of every key. With a
+    # right-side preview active, --header's available width is the LIST
+    # column's share (~45% of the popup), not the popup's own width — at a
+    # 90-column terminal that's only ~30 characters before fzf truncates with
+    # '..', regardless of how many lines the header string has. Trying to
+    # enumerate keys here is fundamentally fragile against terminal width;
+    # the full list lives in the '?' help overlay instead (see dashboard-help-tab
+    # in .agents/TODO, which builds a more persistent version of this).
+    header="[Workspaces] ?:help q:close"
   fi
 
   # Preview: branch on the row's hidden id (field 1) to find the right pane —
@@ -278,7 +283,7 @@ render_worktrees_tab() {
 
   if [[ -z "$data" ]]; then
     lines="(No worktrees in this repo, or not inside a git repo.)"
-    header="[Worktrees] n: new │ R: refresh │ 1: workspaces │ q/esc: close"
+    header="[Worktrees] none. n:new ?:help q:close"
   else
     lines=""
     while IFS=$'\t' read -r path branch dirty ahead behind session pr; do
@@ -301,8 +306,8 @@ render_worktrees_tab() {
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
-    # Two lines — see the matching comment on the Workspaces tab's header.
-    header="[Worktrees] enter: open/attach │ n: new │ g: lazygit │ K: cleanup │ q/esc: close"$'\n'"R: refresh │ ?: help │ 1: workspaces"
+    # Short and static — see the matching comment on the Workspaces tab's header.
+    header="[Worktrees] ?:help q:close"
   fi
 
   # Preview: git status -sb + recent log for the selected worktree path.
