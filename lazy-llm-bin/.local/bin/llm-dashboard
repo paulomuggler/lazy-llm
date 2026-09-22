@@ -126,7 +126,26 @@ render_sessions_tab() {
   local data
   data=$(lazy_llm_gather_sessions)
 
+  # Put the launching workspace first, so it (and, via --bind start:pos below,
+  # its active pane) is what's highlighted the moment the dashboard opens —
+  # not whatever happened to sort first alphabetically/by tmux's own order.
+  if [[ -n "$launch_ws" && -n "$data" ]]; then
+    # awk, not grep -- launch_ws is compared against field 1 exactly (not as
+    # a regex/substring pattern), so a workspace name containing characters
+    # that are regex-special, or that happens to be a substring of another
+    # workspace's name or path, can't misfire this.
+    data=$(awk -F'\t' -v w="$launch_ws" '$1==w{first=$0; next} {rest = rest $0 ORS} END{if (first != "") print first; printf "%s", rest}' <<< "$data")
+    # Trailing newline from the ORS-joined "rest" block would otherwise
+    # become a stray empty row in the tree.
+    data="${data%$'\n'}"
+  fi
+
   local lines="" header
+  # 1-based line number to place the cursor on when the dashboard opens —
+  # defaults to 1 (top row); set precisely once we reach the launch
+  # workspace's active pane row below (or its own row, if it has none shown).
+  local _start_pos=1
+  local _line_no=0
   if [[ -z "$data" ]]; then
     header="no workspaces yet — n:new"
   else
@@ -188,6 +207,10 @@ render_sessions_tab() {
       ws_display=$(printf '%s %-26s  %-40s  %s %-14s %sw%s' \
         "$fold_glyph" "$name" "$short_dir" "$agg_glyph" "$tools" "$wins" "$mark")
       lines+="ws:${name}"$'\t'"${ws_display}"$'\n'
+      _line_no=$((_line_no + 1))
+      # Fallback start position: the launch workspace's own row, in case it
+      # has no pane rows to land on below (collapsed, or no panes at all).
+      [[ "$name" == "$launch_ws" ]] && _start_pos=$_line_no
 
       if [[ -z "${_collapsed[$name]:-}" ]]; then
         for i in "${!pane_arr[@]}"; do
@@ -199,6 +222,9 @@ render_sessions_tab() {
           local pane_display
           pane_display=$(printf '    ↳ %-12s %s%s' "$tool" "$glyph" "$active_mark")
           lines+="pane:${name}:${i}:${pid}"$'\t'"${pane_display}"$'\n'
+          _line_no=$((_line_no + 1))
+          # Precise start position: this workspace's currently-active pane.
+          [[ "$name" == "$launch_ws" && "$i" -eq "$reply_idx" ]] && _start_pos=$_line_no
         done
       fi
     done <<< "$data"
@@ -247,6 +273,7 @@ render_sessions_tab() {
     --preview="$preview_cmd" \
     --preview-window="right:55%:follow" \
     --bind='q:abort' \
+    --bind="start:pos(${_start_pos})" \
     --expect="1,2,3,n,K,r,R,z,a,],[,?" \
   ) || { echo "quit"; return 0; }
 
