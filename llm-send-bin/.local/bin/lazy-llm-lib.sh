@@ -92,7 +92,13 @@ lazy_llm_detect_status_from_content() {
   local content
   content=$(cat)
 
-  local interrupt_pat='ctrl\+c to interrupt'
+  # "ctrl+c to interrupt" was this pattern's original signal but current Claude
+  # Code UI versions don't show it — confirmed live against a real busy session:
+  # the actual "working" tells are the spinner/duration line ("Boondoggling…
+  # (6m 42s · ↓ 22.4k tokens)") always present while generating, and "esc to
+  # interrupt" specifically while a tool call is running. Match all three so
+  # this survives future UI wording changes better than any single string.
+  local interrupt_pat='ctrl\+c to interrupt|esc to interrupt|\([0-9]+m [0-9]+s'
   local waiting_pat='\[[yY]/[yYnN]\]|^[[:space:]]*[1-9][.)][[:space:]]'
   local prompt_pat='❯'
 
