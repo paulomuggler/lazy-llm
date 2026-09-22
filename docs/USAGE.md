@@ -34,7 +34,7 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ See all AI panes and their status        │ Prefix+S — opens the Workspaces tree; every AI pane is nested under its workspace                │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Manage lazy-llm workspaces               │ Prefix+S — opens the dashboard (Workspaces=1, Worktrees=2 tabs)                                  │
+  │ Manage lazy-llm workspaces               │ Prefix+S — opens the dashboard (Workspaces=1, Worktrees=2, Help=3 tabs)                          │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Spawn workspace bound to a worktree      │ lazy-llm -W <branch> — creates branch+worktree if needed, always spawns a new workspace          │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤

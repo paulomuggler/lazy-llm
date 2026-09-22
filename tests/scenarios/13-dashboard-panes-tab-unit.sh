@@ -163,17 +163,18 @@ fi
 
 # ──────────────────────────────────────────────────────────────────────────
 # 8. Help text documents the tree (fold key, pane-row Enter behavior) instead
-#    of a separate Panes tab
+#    of a separate Panes tab — tab 3 is legitimately reused for the Help tab
+#    (see dashboard-help-tab), not a leftover Panes reference.
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
 echo "Test 11: help text documents the workspace tree, not a separate Panes tab..."
 help_out=$("$DASHBOARD" --help 2>&1)
 assert_contains "$help_out" "fold" "help mentions fold/unfold (z key)"
 assert_contains "$help_out" "CURRENT workspace" "help clarifies a/]/[  scope to the current workspace"
-if echo "$help_out" | command grep -qE '^\s*3\s'; then
-    print_fail "help still documents a tab-3 keybinding (Panes tab should be gone)"
+if command grep -qE '^render_panes_tab\(\)|action:pane-cycle' "$DASHBOARD"; then
+    print_fail "stale Panes-tab-3 machinery still present (render_panes_tab or action:pane-cycle)"
 else
-    print_pass "help no longer documents a separate tab-3 (Panes) keybinding"
+    print_pass "no stale Panes-tab-3 machinery — tab 3 is legitimately Help now"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────

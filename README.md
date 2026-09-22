@@ -35,7 +35,7 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Git integration**: Editor pane includes vim-fugitive, gitsigns, and vgit for tracking changes
 - **Multiple AI tools**: Supports Claude, Gemini, Codex, Grok, Aider, or any agentic TUI tool
 - **Multi-AI pane tabbing**: Run multiple AI tools side-by-side, cycling between them with keybindings
-- **Dashboard popup**: `Prefix+S` opens a tabbed popup (Workspaces / Worktrees). The Workspaces tab is a collapsible tree — every workspace with its AI panes nested beneath it, each with its own status glyph and live ANSI preview, `z` to fold/unfold
+- **Dashboard popup**: `Prefix+S` opens a tabbed popup (Workspaces / Worktrees / Help). The Workspaces tab is a collapsible tree — every workspace with its AI panes nested beneath it, each with its own status glyph and live ANSI preview, `z` to fold/unfold. Full keybinding reference is in the Help tab (`3` or `?` from either other tab) — the dashboard's own headers only have room for a couple of hints
 - **Scoped keybindings**: All tmux and nvim bindings are scoped — no interference outside lazy-llm workspaces
 - **Confirmation dialogs**: Removing AI panes requires confirmation (bypass with `--force`)
 - **Stale pane recovery**: Dead panes are auto-pruned; holding windows auto-recover if accidentally closed
@@ -261,7 +261,7 @@ Registered automatically when a workspace is created. Keybindings are **scoped t
 | `Prefix + C-p` | Cycle to previous AI pane |
 | `Prefix + A` | Add new AI pane (tool picker menu) |
 | `Prefix + C-x` | Remove current AI pane |
-| `Prefix + S` | Dashboard popup (Workspaces tree / Worktrees tabs; switch with `1`/`2`) |
+| `Prefix + S` | Dashboard popup (Workspaces tree / Worktrees / Help tabs; switch with `1`/`2`/`3`, or `?` for Help from either other tab) |
 
 ### Multi-AI Pane Tabbing
 
