@@ -261,7 +261,7 @@ create_workspace_window() {
       aider  '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
   tmux bind-key -T prefix S if-shell \
     "tmux show-option -wqv @AI_PANES" \
-    "display-popup -E -w 90% -h 70% '$HOME/.local/bin/llm-dashboard'"
+    "run-shell '$HOME/.local/bin/llm-dashboard-open'"
   # Prefix+L retired — its surface (Panes tab) lives inside llm-dashboard now,
   # reachable from any tab via the '3' key.
 

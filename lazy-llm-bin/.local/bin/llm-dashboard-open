@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# llm-dashboard-open - launch llm-dashboard in a popup sized to its actual
+# content, instead of a fixed percentage that leaves a mostly-empty popup
+# open when there are only a couple of workspaces.
+#
+# Bound to Prefix+S (see lazy-llm's window-setup function) via `run-shell`,
+# since tmux's own `bind-key ... display-popup -h N` needs N computed before
+# the popup opens — that has to happen in a real shell, not tmux's own
+# command language.
+
+set -euo pipefail
+
+_lib_sibling="$(dirname "$0")/lazy-llm-lib.sh"
+if [[ -f "$_lib_sibling" ]]; then
+  # shellcheck source=/dev/null
+  source "$_lib_sibling"
+else
+  # shellcheck source=/dev/null
+  source "$(dirname "$0")/../../../llm-send-bin/.local/bin/lazy-llm-lib.sh"
+fi
+
+# Rough row estimate: one row per workspace, one more per AI pane it has
+# (the tree is expanded by default), plus a fixed chrome allowance (border,
+# two header lines, fzf's own stats/prompt line). Doesn't need to be exact —
+# just close enough that the popup isn't dominated by blank space.
+estimate_rows() {
+  local data rows=0
+  data=$(lazy_llm_gather_sessions 2>/dev/null) || { echo 0; return; }
+  [[ -z "$data" ]] && { echo 0; return; }
+  local name dir tools wins attached
+  while IFS=$'\t' read -r name dir tools wins attached; do
+    rows=$((rows + 1))
+    local pane_count
+    pane_count=$(wc -w <<< "$tools")
+    rows=$((rows + pane_count))
+  done <<< "$data"
+  echo "$rows"
+}
+
+CHROME=6
+MIN_HEIGHT=16
+
+content_rows=$(estimate_rows)
+height=$((content_rows + CHROME))
+[[ "$height" -lt "$MIN_HEIGHT" ]] && height=$MIN_HEIGHT
+
+client_h=$(tmux display-message -p '#{client_height}' 2>/dev/null) || client_h=50
+max_height=$((client_h * 85 / 100))
+[[ "$height" -gt "$max_height" ]] && height=$max_height
+
+exec tmux display-popup -E -w 90% -h "${height}" "$HOME/.local/bin/llm-dashboard" "$@"
