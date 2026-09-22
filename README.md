@@ -356,6 +356,16 @@ While the AI makes edits, use the editor pane to review diffs, stage changes, an
 
 Detection runs against the AI pane's content via `tmux capture-pane`. Patterns live in `lazy_llm_detect_status_from_content` in `lazy-llm-lib.sh` and default to Claude-tuned regexes; other tools (gemini, codex, grok, aider) fall through to the same defaults as best-effort.
 
+**Claude panes get a more reliable signal.** A hook script
+(`dev-env`'s `dotfiles/claude/dot-claude/hooks/lazy-llm-status-notify.sh`, wired to
+Claude Code's `Notification` and `Stop` events in `~/.claude/settings.json`) writes
+`waiting`/`idle` to `~/.cache/lazy-llm/status/<pane_id>` as those events fire, and also
+fires a desktop notification (`notify-send`) naming the workspace when a pane
+transitions into `waiting` — so you find out Claude needs input without having to be
+looking at that pane. `lazy_llm_detect_pane_status` prefers this event-driven status
+(when fresh, ≤30s old) over the content scrape for `tool=claude`; every other tool
+always uses the scrape.
+
 ### Neovim Plugins
 
 - **llm-send plugin** (`llm-send.lua`): Keymaps for sending, pulling, cycling, context references, and @ path completion. All keymaps are gated on `$TMUX` — no interference in standalone nvim.

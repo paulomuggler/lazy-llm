@@ -113,14 +113,66 @@ lazy_llm_detect_status_from_content() {
   fi
 }
 
+# Freshness window (seconds) for a hook-written status file to be trusted.
+# Long enough to survive one status-bar refresh interval (status-interval
+# default 15s), short enough that a status file from a since-closed pane, or
+# one that's gone stale mid-generation, doesn't lie for long — see
+# lazy_llm_detect_pane_status below.
+_LAZY_LLM_HOOK_STATUS_MAX_AGE=30
+
+# Read a Claude Code hook-written status for a pane, if fresh.
+# Written by dev-env's ~/.claude/hooks/lazy-llm-status-notify.sh on the
+# Notification (permission_prompt/idle_prompt -> waiting) and Stop
+# (-> idle) hook events. The hook never writes "working" — a pane that's
+# actively generating has no fresh file (or an aged-out one), and falls
+# through to the content-scrape path, which detects "working" fine via the
+# interrupt-hint pattern.
+# Args:   $1 pane_id
+# Stdout: waiting | idle   (only if a fresh file says so)
+# Returns 1 (nothing echoed) if no usable hook file exists.
+_lazy_llm_read_hook_status() {
+  local pane_id="$1"
+  local status_file="$HOME/.cache/lazy-llm/status/$pane_id"
+  [[ -f "$status_file" ]] || return 1
+
+  local hook_state hook_ts
+  read -r hook_state hook_ts < "$status_file" 2>/dev/null || return 1
+  [[ "$hook_state" == "waiting" || "$hook_state" == "idle" ]] || return 1
+  [[ "$hook_ts" =~ ^[0-9]+$ ]] || return 1
+
+  local now age
+  now=$(date +%s)
+  age=$((now - hook_ts))
+  [[ "$age" -ge 0 && "$age" -le "$_LAZY_LLM_HOOK_STATUS_MAX_AGE" ]] || return 1
+
+  echo "$hook_state"
+  return 0
+}
+
 # Capture a pane's recent content and classify it.
 # Args:   $1 pane_id   (required, %N format)
 #         $2 tool_name (optional, default: claude)
 # Stdout: working | idle | waiting | unknown
 # Returns 0 always; emits "unknown" if capture fails.
+#
+# For tool=claude, prefers a fresh hook-written status (see
+# _lazy_llm_read_hook_status) over the content scrape below — hooks are
+# event-driven and don't suffer the scrape's timing/UI-text fragility.
+# Every other tool (gemini/codex/grok/aider) always uses the scrape path.
 lazy_llm_detect_pane_status() {
   local pane_id="${1:?pane_id required}"
   local tool="${2:-claude}"
+
+  if [[ "$tool" == "claude" ]]; then
+    local hook_status
+    # `if cmd=$(...); then` (not `cmd=$(...) && ...`) — a bare `&&` here would
+    # trip callers' `set -e` on the common case of no hook file existing yet.
+    if hook_status=$(_lazy_llm_read_hook_status "$pane_id"); then
+      echo "$hook_status"
+      return 0
+    fi
+  fi
+
   local content
   content=$(tmux capture-pane -p -t "$pane_id" -S -200 2>/dev/null) || { echo unknown; return 0; }
   printf '%s' "$content" | lazy_llm_detect_status_from_content "$tool"
