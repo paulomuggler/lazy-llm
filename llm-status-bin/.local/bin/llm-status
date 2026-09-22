@@ -2,9 +2,11 @@
 # llm-status - AI pane status segment for tmux status-right
 # Usage: llm-status
 #
-# A labeled "AI" chip, then one tile per AI pane (tool name, a real space,
-# then a color-coded status glyph), the active pane highlighted with a
-# filled background instead of bare brackets, then a dim "Prefix+S" hint.
+# A labeled "AI" chip, a glanceable summary across ALL lazy-llm workspaces
+# (how many exist, how many have a pane waiting on you), then one tile per
+# AI pane in the CURRENT window (tool name, a real space, then a
+# color-coded status glyph, active pane highlighted with a filled
+# background), then a compact dashboard-open hint.
 #
 # For use in tmux status-right: set -g status-right '#(llm-status)'
 #
@@ -13,17 +15,24 @@
 # segment reads as part of the same UI instead of a bolted-on afterthought:
 #   colour_4  #00afff light blue — the "AI" chip (matches active-pane-border)
 #   colour_5  #ffff00 yellow     — working (generating)
-#   colour_10 #ff00af pink       — waiting (needs you)
+#   colour_10 #ff00af pink       — waiting (needs you) — also the summary's
+#                                  waiting-count color, so it's the same
+#                                  "needs attention" signal at both scopes
 #   colour_11 #5fff00 green      — idle (ready)
 #   colour_3  #8a8a8a light gray — unknown / dim text
 #
 # Status glyphs:
 #   ● working   ○ idle   ◐ waiting   ? unknown
 #
-# Output examples (tmux #[..] style codes, interpreted once substituted into
-# status-right — same mechanism this script already relied on for #[bold]):
-#   Single pane:  [AI] claude ●   Prefix+S
-#   Multi pane:   [AI] (claude ●) gemini ◐   Prefix+S   (active pane filled)
+# Output shape:
+#   [AI] 3ws 1◐  claude ● gemini ◐  Dash ^B+S
+#        ^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^
+#        summary  current window's   dashboard
+#        across    own AI panes      hint —
+#        every                       ^B is this
+#        workspace                   tmux's
+#                                     actual
+#                                     prefix key
 
 set -euo pipefail
 
@@ -74,10 +83,77 @@ render_tile() {
   fi
 }
 
+# Get the pane list for a workspace's first window, in the same two-shape
+# (modern @AI_PANES vs legacy single @AI_PANE_ID) that the dashboard tree
+# already handles — same source of truth, not a second implementation.
+# Args: workspace_name  Sets: _S_PANES, _S_TOOLS (arrays, via globals below)
+_summary_panes_for() {
+  local name="$1" first_win
+  # Guarded: under this script's set -e, an unguarded pipeline failing here
+  # (e.g. the workspace got killed between lazy_llm_gather_sessions listing
+  # it and this loop reaching it) would abort the WHOLE status line, not
+  # just skip this one workspace.
+  first_win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1) || first_win=""
+  [ -z "$first_win" ] && { _S_PANES=(); _S_TOOLS=(); return; }
+  lazy_llm_read_multi_state_for "$name" "$first_win"
+  if [ -n "$REPLY_PANES" ]; then
+    read -ra _S_PANES <<< "$REPLY_PANES"
+    read -ra _S_TOOLS <<< "$REPLY_TOOLS"
+  else
+    local single_pane_id
+    single_pane_id=$(tmux show-option -wv -t "$name:$first_win" @AI_PANE_ID 2>/dev/null) || single_pane_id=""
+    if [ -n "$single_pane_id" ]; then
+      local single_tool
+      single_tool=$(tmux show-option -wv -t "$name:$first_win" @AI_TOOL 2>/dev/null) || single_tool="claude"
+      _S_PANES=("$single_pane_id")
+      _S_TOOLS=("$single_tool")
+    else
+      _S_PANES=()
+      _S_TOOLS=()
+    fi
+  fi
+}
+
+# Summary across every lazy-llm workspace, not just this window. Echoes
+# "<workspace-count> <waiting-count>". Cheap enough at typical scale (a
+# handful of workspaces) for the ~10s status-interval this runs on.
+compute_summary() {
+  local data
+  data=$(lazy_llm_gather_sessions 2>/dev/null) || { printf '0 0\n'; return; }
+  if [ -z "$data" ]; then
+    printf '0 0\n'
+    return
+  fi
+  local ws_count=0 waiting_count=0
+  local name dir tools wins attached
+  while IFS=$'\t' read -r name dir tools wins attached; do
+    ws_count=$((ws_count + 1))
+    local _S_PANES=() _S_TOOLS=()
+    _summary_panes_for "$name"
+    local i st has_waiting=false
+    for i in "${!_S_PANES[@]}"; do
+      st=$(lazy_llm_detect_pane_status "${_S_PANES[$i]}" "${_S_TOOLS[$i]:-claude}")
+      [ "$st" = "waiting" ] && has_waiting=true
+    done
+    [ "$has_waiting" = true ] && waiting_count=$((waiting_count + 1))
+  done <<< "$data"
+  printf '%s %s\n' "$ws_count" "$waiting_count"
+}
+
+render_summary() {
+  local ws="$1" waiting="$2"
+  local out
+  out=$(printf '#[fg=%s,bg=%s]%sws' "$C_TEXT" "$C_BG" "$ws")
+  if [ "$waiting" -gt 0 ]; then
+    out+=$(printf ' #[fg=%s,bg=%s,bold]%s◐#[fg=%s,bg=%s,nobold]' "$C_WAITING" "$C_BG" "$waiting" "$C_TEXT" "$C_BG")
+  fi
+  printf '%s ' "$out"
+}
+
 emit() {
-  local body="$1"
-  printf '#[fg=%s,bg=%s,bold] AI #[fg=%s,bg=%s,nobold]#[fg=%s,bg=%s]%s#[fg=%s,bg=%s] Prefix+S #[default]\n' \
-    "$C_CHIP_FG" "$C_CHIP" "$C_CHIP" "$C_BG" "$C_TEXT" "$C_BG" "$body" "$C_DIM" "$C_BG"
+  local summary="$1" body="$2"
+  printf '#[fg=%s,bg=%s,bold] AI #[fg=%s,bg=%s,nobold]#[fg=%s,bg=%s] %s%s#[fg=%s,bg=%s] Dash ^B+S #[default]\n' \
+    "$C_CHIP_FG" "$C_CHIP" "$C_CHIP" "$C_BG" "$C_TEXT" "$C_BG" "$summary" "$body" "$C_DIM" "$C_BG"
 }
 
 # Resolve pane context (exit silently on failure — status bar must not error)
@@ -87,6 +163,9 @@ lazy_llm_resolve_session_window || exit 0
 # Read multi-pane state
 lazy_llm_read_multi_state
 
+read -r _ws_count _waiting_count < <(compute_summary)
+summary_text=$(render_summary "$_ws_count" "$_waiting_count")
+
 # Fall back to single-pane mode
 if [ -z "$AI_PANES" ]; then
   AI_TOOL=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_TOOL 2>/dev/null) || true
@@ -94,7 +173,7 @@ if [ -z "$AI_PANES" ]; then
     ai_pane_id=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_PANE_ID 2>/dev/null) || ai_pane_id=""
     status="unknown"
     [ -n "$ai_pane_id" ] && status=$(lazy_llm_detect_pane_status "$ai_pane_id" "$AI_TOOL")
-    emit "$(render_tile "$AI_TOOL" "$status" 1)"
+    emit "$summary_text" "$(render_tile "$AI_TOOL" "$status" 1)"
   fi
   exit 0
 fi
@@ -108,7 +187,7 @@ total=${#tool_arr[@]}
 # Single pane: simple tile
 if [ "$total" -le 1 ]; then
   status=$(lazy_llm_detect_pane_status "${pane_arr[0]}" "${tool_arr[0]}")
-  emit "$(render_tile "${tool_arr[0]}" "$status" 1)"
+  emit "$summary_text" "$(render_tile "${tool_arr[0]}" "$status" 1)"
   exit 0
 fi
 
@@ -120,4 +199,4 @@ for i in "${!tool_arr[@]}"; do
   [ "$i" -eq "$current_idx" ] && active=1
   body+=$(render_tile "${tool_arr[$i]}" "$status" "$active")
 done
-emit "$body"
+emit "$summary_text" "$body"
