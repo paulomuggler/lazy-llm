@@ -2,18 +2,32 @@
 # llm-status - AI pane status segment for tmux status-right
 # Usage: llm-status
 #
-# A labeled "AI" chip, a glanceable summary across ALL lazy-llm workspaces
-# (how many exist, how many have a pane waiting on you), then one tile per
-# AI pane in the CURRENT window (tool name, a real space, then a
-# color-coded status glyph, active pane highlighted with a filled
-# background), then a compact dashboard-open hint.
+# Three segments, color-coded (no literal separators between THEM — the
+# color change alone marks the boundary, per user request), with a small
+# end-cap for visual "pop" against the rest of the status line:
+#
+#   [ AI ][ 3ws 1◐ │ claude ● │ gemini ◐ │ Dash ^B+S ][cap]
+#    strong          faded-blue content, each PART separated        strong
+#    blue            by a literal " │ " (summary │ tile │ tile │…)   blue
+#    chip                                                            + cap
+#
+# Inside the content segment, every part IS separated by a literal "│"
+# (summary, each pane tile, the dashboard hint) — that's the user's "AI |
+# sessions info | session a | session b | etc | dash hint" ask. The active
+# pane's tile swaps to the strong-blue background (same color as the chip
+# and cap) instead of a separator, so "which pane is focused" reads as
+# "which tile matches the brand accent" at a glance.
 #
 # For use in tmux status-right: set -g status-right '#(llm-status)'
 #
 # Colors reuse this project's own tmux theme palette (see tmux.conf.local's
 # tmux_conf_theme_colour_* table) rather than inventing a new one, so this
 # segment reads as part of the same UI instead of a bolted-on afterthought:
-#   colour_4  #00afff light blue — the "AI" chip (matches active-pane-border)
+#   colour_4  #00afff light blue — chip / active-tile / cap (matches
+#                                  active-pane-border) — the "strong blue"
+#   #005f87   muted blue         — content segment background — the
+#                                  "faded blue" (derived from colour_4, not
+#                                  in the theme table, but same hue family)
 #   colour_5  #ffff00 yellow     — working (generating)
 #   colour_10 #ff00af pink       — waiting (needs you) — also the summary's
 #                                  waiting-count color, so it's the same
@@ -25,30 +39,29 @@
 #   ● working   ○ idle   ◐ waiting   ? unknown
 #
 # Output shape:
-#   [AI] 3ws 1◐  claude ● gemini ◐  Dash ^B+S
-#        ^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^
-#        summary  current window's   dashboard
-#        across    own AI panes      hint —
-#        every                       ^B is this
-#        workspace                   tmux's
-#                                     actual
-#                                     prefix key
+#   [AI] 3ws 1◐ │ claude ● │ gemini ◐ │ Dash ^B+S ▐
+#        ^^^^^^   ^^^^^^^^   ^^^^^^^^   ^^^^^^^^^
+#        summary  current window's own AI panes    dashboard hint —
+#        across   (active pane's tile is filled     ^B is this tmux's
+#        every    with the strong-blue accent)       actual prefix key
+#        workspace
 
 set -euo pipefail
 
 # Source shared library for pane resolution + status detection
 source "$(dirname "$0")/lazy-llm-lib.sh"
 
-readonly C_BG="#080808"
 readonly C_CHIP="#00afff"
 readonly C_CHIP_FG="#080808"
-readonly C_ACTIVE_BG="#303030"
+readonly C_CONTENT_BG="#005f87"
+readonly C_ACTIVE_BG="$C_CHIP"
 readonly C_TEXT="#e4e4e4"
-readonly C_DIM="#8a8a8a"
+readonly C_DIM="#bcd4e0"
 readonly C_WORKING="#ffff00"
 readonly C_WAITING="#ff00af"
 readonly C_IDLE="#5fff00"
 readonly C_UNKNOWN="#8a8a8a"
+readonly C_SEP="#3d7ea6"
 
 glyph_for() {
   case "$1" in
@@ -68,18 +81,22 @@ glyph_color() {
   esac
 }
 
-# Render one pane's tile. Args: tool status is-active(0|1)
+# Render one pane's tile (one "part" of the content segment). Args: tool
+# status is-active(0|1). Active swaps to the strong-blue accent background
+# (same color as the chip and cap) instead of the content segment's own
+# faded-blue — that's the "active pane" signal, no separate highlight color
+# to invent.
 render_tile() {
   local tool="$1" status="$2" active="$3"
   local color glyph
   color=$(glyph_color "$status")
   glyph=$(glyph_for "$status")
   if [ "$active" = "1" ]; then
-    printf '#[fg=%s,bg=%s,bold] %s #[fg=%s,bg=%s,bold]%s#[fg=%s,bg=%s,nobold] ' \
-      "$C_TEXT" "$C_ACTIVE_BG" "$tool" "$color" "$C_ACTIVE_BG" "$glyph" "$C_ACTIVE_BG" "$C_BG"
+    printf '#[fg=%s,bg=%s,bold]%s #[fg=%s,bg=%s,bold]%s#[nobold]' \
+      "$C_CHIP_FG" "$C_ACTIVE_BG" "$tool" "$color" "$C_ACTIVE_BG" "$glyph"
   else
-    printf '#[fg=%s,bg=%s] %s #[fg=%s,bg=%s]%s#[default] ' \
-      "$C_TEXT" "$C_BG" "$tool" "$color" "$C_BG" "$glyph"
+    printf '#[fg=%s,bg=%s]%s #[fg=%s,bg=%s]%s' \
+      "$C_TEXT" "$C_CONTENT_BG" "$tool" "$color" "$C_CONTENT_BG" "$glyph"
   fi
 }
 
@@ -91,11 +108,11 @@ render_tile() {
 render_summary() {
   local ws="$1" waiting="$2"
   local out
-  out=$(printf '#[fg=%s,bg=%s]%sws' "$C_TEXT" "$C_BG" "$ws")
+  out=$(printf '#[fg=%s,bg=%s]%sws' "$C_TEXT" "$C_CONTENT_BG" "$ws")
   if [ "$waiting" -gt 0 ]; then
-    out+=$(printf ' #[fg=%s,bg=%s,bold]%s◐#[fg=%s,bg=%s,nobold]' "$C_WAITING" "$C_BG" "$waiting" "$C_TEXT" "$C_BG")
+    out+=$(printf ' #[fg=%s,bg=%s,bold]%s◐#[fg=%s,bg=%s,nobold]' "$C_WAITING" "$C_CONTENT_BG" "$waiting" "$C_TEXT" "$C_CONTENT_BG")
   fi
-  printf '%s ' "$out"
+  printf '%s' "$out"
 }
 
 # Dynamic dashboard hint — "^B+S" derived from whatever this tmux's prefix
@@ -114,12 +131,31 @@ prefix_hint() {
   fi
 }
 
+render_hint() {
+  printf '#[fg=%s,bg=%s]Dash %s' "$C_DIM" "$C_CONTENT_BG" "$(prefix_hint)+S"
+}
+
+# Join content parts with a literal "│" separator (the per-user "AI |
+# sessions info | session a | session b | etc | dash hint" ask) — every part
+# already sets its own fg/bg, so the separator just needs its own color and
+# doesn't have to restore anything afterward.
+join_parts() {
+  local sep out part first=1
+  sep=$(printf ' #[fg=%s,bg=%s]│#[fg=%s,bg=%s] ' "$C_SEP" "$C_CONTENT_BG" "$C_TEXT" "$C_CONTENT_BG")
+  out=""
+  for part in "$@"; do
+    if [ "$first" = 1 ]; then out="$part"; first=0; else out+="${sep}${part}"; fi
+  done
+  printf '%s' "$out"
+}
+
+# The three macro segments (chip / content / cap) are distinguished by
+# color alone, per user request — no literal separator between THEM, only
+# inside the content segment (join_parts above).
 emit() {
-  local summary="$1" body="$2"
-  local hint
-  hint="$(prefix_hint)+S"
-  printf '#[fg=%s,bg=%s,bold] AI #[fg=%s,bg=%s,nobold]#[fg=%s,bg=%s] %s%s#[fg=%s,bg=%s] Dash %s #[default]\n' \
-    "$C_CHIP_FG" "$C_CHIP" "$C_CHIP" "$C_BG" "$C_TEXT" "$C_BG" "$summary" "$body" "$C_DIM" "$C_BG" "$hint"
+  local content="$1"
+  printf '#[fg=%s,bg=%s,bold] AI #[fg=%s,bg=%s,nobold] %s #[bg=%s] #[fg=%s,bg=default]▐#[default]\n' \
+    "$C_CHIP_FG" "$C_CHIP" "$C_TEXT" "$C_CONTENT_BG" "$content" "$C_CHIP" "$C_CHIP"
 }
 
 # Resolve pane context (exit silently on failure — status bar must not error)
@@ -131,6 +167,7 @@ lazy_llm_read_multi_state
 
 read -r _ws_count _waiting_count < <(lazy_llm_compute_summary)
 summary_text=$(render_summary "$_ws_count" "$_waiting_count")
+hint_text=$(render_hint)
 
 # Fall back to single-pane mode
 if [ -z "$AI_PANES" ]; then
@@ -139,7 +176,7 @@ if [ -z "$AI_PANES" ]; then
     ai_pane_id=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_PANE_ID 2>/dev/null) || ai_pane_id=""
     status="unknown"
     [ -n "$ai_pane_id" ] && status=$(lazy_llm_detect_pane_status "$ai_pane_id" "$AI_TOOL")
-    emit "$summary_text" "$(render_tile "$AI_TOOL" "$status" 1)"
+    emit "$(join_parts "$summary_text" "$(render_tile "$AI_TOOL" "$status" 1)" "$hint_text")"
   fi
   exit 0
 fi
@@ -153,16 +190,17 @@ total=${#tool_arr[@]}
 # Single pane: simple tile
 if [ "$total" -le 1 ]; then
   status=$(lazy_llm_detect_pane_status "${pane_arr[0]}" "${tool_arr[0]}")
-  emit "$summary_text" "$(render_tile "${tool_arr[0]}" "$status" 1)"
+  emit "$(join_parts "$summary_text" "$(render_tile "${tool_arr[0]}" "$status" 1)" "$hint_text")"
   exit 0
 fi
 
-# Multi pane: one tile per pane, active one filled
-body=""
+# Multi pane: one tile per pane, active one filled, each its own part
+parts=("$summary_text")
 for i in "${!tool_arr[@]}"; do
   status=$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]}")
   active=0
   [ "$i" -eq "$current_idx" ] && active=1
-  body+=$(render_tile "${tool_arr[$i]}" "$status" "$active")
+  parts+=("$(render_tile "${tool_arr[$i]}" "$status" "$active")")
 done
-emit "$summary_text" "$body"
+parts+=("$hint_text")
+emit "$(join_parts "${parts[@]}")"
