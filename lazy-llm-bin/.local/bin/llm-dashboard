@@ -216,6 +216,7 @@ render_sessions_tab() {
     --nth=2 \
     --preview="$preview_cmd" \
     --preview-window="right:55%:follow" \
+    --bind='q:abort' \
     --expect="1,2,n,K,r,R,z,a,],[,?" \
   ) || { echo "quit"; return 0; }
 
@@ -328,6 +329,7 @@ render_worktrees_tab() {
     --header="$header" \
     --preview="$preview_cmd" \
     --preview-window="right:55%:follow" \
+    --bind='q:abort' \
     --expect="1,2,n,g,K,R,?" \
   ) || { echo "quit"; return 0; }
 
