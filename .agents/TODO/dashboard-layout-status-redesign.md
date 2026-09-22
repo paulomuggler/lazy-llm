@@ -2,12 +2,12 @@
 slug: dashboard-layout-status-redesign
 title: Dashboard layout + status bar redesign in response to user feedback
 priority: P1
-status: done
+status: in-progress
 created: 2026-09-22_15:06
-updated: 2026-09-22_15:06
+updated: 2026-09-23_01:10
 depends-on: []
 tags: [ux, dashboard, statusbar, design]
-commits: [1b9b401, 24de3f1, 27ac16d]
+commits: [1b9b401, 24de3f1, 27ac16d, d9c4252, 7d661b2, 6f0524a, 948d2c6, 2425da2, 4d36241, fa7cbac, af5c805, 2df5daa, 4921bb0, 91c748b, 1cc5c84, 2a7e206]
 model: inline
 ---
 
@@ -157,3 +157,115 @@ Self-verified inline.
    header lines rendering completely, no truncation
 6. ✅ `tmux list-sessions` shows only the user's 3 real workspaces at the end of
    this task; the accidental test window added to `dev-dev-env-claude` was removed
+
+## Work Report (Round 2)
+
+**Date:** 2026-09-23_01:10
+
+**Reopened** in response to a second, denser 14-item feedback pass (with a real
+monitor screenshot) on top of Round 1's ship. This section covers everything
+landed in that round; items still open are listed under Follow-up below —
+belated task-tracking note: this round's commits landed individually as work
+progressed, ahead of reopening this file to `in-progress` — a process gap
+against the usual discipline, corrected here rather than silently backfilled.
+
+### What was done
+1. **Fuzzy search crash** — `--nth=2` was fighting `--with-nth=2` (the former
+   re-searches the ALREADY-collapsed line `--with-nth` produces, for a field
+   that no longer exists past the third filter keystroke); removed the
+   redundant `--nth=2`.
+2. **Stale "working" detection** — `interrupt_pat` regex only matched a string
+   Claude Code's current UI never emits; fixed to match the real spinner/
+   duration pattern and "esc to interrupt".
+3. **Popup height** — reversed Round 1's content-fit sizing (user wanted MORE
+   vertical space, not less); `llm-dashboard-open` now uses generous
+   percentage-based sizing (90% of client height, 24-row floor) instead of
+   estimating content rows.
+4. **Universal nav into the title bar** — moved the tab/keybinding crumbs that
+   were line-wrapping awkwardly inside the Workspaces pane into the popup's
+   own `-T` title bar.
+5. **Default highlight** — active workspace + active pane now pre-selected via
+   `--bind start:pos(N)` when the dashboard opens.
+6. **Global summary + reworded hint** — `lazy_llm_compute_summary` (shared
+   helper) feeds a cross-workspace "Nws Mwaiting" summary into both
+   `llm-status` and `llm-pane-border`; "S:dash" reworded, later made fully
+   dynamic (see #9).
+7. **Help tab** — rebuilt as a two-column bordered box (`_help_pad`/
+   `_help_rule` helpers, manual character-count padding — `printf %-*s` pads
+   by byte length, which breaks on this content's multi-byte box-drawing
+   chars).
+8. **`pane-border-status` shipped live** — the Round-1 "couldn't verify"
+   blocker was resolved by testing the REAL invocation chain (Prefix+S →
+   `run-shell` → popup → dashboard) instead of synthetic `display-message`
+   calls; `llm-pane-border` now renders per-pane status on the pane's own
+   border, window-scoped.
+9. **Launch-workspace context fix** — popups don't reliably inherit
+   `TMUX_PANE`/ambient session context; `llm-dashboard-open` now resolves the
+   launch session in its own `run-shell` context (reliable) and passes it
+   explicitly via `-e LAZY_LLM_LAUNCH_SESSION=`.
+10. **Workspace naming** — dropped the "dev-" prefix and "-`<tool>`" suffix
+    from auto-generated names; now just the directory name.
+11. **'n' key removed** — it called `tmux display-popup` from inside an
+    already-open popup, which tmux silently ignores per its "modifying an
+    existing popup" semantics; reworking it wasn't worth it per user
+    preference, so it was removed (key, `--expect`, dispatch case, docs).
+12. **Bold instead of "(active)"** — replaced the text tag with real bold
+    styling; added a STATUS GLYPHS legend to both the tree header and the
+    Help tab.
+13. **Pane-border contrast + shared summary** — explicit `#[fg=...]` added to
+    every piece of border text (it was inheriting tmux's dim unfocused-border
+    style); refactored to share `lazy_llm_compute_summary` with `llm-status`
+    instead of two copies drifting apart; dynamic prefix-key hint
+    (`prefix_hint()`, queries `tmux show-options -gv prefix`) replaces the
+    hardcoded "Prefix+S".
+14. **Pane rename** — `r` now branches on what's highlighted: a workspace row
+    renames the workspace (as before), a pane row renames just that pane via
+    a new `@AI_PANE_NAMES` window option (parallel array to `@AI_TOOLS`, `"_"`
+    = no override), decoupled from status detection (which still keys off the
+    real tool name) so renaming never breaks status.
+15. **Status bar visual redesign** (commit `2a7e206`, this file's most recent) —
+    three macro segments (chip / content / cap) distinguished by color alone
+    (strong blue `#00afff` / faded blue `#005f87` / strong blue), literal "│"
+    separators between every part INSIDE the content segment (summary, each
+    tile, the hint), active tile swaps to the strong-blue accent instead of a
+    separate highlight color, small block-glyph end-cap for visual pop.
+16. **Backlog filed, not implemented** (per explicit instruction): pane
+    auto-renaming from live conversation content — see
+    `.agents/TODO/backlog/pane-auto-naming-from-conversation.md`.
+
+### Decisions made
+- Kept pane-rename and status-detection deliberately decoupled (rename never
+  breaks the tool-based status lookup) rather than trying to infer tool
+  identity from a possibly-arbitrary custom label.
+- For the status bar's three-segment scheme, followed the user's explicit
+  split precisely: color-only boundaries between the three MACRO segments,
+  but literal `│` between every part WITHIN the content segment — these read
+  as contradictory at a skim but are two distinct, correctly-scoped asks.
+
+### Commits
+- `d9c4252` — dashboard+lib: fix broken fuzzy search and stale "working" detection
+- `7d661b2` — dashboard: reverse the popup-height change — go generous, not content-fit
+- `6f0524a` — dashboard: move universal nav into the popup's own title bar
+- `948d2c6` — dashboard: highlight the current workspace + active pane by default
+- `2425da2` — llm-status: add a global workspace/waiting-attention summary, reword the hint
+- `4d36241` — dashboard: two-column bordered layout for the Help tab
+- `fa7cbac` — dashboard: implement pane-border-status (per-pane status on the pane's own border)
+- `af5c805` — dashboard: pass the launch session explicitly — popups don't reliably inherit it
+- `2df5daa` — lazy-llm: drop 'dev-' prefix and '-<tool>' suffix from auto-generated workspace names
+- `4921bb0` — dashboard: remove broken 'n' key, bold active pane instead of '(active)' tag, add status glyph legend
+- `91c748b` — status: fix pane-border contrast, share summary logic, dynamic prefix hint
+- `1cc5c84` — dashboard: 'r' renames the highlighted pane too, not just the workspace
+- `2a7e206` — status: three-segment color scheme (chip/content/cap) with literal separators
+
+### Follow-up (still open from the 14-item list)
+- **Fuzzy-search mode shortcut** (e.g. `/`) so typing filter characters doesn't
+  trigger single-letter action keybindings mid-search — not started.
+- **Vertical space still reported broken** — measured the popup's actual pty
+  via `stty -F <pty> size` at 57 rows for a 66-row client, which appears to
+  contradict the report; not reconciled with the user's direct observation.
+  Needs either a fresh repro/screenshot or a different diagnostic angle.
+- **Title bar visibility** — confirmed via `ps aux` that `-T "<title>"` is
+  correctly constructed and passed to `tmux display-popup`, but couldn't get
+  further visual confirmation; not reconciled with the user's report that it
+  isn't visible. Same class of blocker as the item above — needs the user's
+  own eyes or a different verification path this environment doesn't have.
