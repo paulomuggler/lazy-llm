@@ -365,6 +365,13 @@ looking at that pane. `lazy_llm_detect_pane_status` prefers this event-driven st
 (when fresh, ≤30s old) over the content scrape for `tool=claude`; every other tool
 always uses the scrape.
 
+**Dashboard reminder.** `llm-status`'s output always ends with `S:dash` — a static
+reminder of `Prefix+S` (opens the dashboard), since lazy-llm has no LazyVim-style
+always-on keymap display. It's wired into `status-right` via
+`dotfiles/tmux/.config/tmux/tmux.conf.local`'s `tmux_conf_theme_status_right`
+(`dev-env` repo) — `llm-status` prints nothing outside a lazy-llm workspace window,
+so it's safe there unconditionally.
+
 ### Neovim Plugins
 
 - **llm-send plugin** (`llm-send.lua`): Keymaps for sending, pulling, cycling, context references, and @ path completion. All keymaps are gated on `$TMUX` — no interference in standalone nvim.

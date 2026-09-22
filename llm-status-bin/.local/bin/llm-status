@@ -13,8 +13,14 @@
 #   ? unknown (capture failed or unrecognized state)
 #
 # Output examples:
-#   Single pane:  "AI: claude●"
-#   Multi pane:   "[claude●] gemini◐"  (active pane is bracketed/bold)
+#   Single pane:  "AI: claude●  S:dash"
+#   Multi pane:   "[claude●] gemini◐  S:dash"  (active pane is bracketed/bold)
+#
+# "S:dash" is a static reminder of Prefix+S (opens the dashboard popup) — lazy-llm
+# has no LazyVim-style always-on keymap display, so this is the cheap always-visible
+# substitute for the one binding people forget. Appended inside the same
+# already-lazy-llm-gated branches below (not before them), so it never appears in
+# plain tmux windows.
 
 set -euo pipefail
 
@@ -48,7 +54,7 @@ if [ -z "$AI_PANES" ]; then
     else
       glyph="?"
     fi
-    echo "AI: ${AI_TOOL}${glyph}"
+    echo "AI: ${AI_TOOL}${glyph}  S:dash"
   fi
   exit 0
 fi
@@ -62,7 +68,7 @@ total=${#tool_arr[@]}
 # Single pane: simple display
 if [ "$total" -le 1 ]; then
   glyph=$(glyph_for "$(lazy_llm_detect_pane_status "${pane_arr[0]}" "${tool_arr[0]}")")
-  echo "AI: ${tool_arr[0]}${glyph}"
+  echo "AI: ${tool_arr[0]}${glyph}  S:dash"
   exit 0
 fi
 
@@ -77,5 +83,5 @@ for i in "${!tool_arr[@]}"; do
   fi
 done
 
-# Trim leading space
-echo "${output# }"
+# Trim leading space, append the dashboard-open hint
+echo "${output# }  S:dash"
