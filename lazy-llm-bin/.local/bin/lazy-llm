@@ -128,10 +128,12 @@ if [[ -n "$WORKTREE_BRANCH" ]]; then
   unset TMUX
   NEW_WINDOW=false
 
-  # Auto-derive session name from branch if user didn't pass -s.
+  # Auto-derive session name from branch if user didn't pass -s. Just the
+  # branch name — no "dev-" prefix or "-<tool>" suffix (collisions, e.g. two
+  # tools on the same branch, are already handled by the de-dup loop below,
+  # which appends -2/-3/etc.).
   if [[ -z "$SESSION_NAME" ]]; then
-    SANITIZED="${WORKTREE_BRANCH//\//-}"
-    SESSION_NAME="dev-${SANITIZED}-${AI_TOOL}"
+    SESSION_NAME="${WORKTREE_BRANCH//\//-}"
   fi
 fi
 
@@ -139,13 +141,14 @@ fi
 init_state_dirs
 cleanup_old_files
 
-# Generate session name from directory if not provided
+# Generate session name from directory if not provided — just the
+# directory's own name, no "dev-" prefix or "-<tool>" suffix (per direct
+# user request; collisions are already handled by the de-dup loop below).
 NAME_AUTO_GENERATED=false
 if [ -z "$SESSION_NAME" ]; then
   # Use basename of directory and replace dots/spaces with underscores
   DIR_NAME=$(basename "$TARGET_DIR" | sed 's/[. ]/_/g')
-  # Add a 'dev-' prefix to make it clear it's a dev session
-  SESSION_NAME="dev-${DIR_NAME}-${AI_TOOL}"
+  SESSION_NAME="$DIR_NAME"
   NAME_AUTO_GENERATED=true
 fi
 
