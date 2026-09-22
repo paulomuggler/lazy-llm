@@ -561,3 +561,66 @@ lazy_llm_validate_hold_win() {
   tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN "$AI_HOLD_WIN"
   tmux set-option -w -t "$AI_HOLD_WIN" @lazy_llm_hold "1"
 }
+
+# Get the pane list for a workspace's first window, in the same two-shape
+# (modern @AI_PANES vs legacy single @AI_PANE_ID) render_sessions_tab
+# already handles — one source of truth, shared by the dashboard tree,
+# llm-status's cross-workspace summary, and llm-pane-border.
+# Args: workspace_name  Sets: LAZY_LLM_SUMMARY_PANES, LAZY_LLM_SUMMARY_TOOLS
+lazy_llm_panes_for_workspace() {
+  local name="$1" first_win
+  # Guarded: under a caller's set -e, an unguarded pipeline failing here
+  # (e.g. the workspace got killed between listing it and this call) would
+  # abort the whole caller, not just skip this one workspace.
+  first_win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1) || first_win=""
+  if [[ -z "$first_win" ]]; then
+    LAZY_LLM_SUMMARY_PANES=()
+    LAZY_LLM_SUMMARY_TOOLS=()
+    return
+  fi
+  lazy_llm_read_multi_state_for "$name" "$first_win"
+  if [[ -n "$REPLY_PANES" ]]; then
+    read -ra LAZY_LLM_SUMMARY_PANES <<< "$REPLY_PANES"
+    read -ra LAZY_LLM_SUMMARY_TOOLS <<< "$REPLY_TOOLS"
+  else
+    local single_pane_id
+    single_pane_id=$(tmux show-option -wv -t "$name:$first_win" @AI_PANE_ID 2>/dev/null) || single_pane_id=""
+    if [[ -n "$single_pane_id" ]]; then
+      local single_tool
+      single_tool=$(tmux show-option -wv -t "$name:$first_win" @AI_TOOL 2>/dev/null) || single_tool="claude"
+      LAZY_LLM_SUMMARY_PANES=("$single_pane_id")
+      LAZY_LLM_SUMMARY_TOOLS=("$single_tool")
+    else
+      LAZY_LLM_SUMMARY_PANES=()
+      LAZY_LLM_SUMMARY_TOOLS=()
+    fi
+  fi
+}
+
+# Summary across every lazy-llm workspace, not just the caller's own
+# window. Echoes "<workspace-count> <waiting-count>\n" (the trailing
+# newline matters — see coding-standards/frameworks/tmux-fzf.md on
+# `read var < <(cmd)` under set -e). Cheap enough at typical scale (a
+# handful of workspaces) for the ~10s status-interval callers run this on.
+lazy_llm_compute_summary() {
+  local data
+  data=$(lazy_llm_gather_sessions 2>/dev/null) || { printf '0 0\n'; return; }
+  if [[ -z "$data" ]]; then
+    printf '0 0\n'
+    return
+  fi
+  local ws_count=0 waiting_count=0
+  local name dir tools wins attached
+  while IFS=$'\t' read -r name dir tools wins attached; do
+    ws_count=$((ws_count + 1))
+    local LAZY_LLM_SUMMARY_PANES=() LAZY_LLM_SUMMARY_TOOLS=()
+    lazy_llm_panes_for_workspace "$name"
+    local i st has_waiting=false
+    for i in "${!LAZY_LLM_SUMMARY_PANES[@]}"; do
+      st=$(lazy_llm_detect_pane_status "${LAZY_LLM_SUMMARY_PANES[$i]}" "${LAZY_LLM_SUMMARY_TOOLS[$i]:-claude}")
+      [[ "$st" == "waiting" ]] && has_waiting=true
+    done
+    [[ "$has_waiting" == true ]] && waiting_count=$((waiting_count + 1))
+  done <<< "$data"
+  printf '%s %s\n' "$ws_count" "$waiting_count"
+}

@@ -4,15 +4,19 @@
 #
 # Deliberately separate from llm-status: a pane border is much narrower than
 # the status-right segment (often just that one pane's own width — tens of
-# columns, not the whole terminal), so this renders just "tool glyph",
-# colored, no chip/summary/hint. Only meaningful for the AI pane; the editor
-# and prompt panes' borders show their own pane_current_command directly via
-# the pane-border-format expression, this script isn't invoked for those.
+# columns, not the whole terminal), so this renders "Nws Mwaiting │ tool
+# glyph" — the SAME cross-workspace summary llm-status shows (per user
+# request — "add the same workspace status as the bottom status bar"), plus
+# this specific pane's own tool+status. Only meaningful for the AI pane; the
+# editor and prompt panes' borders show their own text directly via the
+# pane-border-format expression, this script isn't invoked for those.
 
 set -euo pipefail
 
 source "$(dirname "$0")/lazy-llm-lib.sh"
 
+readonly C_TEXT="#e4e4e4"
+readonly C_DIM="#8a8a8a"
 readonly C_WORKING="#ffff00"
 readonly C_WAITING="#ff00af"
 readonly C_IDLE="#5fff00"
@@ -44,4 +48,18 @@ status=$(lazy_llm_detect_pane_status "$pane_id" "$tool")
 color=$(glyph_color "$status")
 glyph=$(glyph_for "$status")
 
-printf ' %s #[fg=%s]%s#[default] ' "$tool" "$color" "$glyph"
+read -r ws_count waiting_count < <(lazy_llm_compute_summary)
+summary="${ws_count}ws"
+if [ "$waiting_count" -gt 0 ]; then
+  summary+=" #[fg=${C_WAITING},bold]${waiting_count}◐#[fg=${C_TEXT},nobold]"
+fi
+
+# Explicit fg on EVERY piece of text, including the tool name — a pane
+# border inherits pane-border-style/pane-active-border-style by default
+# (dim gray for an unfocused pane), which makes un-styled text nearly
+# invisible when the pane isn't focused. Only the glyph had its own color
+# before; fixed per user report (confirmed low contrast, not a rendering
+# bug) — everything here now has an explicit color that doesn't fade with
+# focus, matching the status-right segment's own tiles.
+printf ' #[fg=%s]%s#[default] │ #[fg=%s]%s #[fg=%s]%s#[default] ' \
+  "$C_DIM" "$summary" "$C_TEXT" "$tool" "$color" "$glyph"

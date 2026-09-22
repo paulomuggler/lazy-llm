@@ -83,62 +83,10 @@ render_tile() {
   fi
 }
 
-# Get the pane list for a workspace's first window, in the same two-shape
-# (modern @AI_PANES vs legacy single @AI_PANE_ID) that the dashboard tree
-# already handles — same source of truth, not a second implementation.
-# Args: workspace_name  Sets: _S_PANES, _S_TOOLS (arrays, via globals below)
-_summary_panes_for() {
-  local name="$1" first_win
-  # Guarded: under this script's set -e, an unguarded pipeline failing here
-  # (e.g. the workspace got killed between lazy_llm_gather_sessions listing
-  # it and this loop reaching it) would abort the WHOLE status line, not
-  # just skip this one workspace.
-  first_win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1) || first_win=""
-  [ -z "$first_win" ] && { _S_PANES=(); _S_TOOLS=(); return; }
-  lazy_llm_read_multi_state_for "$name" "$first_win"
-  if [ -n "$REPLY_PANES" ]; then
-    read -ra _S_PANES <<< "$REPLY_PANES"
-    read -ra _S_TOOLS <<< "$REPLY_TOOLS"
-  else
-    local single_pane_id
-    single_pane_id=$(tmux show-option -wv -t "$name:$first_win" @AI_PANE_ID 2>/dev/null) || single_pane_id=""
-    if [ -n "$single_pane_id" ]; then
-      local single_tool
-      single_tool=$(tmux show-option -wv -t "$name:$first_win" @AI_TOOL 2>/dev/null) || single_tool="claude"
-      _S_PANES=("$single_pane_id")
-      _S_TOOLS=("$single_tool")
-    else
-      _S_PANES=()
-      _S_TOOLS=()
-    fi
-  fi
-}
-
-# Summary across every lazy-llm workspace, not just this window. Echoes
-# "<workspace-count> <waiting-count>". Cheap enough at typical scale (a
-# handful of workspaces) for the ~10s status-interval this runs on.
-compute_summary() {
-  local data
-  data=$(lazy_llm_gather_sessions 2>/dev/null) || { printf '0 0\n'; return; }
-  if [ -z "$data" ]; then
-    printf '0 0\n'
-    return
-  fi
-  local ws_count=0 waiting_count=0
-  local name dir tools wins attached
-  while IFS=$'\t' read -r name dir tools wins attached; do
-    ws_count=$((ws_count + 1))
-    local _S_PANES=() _S_TOOLS=()
-    _summary_panes_for "$name"
-    local i st has_waiting=false
-    for i in "${!_S_PANES[@]}"; do
-      st=$(lazy_llm_detect_pane_status "${_S_PANES[$i]}" "${_S_TOOLS[$i]:-claude}")
-      [ "$st" = "waiting" ] && has_waiting=true
-    done
-    [ "$has_waiting" = true ] && waiting_count=$((waiting_count + 1))
-  done <<< "$data"
-  printf '%s %s\n' "$ws_count" "$waiting_count"
-}
+# Pane-listing and cross-workspace summary computation now live in
+# lazy-llm-lib.sh (lazy_llm_panes_for_workspace / lazy_llm_compute_summary)
+# — shared with llm-pane-border, which needs the exact same summary. One
+# source of truth instead of two copies drifting apart.
 
 render_summary() {
   local ws="$1" waiting="$2"
@@ -150,10 +98,28 @@ render_summary() {
   printf '%s ' "$out"
 }
 
+# Dynamic dashboard hint — "^B+S" derived from whatever this tmux's prefix
+# key ACTUALLY is (not hardcoded), so it stays correct if the user ever
+# rebinds it. tmux's own key names are like "C-b"; render that as the
+# conventional caret notation ("^B"). Falls back to the raw name for a
+# non-Ctrl prefix (rare, but rather than guess a notation for it, just
+# show what tmux itself calls it).
+prefix_hint() {
+  local raw
+  raw=$(tmux show-options -gv prefix 2>/dev/null) || raw="C-b"
+  if [[ "$raw" =~ ^C-(.)$ ]]; then
+    printf '^%s' "${BASH_REMATCH[1]^^}"
+  else
+    printf '%s' "$raw"
+  fi
+}
+
 emit() {
   local summary="$1" body="$2"
-  printf '#[fg=%s,bg=%s,bold] AI #[fg=%s,bg=%s,nobold]#[fg=%s,bg=%s] %s%s#[fg=%s,bg=%s] Dash ^B+S #[default]\n' \
-    "$C_CHIP_FG" "$C_CHIP" "$C_CHIP" "$C_BG" "$C_TEXT" "$C_BG" "$summary" "$body" "$C_DIM" "$C_BG"
+  local hint
+  hint="$(prefix_hint)+S"
+  printf '#[fg=%s,bg=%s,bold] AI #[fg=%s,bg=%s,nobold]#[fg=%s,bg=%s] %s%s#[fg=%s,bg=%s] Dash %s #[default]\n' \
+    "$C_CHIP_FG" "$C_CHIP" "$C_CHIP" "$C_BG" "$C_TEXT" "$C_BG" "$summary" "$body" "$C_DIM" "$C_BG" "$hint"
 }
 
 # Resolve pane context (exit silently on failure — status bar must not error)
@@ -163,7 +129,7 @@ lazy_llm_resolve_session_window || exit 0
 # Read multi-pane state
 lazy_llm_read_multi_state
 
-read -r _ws_count _waiting_count < <(compute_summary)
+read -r _ws_count _waiting_count < <(lazy_llm_compute_summary)
 summary_text=$(render_summary "$_ws_count" "$_waiting_count")
 
 # Fall back to single-pane mode
