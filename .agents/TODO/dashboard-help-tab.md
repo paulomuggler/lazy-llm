@@ -2,9 +2,9 @@
 slug: dashboard-help-tab
 title: Make dashboard keybinding help persistent (tab or always-visible subframe)
 priority: P2
-status: pending
+status: in-progress
 created: 2026-09-22_04:37
-updated: 2026-09-22_04:37
+updated: 2026-09-22_05:20
 depends-on: [dashboard-tree-view-consolidation]
 tags: [ux, discoverability, dashboard]
 commits: []
