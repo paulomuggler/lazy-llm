@@ -180,7 +180,10 @@ render_sessions_tab() {
       fi
     done <<< "$data"
     lines="${lines%$'\n'}"
-    header="[Workspaces] enter: switch │ n: new │ K: kill │ r: rename │ z: fold │ a: add pane │ ]/[: cycle pane │ R: refresh │ ?: help │ 2: worktrees │ q/esc: close"
+    # Two lines (fzf's --header displays each line of a multi-line string as
+    # its own sticky row) so the full hint list stays readable instead of
+    # fzf hard-truncating one long line with '..' at narrower popup widths.
+    header="[Workspaces] enter: switch │ n: new │ K: kill │ r: rename │ z: fold │ q/esc: close"$'\n'"a: add pane │ ]/[: cycle pane │ R: refresh │ ?: help │ 2: worktrees"
   fi
 
   # Preview: branch on the row's hidden id (field 1) to find the right pane —
@@ -207,7 +210,7 @@ render_sessions_tab() {
     --with-nth=2 \
     --nth=2 \
     --preview="$preview_cmd" \
-    --preview-window="right:55%:wrap:follow" \
+    --preview-window="right:55%:follow" \
     --expect="1,2,n,K,r,R,z,a,],[,?" \
   ) || { echo "quit"; return 0; }
 
@@ -298,7 +301,8 @@ render_worktrees_tab() {
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
-    header="[Worktrees] enter: open/attach │ n: new │ g: lazygit │ K: cleanup │ R: refresh │ ?: help │ 1: workspaces │ q/esc: close"
+    # Two lines — see the matching comment on the Workspaces tab's header.
+    header="[Worktrees] enter: open/attach │ n: new │ g: lazygit │ K: cleanup │ q/esc: close"$'\n'"R: refresh │ ?: help │ 1: workspaces"
   fi
 
   # Preview: git status -sb + recent log for the selected worktree path.
@@ -318,7 +322,7 @@ render_worktrees_tab() {
     --prompt="worktree> " \
     --header="$header" \
     --preview="$preview_cmd" \
-    --preview-window="right:55%:wrap:follow" \
+    --preview-window="right:55%:follow" \
     --expect="1,2,n,g,K,R,?" \
   ) || { echo "quit"; return 0; }
 
