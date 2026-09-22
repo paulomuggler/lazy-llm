@@ -49,7 +49,9 @@ launch_session=$(tmux display-message -p '#S' 2>/dev/null) || launch_session=""
 # handful of flags when "modifying" an already-open popup, -T isn't one of
 # them — see `display-popup` in the tmux manual) — fine here, since this
 # content is the same regardless of which tab is active.
-TITLE=" lazy-llm │ 1:workspaces 2:worktrees 3:help │ ?:help q:close "
+# "3:help" dropped — redundant with "?:help" right next to it (both open the
+# same tab); one shortcut per action, per user request.
+TITLE=" lazy-llm │ 1:workspaces 2:worktrees │ ?:help q:close "
 
 exec tmux display-popup -E -w 92% -h "${height}" -T "${TITLE}" \
   -e "LAZY_LLM_LAUNCH_SESSION=${launch_session}" \
