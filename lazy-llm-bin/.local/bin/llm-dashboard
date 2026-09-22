@@ -128,7 +128,7 @@ render_sessions_tab() {
 
   local lines="" header
   if [[ -z "$data" ]]; then
-    header="[Workspaces] none yet. n:new ?:help q:close"
+    header="no workspaces yet — n:new"
   else
     while IFS=$'\t' read -r name dir tools wins attached; do
       local first_win
@@ -205,19 +205,20 @@ render_sessions_tab() {
     lines="${lines%$'\n'}"
     # Deliberately short and static — NOT an enumeration of every key. With a
     # right-side preview active, --header's available width is the LIST
-    # column's share (~45% of the popup), not the popup's own width. Rather
-    # than permanently hiding the keybinding list to survive an 80-column
-    # terminal (which cost every wider terminal the same information for no
-    # reason), measure the actual available width and pick the richest
-    # header that fits. The full list is always in the '?' Help tab too.
+    # column's share (~45% of the popup), not the popup's own width. Universal
+    # nav (tab switching, help, close) lives in the popup's own title bar now
+    # (see llm-dashboard-open) — full popup width, single line, can't wrap
+    # awkwardly inside the box the way a --header line could. This header is
+    # just the tab-specific action keys, sized to what actually fits; the
+    # full reference is always in the Help tab too.
     local _budget
     _budget=$(_dashboard_header_budget)
-    if [[ "$_budget" -ge 60 ]]; then
-      header="[Workspaces] enter:switch n:new K:kill/rm r:rename z:fold"$'\n'"a:add-pane ]/[:cycle-pane R:refresh ?:help q:close"
-    elif [[ "$_budget" -ge 42 ]]; then
-      header="[Workspaces] enter:switch n:new K:kill"$'\n'"a:add-pane ?:help q:close"
+    if [[ "$_budget" -ge 85 ]]; then
+      header="enter:switch n:new K:kill/rm r:rename z:fold a:add-pane ]/[:cycle-pane R:refresh"
+    elif [[ "$_budget" -ge 50 ]]; then
+      header="enter:switch n:new K:kill a:add-pane R:refresh"
     else
-      header="[Workspaces] ?:help q:close"
+      header=""
     fi
   fi
 
@@ -314,7 +315,7 @@ render_worktrees_tab() {
 
   if [[ -z "$data" ]]; then
     lines="(No worktrees in this repo, or not inside a git repo.)"
-    header="[Worktrees] none. n:new ?:help q:close"
+    header="no worktrees — n:new"
   else
     lines=""
     while IFS=$'\t' read -r path branch dirty ahead behind session pr; do
@@ -341,11 +342,11 @@ render_worktrees_tab() {
     local _budget
     _budget=$(_dashboard_header_budget)
     if [[ "$_budget" -ge 50 ]]; then
-      header="[Worktrees] enter:open n:new g:lazygit K:cleanup"$'\n'"R:refresh ?:help q:close"
-    elif [[ "$_budget" -ge 40 ]]; then
-      header="[Worktrees] enter:open n:new K:cleanup"$'\n'"?:help q:close"
+      header="enter:open n:new g:lazygit K:cleanup R:refresh"
+    elif [[ "$_budget" -ge 30 ]]; then
+      header="enter:open n:new K:cleanup"
     else
-      header="[Worktrees] ?:help q:close"
+      header=""
     fi
   fi
 
@@ -642,13 +643,11 @@ render_help_tab() {
     ?            open this tab from Workspaces or Worktrees
     q / Esc       close the dashboard"
 
-  local header="[Help] 1:workspaces 2:worktrees q:close"
   local selection key
   selection=$(printf '%s\n' "$body" | fzf \
     --reverse \
     --border=rounded \
     --prompt="help> " \
-    --header="$header" \
     --no-info \
     --bind='q:abort' \
     --expect="1,2,3" \

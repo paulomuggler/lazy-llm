@@ -32,4 +32,14 @@ height=$((client_h * TARGET_PERCENT / 100))
 [[ "$height" -lt "$MIN_HEIGHT" ]] && height=$MIN_HEIGHT
 [[ "$height" -gt "$client_h" ]] && height=$client_h
 
-exec tmux display-popup -E -w 92% -h "${height}" "$HOME/.local/bin/llm-dashboard" "$@"
+# Universal nav hints (same on every tab) go in the popup's own title bar,
+# not fzf's --header — the title spans the FULL popup width (it's tmux's
+# own border, not constrained by the list column fzf's preview pane eats
+# into), and unlike --header it can't wrap awkwardly inside the box. It
+# also can't be changed once the popup is running (tmux only accepts a
+# handful of flags when "modifying" an already-open popup, -T isn't one of
+# them — see `display-popup` in the tmux manual) — fine here, since this
+# content is the same regardless of which tab is active.
+TITLE=" lazy-llm │ 1:workspaces 2:worktrees 3:help │ ?:help q:close "
+
+exec tmux display-popup -E -w 92% -h "${height}" -T "${TITLE}" "$HOME/.local/bin/llm-dashboard" "$@"
