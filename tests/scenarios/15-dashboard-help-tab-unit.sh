@@ -55,7 +55,7 @@ fi
 
 echo ""
 echo "Test 4: '3' is in the Workspaces and Worktrees tabs' --expect lists..."
-ws_expect=$(command grep -oE -- '--expect="1,2,3,n,K,r,R,z,a,\],\[,\?"' "$DASHBOARD")
+ws_expect=$(command grep -oE -- '--expect="1,2,3,K,r,R,z,a,\],\[,\?"' "$DASHBOARD")
 assert_contains "$ws_expect" "1,2,3" "Workspaces tab --expect includes 3"
 wt_expect=$(command grep -oE -- '--expect="1,2,3,n,g,K,R,\?"' "$DASHBOARD")
 assert_contains "$wt_expect" "1,2,3" "Worktrees tab --expect includes 3"

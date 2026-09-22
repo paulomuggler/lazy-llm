@@ -24,7 +24,7 @@
 #
 # Tab keys:            1 (Workspaces), 2 (Worktrees), 3 (Help)
 # Workspaces actions:  Enter (switch, or switch+focus-pane on a pane row),
-#                     n (new), K (kill workspace / remove pane), r (rename),
+#                     K (kill workspace / remove pane), r (rename),
 #                     z (fold/unfold), a (add pane, current workspace),
 #                     ]/[ (cycle pane, current workspace), R (refresh),
 #                     ? (help), q/Esc (quit)
@@ -99,7 +99,6 @@ glyph_for() {
 #   "action:kill:<name>"                 — kill selected workspace
 #   "action:rename:<name>"               — rename selected workspace
 #   "action:toggle:<name>"               — collapse/expand that workspace's panes
-#   "action:new"                         — launch new lazy-llm workspace
 #   "action:pane-add"                    — add AI pane to the CURRENT workspace
 #                                           (the one this dashboard was opened
 #                                           from — not whatever's highlighted;
@@ -154,7 +153,7 @@ render_sessions_tab() {
   local _start_pos=1
   local _line_no=0
   if [[ -z "$data" ]]; then
-    header="no workspaces yet — n:new"
+    header="no workspaces yet"
   else
     while IFS=$'\t' read -r name dir tools wins attached; do
       local first_win
@@ -224,10 +223,13 @@ render_sessions_tab() {
           local pid="${pane_arr[$i]}" tool="${tool_arr[$i]:-?}" glyph
           st=$(lazy_llm_detect_pane_status "$pid" "$tool")
           glyph=$(glyph_for "$st")
-          local active_mark=""
-          [[ "$i" -eq "$reply_idx" ]] && active_mark=" (active)"
           local pane_display
-          pane_display=$(printf '    ↳ %-12s %s%s' "$tool" "$glyph" "$active_mark")
+          pane_display=$(printf '    ↳ %-12s %s' "$tool" "$glyph")
+          # Bold instead of an "(active)" text tag — real ANSI codes (not
+          # tmux's #[..] syntax), since this is plain fzf row text rendered
+          # via --ansi, a different rendering context than status-right/
+          # pane-border-format.
+          [[ "$i" -eq "$reply_idx" ]] && pane_display=$'\033[1m'"${pane_display}"$'\033[0m'
           lines+="pane:${name}:${i}:${pid}"$'\t'"${pane_display}"$'\n'
           _line_no=$((_line_no + 1))
           # Precise start position: this workspace's currently-active pane.
@@ -246,10 +248,17 @@ render_sessions_tab() {
     # full reference is always in the Help tab too.
     local _budget
     _budget=$(_dashboard_header_budget)
+    # Status glyph legend — same idea as the action hints: only shown when
+    # it actually fits, as its own line (each line is sized independently;
+    # what made the old multi-line header "look awful" was content that
+    # didn't fit its column, not multi-line headers as such).
+    local _legend="● working  ◐ waiting  ○ idle  ? unknown"
     if [[ "$_budget" -ge 85 ]]; then
-      header="enter:switch n:new K:kill/rm r:rename z:fold a:add-pane ]/[:cycle-pane R:refresh"
+      header="enter:switch K:kill/rm r:rename z:fold a:add-pane ]/[:cycle-pane R:refresh"
+      [[ "$_budget" -ge 40 ]] && header+=$'\n'"$_legend"
     elif [[ "$_budget" -ge 50 ]]; then
-      header="enter:switch n:new K:kill a:add-pane R:refresh"
+      header="enter:switch K:kill a:add-pane R:refresh"
+      [[ "$_budget" -ge 40 ]] && header+=$'\n'"$_legend"
     else
       header=""
     fi
@@ -281,7 +290,7 @@ render_sessions_tab() {
     --preview-window="right:55%:follow" \
     --bind='q:abort' \
     --bind="start:pos(${_start_pos})" \
-    --expect="1,2,3,n,K,r,R,z,a,],[,?" \
+    --expect="1,2,3,K,r,R,z,a,],[,?" \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
@@ -305,7 +314,6 @@ render_sessions_tab() {
   case "$key" in
     1)     echo "action:refresh" ;;
     2)     echo "tab:worktrees" ;;
-    n)     echo "action:new" ;;
     K)
       if [[ -n "$chosen_pane_idx" ]]; then
         if [[ -n "$launch_ws" && "$chosen_ws" == "$launch_ws" ]]; then
@@ -435,9 +443,6 @@ render_worktrees_tab() {
 dispatch_action() {
   local action="$1"
   case "$action" in
-    action:new)
-      tmux display-popup -E "$HOME/.local/bin/lazy-llm"
-      ;;
     action:switch:*)
       local name="${action#action:switch:}"
       tmux switch-client -t "$name" 2>/dev/null \
@@ -652,7 +657,6 @@ render_help_tab() {
     " Enter  ws row: switch"
     "        pane row: switch + focus"
     " z      fold/unfold panes"
-    " n      new workspace"
     " r      rename workspace"
     " K      ws: kill · pane: remove"
     "        (current workspace only)"
@@ -677,6 +681,13 @@ render_help_tab() {
     "ROW TYPES (Workspaces tab)"
     " ▾  ▸   workspace (expanded/folded)"
     " ↳      an AI pane, nested under it"
+    " bold   the pane currently in view"
+    ""
+    "STATUS GLYPHS"
+    " ●      working (generating)"
+    " ◐      waiting (needs you)"
+    " ○      idle (ready)"
+    " ?      unknown"
   )
 
   local lw=34 rw=37
@@ -748,7 +759,7 @@ Inside the dashboard:
   1, 2, 3    switch tabs (Workspaces, Worktrees, Help)
   Enter      primary action (switch workspace, or workspace+pane on a pane
              row / open worktree)
-  n          new workspace (Workspaces) / new worktree+workspace (Worktrees)
+  n          new worktree+workspace (Worktrees — no workspace-level 'new' from here)
   z          fold/unfold a workspace's panes (Workspaces)
   a          add an AI pane to the CURRENT workspace (Workspaces — the one
              this dashboard was opened from, not whatever's highlighted)
@@ -809,7 +820,7 @@ while true; do
     tab:*)
       current_tab="${result#tab:}"
       ;;
-    action:switch:*|action:switch-pane:*|action:toggle:*|action:kill:*|action:rename:*|action:new|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
+    action:switch:*|action:switch-pane:*|action:toggle:*|action:kill:*|action:rename:*|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
       dispatch_action "$result"
       # Switch action exits the popup; for others we re-enter the current tab
       [[ "$result" == action:switch:* || "$result" == action:switch-pane:* ]] && break
