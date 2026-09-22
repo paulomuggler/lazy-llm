@@ -438,10 +438,16 @@ dispatch_action() {
       ;;
     action:pane-add)
       local tool
+      # `|| true`: without it, pressing Esc here makes fzf exit nonzero, and
+      # since this is a bare assignment (not tested by any if/while/||),
+      # `set -e` kills the WHOLE dashboard rather than just cancelling this
+      # sub-prompt. Same class of bug as the one already fixed in
+      # lazy_llm_detect_pane_status — found live: pressing 'a' then Esc closed
+      # the entire popup instead of returning to the tree.
       tool=$(printf 'claude\ngemini\ncodex\ngrok\naider' | fzf \
         --reverse --border=rounded --prompt="tool> " \
         --header="Pick an AI tool to add (esc to cancel):" \
-        --no-info)
+        --no-info || true)
       [[ -n "$tool" ]] && "$HOME/.local/bin/llm-add" -t "$tool" >&2 || true
       ;;
     action:pane-remove:*)
@@ -472,10 +478,12 @@ dispatch_action() {
       ;;
     action:worktree-new)
       local new_branch
+      # Same errexit hazard as action:pane-add above — `|| true` needed or
+      # Esc here kills the whole dashboard.
       new_branch=$(echo "" | fzf --print-query --reverse --border=rounded \
         --header="New worktree — branch name (will be created from HEAD if it doesn't exist):" \
         --prompt="branch> " --no-info \
-        --bind 'enter:accept-non-empty' | head -1)
+        --bind 'enter:accept-non-empty' | head -1 || true)
       if [[ -n "$new_branch" ]]; then
         "$HOME/.local/bin/lazy-llm" -W "$new_branch" >&2 || true
       fi
