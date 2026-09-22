@@ -233,6 +233,17 @@ create_workspace_window() {
   tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE "$session:$win_idx.$prompt_pane"
   tmux set-option -w -t "$session:$win_idx" @AI_TOOL "$ai_tool"
 
+  # Per-pane status on each pane's own border — window-scoped (-w), so this
+  # only affects lazy-llm windows, nothing else in the user's tmux setup.
+  # The AI pane's border shows tool+glyph (llm-pane-border — deliberately
+  # separate from llm-status: a pane border is much narrower than the full
+  # status-right segment). The prompt pane is labeled plainly; anything else
+  # (the editor pane) shows its own running command via tmux's own
+  # pane_current_command, no extra process needed for that branch.
+  tmux set-option -w -t "$session:$win_idx" pane-border-status top
+  tmux set-option -w -t "$session:$win_idx" pane-border-format \
+    "#{?#{==:#{pane_id},#{@AI_PANE_ID}},#($HOME/.local/bin/llm-pane-border #{pane_id} #{@AI_TOOL}),#{?#{==:#{pane_id},#{@PROMPT_PANE_ID}}, prompt , #{pane_current_command} }}"
+
   # Mark session as lazy-llm managed and enable mouse
   tmux set-option -t "$session" @lazy_llm 1
   tmux set-option -t "$session" mouse on
