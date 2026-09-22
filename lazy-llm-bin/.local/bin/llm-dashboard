@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # llm-dashboard - Tabbed popup dashboard for lazy-llm
 #
+# "Workspace" here means a lazy-llm tmux session (one project directory, opened
+# via `lazy-llm`, holding N AI panes + nvim + prompt pane) — not an individual
+# LLM chat/conversation. See docs/USAGE.md.
+#
 # Tabs:
-#   1. Sessions  - list lazy-llm sessions with status glyphs + live ANSI preview
-#   2. Worktrees - placeholder (real content lands in worktree-bridge-tab)
+#   1. Workspaces - list lazy-llm workspaces with status glyphs + live ANSI preview
+#   2. Worktrees  - placeholder (real content lands in worktree-bridge-tab)
 #
 # Designed to be launched via `tmux display-popup -E`; binds to Prefix+S.
 # All keybindings inside the popup are popup-scoped, single-letter, dense.
 #
-# Tab keys:           1 (Sessions), 2 (Worktrees)
-# Sessions actions:   Enter (switch), n (new), K (kill), r (rename),
+# Tab keys:            1 (Workspaces), 2 (Worktrees)
+# Workspaces actions:  Enter (switch), n (new), K (kill), r (rename),
 #                     R (refresh), ? (help), q/Esc (quit)
 #
-# Usage: llm-dashboard [--tab sessions|worktrees|panes] [--help]
+# Usage: llm-dashboard [--tab workspaces|worktrees|panes] [--help]
 
 set -euo pipefail
 
@@ -40,16 +44,16 @@ glyph_for() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────
-# Sessions tab
+# Workspaces tab
 # ──────────────────────────────────────────────────────────────────────────
 
-# Render the sessions tab fzf list.
+# Render the workspaces tab fzf list.
 # Returns (echoes) one of:
 #   "tab:worktrees" — switch to worktrees tab
-#   "action:switch:<session>" — switch to selected session
-#   "action:kill:<session>"   — kill selected session
-#   "action:rename:<session>" — rename selected session
-#   "action:new"              — launch new lazy-llm session
+#   "action:switch:<session>" — switch to selected workspace
+#   "action:kill:<session>"   — kill selected workspace
+#   "action:rename:<session>" — rename selected workspace
+#   "action:new"              — launch new lazy-llm workspace
 #   "action:refresh"          — re-render the tab
 #   "action:help"             — show help overlay
 #   "quit"                    — exit dashboard
@@ -59,7 +63,7 @@ render_sessions_tab() {
 
   local lines="" header
   if [[ -z "$data" ]]; then
-    header="[Sessions] No lazy-llm sessions. n: new │ 2: worktrees │ 3: panes │ q/esc: close"
+    header="[Workspaces] No lazy-llm workspaces. n: new │ 2: worktrees │ 3: panes │ q/esc: close"
   else
     # Augment each row with a status glyph next to the tools column.
     while IFS=$'\t' read -r name dir tools wins attached; do
@@ -87,7 +91,7 @@ render_sessions_tab() {
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
-    header="[Sessions] enter: switch │ n: new │ K: kill │ r: rename │ R: refresh │ ?: help │ 2: worktrees │ 3: panes │ q/esc: close"
+    header="[Workspaces] enter: switch │ n: new │ K: kill │ r: rename │ R: refresh │ ?: help │ 2: worktrees │ 3: panes │ q/esc: close"
   fi
 
   # Preview command — takes the first column (session name) and shows the
@@ -108,7 +112,7 @@ render_sessions_tab() {
     --ansi \
     --reverse \
     --border=rounded \
-    --prompt="session> " \
+    --prompt="workspace> " \
     --header="$header" \
     --preview="$preview_cmd" \
     --preview-window="right:55%:wrap:follow" \
@@ -146,7 +150,7 @@ render_worktrees_tab() {
 
   if [[ -z "$data" ]]; then
     lines="(No worktrees in this repo, or not inside a git repo.)"
-    header="[Worktrees] n: new │ R: refresh │ 1: sessions │ 3: panes │ q/esc: close"
+    header="[Worktrees] n: new │ R: refresh │ 1: workspaces │ 3: panes │ q/esc: close"
   else
     lines=""
     while IFS=$'\t' read -r path branch dirty ahead behind session pr; do
@@ -169,7 +173,7 @@ render_worktrees_tab() {
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
-    header="[Worktrees] enter: open/attach │ n: new │ g: lazygit │ K: cleanup │ R: refresh │ ?: help │ 1: sessions │ 3: panes │ q/esc: close"
+    header="[Worktrees] enter: open/attach │ n: new │ g: lazygit │ K: cleanup │ R: refresh │ ?: help │ 1: workspaces │ 3: panes │ q/esc: close"
   fi
 
   # Preview: git status -sb + recent log for the selected worktree path.
@@ -201,7 +205,7 @@ render_worktrees_tab() {
   [[ -d "$chosen_path" ]] || chosen_path=""
 
   case "$key" in
-    1)   echo "tab:sessions" ;;
+    1)   echo "tab:workspaces" ;;
     2)   echo "action:refresh" ;;
     3)   echo "tab:panes" ;;
     n)   echo "action:worktree-new" ;;
@@ -224,14 +228,14 @@ render_panes_tab() {
   # the popup was launched from outside — graceful empty-state.
   lazy_llm_resolve_pane 2>/dev/null || {
     local body="(Not inside a tmux session. The Panes tab needs a current pane to read AI panes from.)"
-    local header="[Panes] q/esc: close │ 1: sessions │ 2: worktrees"
+    local header="[Panes] q/esc: close │ 1: workspaces │ 2: worktrees"
     local selection key
     selection=$(echo "$body" | fzf --ansi --reverse --border=rounded \
       --prompt="panes> " --header="$header" --expect="1,2" \
     ) || { echo "quit"; return 0; }
     key=$(echo "$selection" | head -1)
     case "$key" in
-      1) echo "tab:sessions" ;;
+      1) echo "tab:workspaces" ;;
       2) echo "tab:worktrees" ;;
       *) echo "quit" ;;
     esac
@@ -244,7 +248,7 @@ render_panes_tab() {
   if [[ -z "$AI_PANES" ]]; then
     # Window isn't a lazy-llm workspace. Discoverable empty-state.
     lines="(No AI panes in this window. Run lazy-llm or press 'a' to bootstrap one.)"
-    header="[Panes] Not a lazy-llm workspace. a: add │ 1: sessions │ 2: worktrees │ q/esc: close"
+    header="[Panes] Not a lazy-llm workspace. a: add │ 1: workspaces │ 2: worktrees │ q/esc: close"
     empty=true
   else
     # Build per-pane rows with status glyph + pane ID column for preview indexing
@@ -270,7 +274,7 @@ render_panes_tab() {
     done
     lines="${lines%$'\n'}"
 
-    header="[Panes] enter: switch │ a: add │ K: kill │ ]/[: cycle │ R: refresh │ ?: help │ 1: sessions │ 2: worktrees │ q/esc: close"
+    header="[Panes] enter: switch │ a: add │ K: kill │ ]/[: cycle │ R: refresh │ ?: help │ 1: workspaces │ 2: worktrees │ q/esc: close"
   fi
 
   # Preview: take the pane id from column 5 (idx 5 in fzf field syntax),
@@ -307,7 +311,7 @@ render_panes_tab() {
   [[ "$chosen_idx" =~ ^[0-9]+$ ]] || chosen_idx=""
 
   case "$key" in
-    1)     echo "tab:sessions" ;;
+    1)     echo "tab:workspaces" ;;
     2)     echo "tab:worktrees" ;;
     3)     echo "action:refresh" ;;
     a)     echo "action:pane-add" ;;
@@ -344,7 +348,7 @@ dispatch_action() {
       # Use llm-sessions --kill for the validated kill path (checks @lazy_llm marker)
       local confirm
       confirm=$(printf 'no\nyes' | fzf \
-        --reverse --border=rounded --header="Kill session '$name'?" \
+        --reverse --border=rounded --header="Kill workspace '$name'?" \
         --prompt="confirm> " || echo no)
       if [[ "$confirm" == "yes" ]]; then
         "$HOME/.local/bin/llm-sessions" --kill "$name" >&2 || true
@@ -355,7 +359,7 @@ dispatch_action() {
       local new_name
       new_name=$(echo "" | fzf --print-query \
         --reverse --border=rounded \
-        --header="Rename session '$name' to:" \
+        --header="Rename workspace '$name' to:" \
         --prompt="new name> " \
         --query="$name" \
         --no-info \
@@ -458,7 +462,7 @@ _dashboard_worktree_cleanup_flow() {
   fi
   session=$(lazy_llm_find_session_for_path "$path")
   if [[ -n "$session" ]]; then
-    warnings_text+="⚠  Will kill attached lazy-llm session '$session'"$'\n'
+    warnings_text+="⚠  Will kill attached lazy-llm workspace '$session'"$'\n'
   fi
   if command -v gh >/dev/null 2>&1; then
     local pr_state
@@ -492,23 +496,23 @@ show_help_overlay() {
   help_text="lazy-llm dashboard — keybindings
 
   Tabs
-    1            switch to Sessions tab
+    1            switch to Workspaces tab
     2            switch to Worktrees tab
     3            switch to Panes tab
 
-  Sessions tab
-    Enter        switch to selected session
-    n            new lazy-llm session
-    K            kill selected session (with confirmation)
-    r            rename selected session
+  Workspaces tab
+    Enter        switch to selected workspace
+    n            new lazy-llm workspace
+    K            kill selected workspace (with confirmation)
+    r            rename selected workspace
     R            refresh list
     ?            this help
 
   Worktrees tab
-    Enter        open/attach lazy-llm session in worktree (via lazy-llm -W)
-    n            new worktree + session (prompts for branch)
+    Enter        open/attach lazy-llm workspace in worktree (via lazy-llm -W)
+    n            new worktree + workspace (prompts for branch)
     g            launch lazygit pointed at the worktree
-    K            atomic cleanup (session + worktree + optional branch)
+    K            atomic cleanup (workspace + worktree + optional branch)
     R            refresh list
 
   Panes tab
@@ -537,18 +541,18 @@ EOF
 
 usage() {
   cat <<'EOF'
-Usage: llm-dashboard [--tab sessions|worktrees|panes] [--help]
+Usage: llm-dashboard [--tab workspaces|worktrees|panes] [--help]
 
-Tabbed popup dashboard for lazy-llm. Launches Sessions tab by default.
+Tabbed popup dashboard for lazy-llm. Launches Workspaces tab by default.
 
 Inside the dashboard:
-  1, 2, 3    switch tabs (Sessions, Worktrees, Panes)
-  Enter      primary action (switch session / open worktree / cycle pane)
-  n          new session (Sessions) / new worktree+session (Worktrees)
+  1, 2, 3    switch tabs (Workspaces, Worktrees, Panes)
+  Enter      primary action (switch workspace / open worktree / cycle pane)
+  n          new workspace (Workspaces) / new worktree+workspace (Worktrees)
   a          add new AI pane (Panes)
   g          launch lazygit (Worktrees)
   K          kill / remove / cleanup (with confirmation)
-  r          rename (Sessions)
+  r          rename (Workspaces)
   ], [       cycle next / prev AI pane (Panes)
   R          refresh
   ?          help
@@ -557,13 +561,13 @@ EOF
 }
 
 # Parse args
-current_tab=sessions
+current_tab=workspaces
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tab)
       shift
       case "$1" in
-        sessions|worktrees|panes) current_tab="$1" ;;
+        workspaces|worktrees|panes) current_tab="$1" ;;
         *) echo "Unknown tab: $1" >&2; exit 2 ;;
       esac
       shift
@@ -584,7 +588,7 @@ fi
 
 while true; do
   case "$current_tab" in
-    sessions)  result=$(render_sessions_tab) ;;
+    workspaces) result=$(render_sessions_tab) ;;
     worktrees) result=$(render_worktrees_tab) ;;
     panes)     result=$(render_panes_tab) ;;
     *)         echo "Unknown tab: $current_tab" >&2; exit 1 ;;

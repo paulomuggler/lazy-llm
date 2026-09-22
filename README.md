@@ -4,7 +4,7 @@ A tmux + Neovim workflow for seamless interaction with agentic TUI tools like Cl
 
 ## Overview
 
-lazy-llm creates a tmux session with a three-pane layout optimized for AI-assisted development:
+lazy-llm creates a workspace — a tmux session with a three-pane layout optimized for AI-assisted development. ("Workspace" is lazy-llm's own term for this: one project directory, opened via `lazy-llm`, holding N AI panes + nvim + prompt pane. It's distinct from an individual LLM chat/conversation, which is what each AI pane runs.)
 
 ```
 +------------------+------------------+
@@ -31,11 +31,11 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Context picker**: Reference specific lines/blocks of code in your prompts (`<leader>llmr`)
 - **File & folder references**: @ autocomplete with fuzzy picker supports both files and directories
 - **NOTE markers**: Insert `[NOTE: ]` markers in code, collect and send all notes to AI (`<leader>n` prefix)
-- **Smart window management**: Auto-detects if inside tmux and adds new window to current session
+- **Smart window management**: Auto-detects if inside tmux and adds new window to current workspace
 - **Git integration**: Editor pane includes vim-fugitive, gitsigns, and vgit for tracking changes
 - **Multiple AI tools**: Supports Claude, Gemini, Codex, Grok, Aider, or any agentic TUI tool
 - **Multi-AI pane tabbing**: Run multiple AI tools side-by-side, cycling between them with keybindings
-- **Dashboard popup**: List sessions with status glyphs + live ANSI preview; tabbed (Sessions / Worktrees) (`Prefix+S`)
+- **Dashboard popup**: List workspaces with status glyphs + live ANSI preview; tabbed (Workspaces / Worktrees) (`Prefix+S`)
 - **Panes tab in dashboard**: View AI pane status and switch between them — opens via `Prefix+S` then `3`
 - **Scoped keybindings**: All tmux and nvim bindings are scoped — no interference outside lazy-llm workspaces
 - **Confirmation dialogs**: Removing AI panes requires confirmation (bypass with `--force`)
@@ -69,7 +69,7 @@ The installer will:
 
 ## Usage
 
-### Starting a Session
+### Starting a Workspace
 
 ```bash
 # Start with default AI tool (claude)
@@ -80,28 +80,28 @@ lazy-llm -t gemini
 lazy-llm -t codex
 lazy-llm -t grok
 
-# Custom session name and directory
+# Custom workspace name and directory
 lazy-llm -s my-project -d ~/projects/foo -t claude
 ```
 
 Options:
-- `-s session_name` - Custom tmux session name (auto-generated if not provided)
+- `-s session_name` - Custom workspace (tmux session) name (auto-generated if not provided)
 - `-d directory` - Working directory (defaults to current)
 - `-t ai_tool` - AI tool to launch (claude, gemini, codex, grok, aider, etc.)
 - `-w` - Force new window mode (otherwise auto-detected when in tmux)
 
 **Smart Behavior:**
-- **Outside tmux**: Creates new session or attaches to existing one
-- **Inside tmux**: Automatically adds new window to current session
-- **With `-s <existing>`**: Adds window to that session (attaches if needed)
-- **With `-W <branch>`**: Always creates a new session bound to a git worktree for `<branch>`; attaches to an existing lazy-llm session there if one already exists
+- **Outside tmux**: Creates new workspace or attaches to an existing one
+- **Inside tmux**: Automatically adds new window to current workspace
+- **With `-s <existing>`**: Adds window to that workspace (attaches if needed)
+- **With `-W <branch>`**: Always creates a new workspace bound to a git worktree for `<branch>`; attaches to an existing lazy-llm workspace there if one already exists
 
 ### Worktree-per-task
 
 For parallel work on multiple branches without stepping on each other:
 
 ```bash
-# Create branch + worktree at .worktrees/feature-foo/, then spawn a session there
+# Create branch + worktree at .worktrees/feature-foo/, then spawn a workspace there
 lazy-llm -W feature/foo
 
 # Spawn with a specific AI tool
@@ -111,19 +111,19 @@ lazy-llm -W bugfix/auth -t gemini
 LAZY_LLM_WORKTREE_DIR=$HOME/wt lazy-llm -W feature/foo
 ```
 
-If the branch doesn't exist, it's created from current `HEAD`. If a worktree for it already exists, it's reused. If a lazy-llm session is already pointed at that worktree, you're attached to it instead of duplicating. Worktree binding is **session-scoped** — all panes (AI, editor, prompt) start in the worktree path, so `@` path completion and code references resolve correctly.
+If the branch doesn't exist, it's created from current `HEAD`. If a worktree for it already exists, it's reused. If a lazy-llm workspace is already pointed at that worktree, you're attached to it instead of duplicating. Worktree binding is **workspace-scoped** — all panes (AI, editor, prompt) start in the worktree path, so `@` path completion and code references resolve correctly.
 
-When using the in-repo default (`.worktrees/`), the path is automatically added to `.gitignore`. For cleanup, prefer the dashboard's Worktrees tab `K` action (atomic: kills attached session, removes worktree, optionally deletes branch — with safety prompts for dirty/ahead/open-PR cases) or fall back to `git worktree remove .worktrees/feature-foo && git branch -d feature/foo` from the shell.
+When using the in-repo default (`.worktrees/`), the path is automatically added to `.gitignore`. For cleanup, prefer the dashboard's Worktrees tab `K` action (atomic: kills attached workspace, removes worktree, optionally deletes branch — with safety prompts for dirty/ahead/open-PR cases) or fall back to `git worktree remove .worktrees/feature-foo && git branch -d feature/foo` from the shell.
 
 ### Worktree dashboard
 
-`Prefix+S` → `2` opens the Worktrees tab. Lists all worktrees in the current repo with branch, dirty marker, ahead/behind vs default branch, attached lazy-llm session (`●`), and PR state (when `gh` is installed and the remote is GitHub).
+`Prefix+S` → `2` opens the Worktrees tab. Lists all worktrees in the current repo with branch, dirty marker, ahead/behind vs default branch, attached lazy-llm workspace (`●`), and PR state (when `gh` is installed and the remote is GitHub).
 
 Actions:
-- `Enter` — open / attach a lazy-llm session in the highlighted worktree (via `lazy-llm -W`)
-- `n` — new worktree + session (prompts for branch name)
+- `Enter` — open / attach a lazy-llm workspace in the highlighted worktree (via `lazy-llm -W`)
+- `n` — new worktree + workspace (prompts for branch name)
 - `g` — launch `lazygit` pointed at the highlighted worktree (delegates lifecycle ops)
-- `K` — atomic cleanup with safety prompts: shows warnings for dirty / ahead-of-default / no-upstream / attached-session / open-PR, asks separately whether to also delete the branch
+- `K` — atomic cleanup with safety prompts: shows warnings for dirty / ahead-of-default / no-upstream / attached-workspace / open-PR, asks separately whether to also delete the branch
 - `R` — refresh; `?` — help; `q`/`Esc` — close
 
 ### Keymaps
@@ -262,7 +262,7 @@ Registered automatically when a workspace is created. Keybindings are **scoped t
 | `Prefix + C-p` | Cycle to previous AI pane |
 | `Prefix + A` | Add new AI pane (tool picker menu) |
 | `Prefix + C-x` | Remove current AI pane |
-| `Prefix + S` | Dashboard popup (Sessions / Worktrees / Panes tabs; switch with `1`/`2`/`3`) |
+| `Prefix + S` | Dashboard popup (Workspaces / Worktrees / Panes tabs; switch with `1`/`2`/`3`) |
 
 ### Multi-AI Pane Tabbing
 
@@ -289,13 +289,13 @@ Inactive AI panes are held in a hidden tmux window. `tmux swap-pane` atomically 
 | `llm-remove [-f] [current\|N]` | Remove an AI pane (`-f` skips confirmation) |
 | `llm-status` | Status line output for tmux (e.g. `[claude●] gemini◐` — glyphs reflect AI pane state) |
 | `llm-append [text]` | Append text to prompt buffer (supports stdin: `echo "foo" \| llm-append`) |
-| `llm-dashboard` | Tabbed popup dashboard (Sessions, Worktrees) with live ANSI preview. Bound to `Prefix+S`. |
-| `llm-sessions` | CLI helper for non-interactive listing/killing (`--list`, `--kill <name>`). Interactive mode subsumed by `llm-dashboard`. |
+| `llm-dashboard` | Tabbed popup dashboard (Workspaces, Worktrees) with live ANSI preview. Bound to `Prefix+S`. |
+| `llm-sessions` | CLI helper for non-interactive listing/killing of workspaces (`--list`, `--kill <name>`). Interactive mode subsumed by `llm-dashboard`. |
 | `llm-panes` | Alias for `llm-dashboard --tab panes` (kept for CLI muscle memory) |
 
 ### Workflow
 
-1. Start session: `lazy-llm`
+1. Start workspace: `lazy-llm`
 2. Write your prompt in the bottom pane (opens in insert mode)
 3. Send it: `<leader>llms`
 4. Review AI response in left pane

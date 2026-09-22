@@ -34,11 +34,11 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ See all AI panes and their status        │ Prefix+S → 3 — opens the Panes tab in the dashboard                                              │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Manage lazy-llm sessions                 │ Prefix+S — opens the dashboard (Sessions=1, Worktrees=2, Panes=3 tabs)                           │
+  │ Manage lazy-llm workspaces               │ Prefix+S — opens the dashboard (Workspaces=1, Worktrees=2, Panes=3 tabs)                         │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Spawn session bound to a worktree        │ lazy-llm -W <branch> — creates branch+worktree if needed, always spawns a new session            │
+  │ Spawn workspace bound to a worktree      │ lazy-llm -W <branch> — creates branch+worktree if needed, always spawns a new workspace          │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Tear down a worktree (atomic)            │ Prefix+S → 2 → highlight → K — kills attached session, removes worktree, optionally branch       │
+  │ Tear down a worktree (atomic)            │ Prefix+S → 2 → highlight → K — kills attached workspace, removes worktree, optionally branch     │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Pipe text into the prompt buffer         │ echo "add tests" | llm-append or llm-append "some context" from any shell                        │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤

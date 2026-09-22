@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# llm-sessions - List, manage, and switch between lazy-llm sessions
+# llm-sessions - List, manage, and switch between lazy-llm workspaces
 # Usage: llm-sessions [--list|--kill <name>]
+#
+# "Workspace" here means a lazy-llm tmux session (one project directory, opened
+# via `lazy-llm`, holding N AI panes + nvim + prompt pane) — not an individual
+# LLM chat/conversation. See docs/USAGE.md.
 #
 # Modes:
 #   (no args)      Interactive fzf picker (designed for tmux display-popup)
-#   --list         Print session table to stdout
-#   --kill <name>  Kill a lazy-llm session by name
+#   --list         Print workspace table to stdout
+#   --kill <name>  Kill a lazy-llm workspace by name
 
 set -euo pipefail
 
@@ -19,18 +23,18 @@ else
   source "$(dirname "$0")/../../../llm-send-bin/.local/bin/lazy-llm-lib.sh"
 fi
 
-# Print sessions as a formatted table
+# Print workspaces as a formatted table
 cmd_list() {
   local data
   data=$(lazy_llm_gather_sessions)
 
   if [[ -z "$data" ]]; then
-    echo "No lazy-llm sessions found."
+    echo "No lazy-llm workspaces found."
     return 0
   fi
 
   # Header
-  printf '%-30s %-40s %-20s %s  %s\n' "SESSION" "DIRECTORY" "AI TOOLS" "WIN" ""
+  printf '%-30s %-40s %-20s %s  %s\n' "WORKSPACE" "DIRECTORY" "AI TOOLS" "WIN" ""
   printf '%-30s %-40s %-20s %s  %s\n' "-------" "---------" "--------" "---" ""
 
   while IFS=$'\t' read -r name dir tools wins attached; do
@@ -44,25 +48,25 @@ cmd_list() {
   done <<< "$data"
 }
 
-# Kill a lazy-llm session by name
+# Kill a lazy-llm workspace by name
 cmd_kill() {
   local target="${1:-}"
 
   if [[ -z "$target" ]]; then
-    echo "Usage: llm-sessions --kill <session_name>" >&2
+    echo "Usage: llm-sessions --kill <workspace_name>" >&2
     exit 1
   fi
 
   if ! tmux has-session -t "$target" 2>/dev/null; then
-    echo "Error: Session '$target' does not exist" >&2
+    echo "Error: Workspace '$target' does not exist" >&2
     exit 1
   fi
 
-  # Verify it's a lazy-llm session
+  # Verify it's a lazy-llm workspace
   local marker
   marker=$(tmux show-option -v -t "$target" @lazy_llm 2>/dev/null) || true
   if [[ "$marker" != "1" ]]; then
-    echo "Error: '$target' is not a lazy-llm session" >&2
+    echo "Error: '$target' is not a lazy-llm workspace" >&2
     exit 1
   fi
 
@@ -77,7 +81,7 @@ cmd_kill() {
 
   # Kill the session
   tmux kill-session -t "$target"
-  echo "Killed session: $target"
+  echo "Killed workspace: $target"
 }
 
 # Interactive fzf session picker
@@ -95,7 +99,7 @@ cmd_interactive() {
   # Empty input is fine — fzf shows an empty list and still honors esc/ctrl-n.
   local lines="" header
   if [[ -z "$data" ]]; then
-    header="No lazy-llm sessions. ctrl-n: new | esc: close"
+    header="No lazy-llm workspaces. ctrl-n: new | esc: close"
   else
     while IFS=$'\t' read -r name dir tools wins attached; do
       dir="${dir/#$HOME/\~}"
@@ -120,7 +124,7 @@ cmd_interactive() {
     --no-multi \
     --reverse \
     --border=rounded \
-    --prompt="session> " \
+    --prompt="workspace> " \
   ) || return 0
 
   # Parse fzf output: first line is the key pressed, second is the selected line
@@ -168,8 +172,8 @@ case "${1:-}" in
     echo ""
     echo "Modes:"
     echo "  (no args)      Interactive fzf picker"
-    echo "  --list, -l     Print session table"
-    echo "  --kill, -k     Kill a lazy-llm session"
+    echo "  --list, -l     Print workspace table"
+    echo "  --kill, -k     Kill a lazy-llm workspace"
     ;;
   *)
     cmd_interactive
