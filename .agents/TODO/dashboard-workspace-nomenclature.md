@@ -2,9 +2,9 @@
 slug: dashboard-workspace-nomenclature
 title: Rename user-facing "session" to "workspace" throughout lazy-llm UI copy
 priority: P2
-status: pending
+status: in-progress
 created: 2026-09-22_04:37
-updated: 2026-09-22_04:37
+updated: 2026-09-22_04:40
 depends-on: []
 tags: [ux, nomenclature, dashboard, docs]
 commits: []
