@@ -54,11 +54,21 @@ else
 fi
 
 echo ""
-echo "Test 4: '3' is in the Workspaces and Worktrees tabs' --expect lists..."
-ws_expect=$(command grep -oE -- '--expect="1,2,3,K,r,R,z,a,\],\[,\?"' "$DASHBOARD")
-assert_contains "$ws_expect" "1,2,3" "Workspaces tab --expect includes 3"
-wt_expect=$(command grep -oE -- '--expect="1,2,3,n,g,K,R,\?"' "$DASHBOARD")
-assert_contains "$wt_expect" "1,2,3" "Worktrees tab --expect includes 3"
+echo "Test 4: '3' is bound (print+accept) and in both tabs' unbind/rebind sets..."
+# --expect is retired in favor of per-key print(KEY)+accept --bind entries
+# (--expect's key interception can't be gated by --disabled/--no-input, so
+# it broke the modal search feature — see the comment above the Workspaces
+# tab's fzf call in llm-dashboard). '3' must still have its own bind, and be
+# in each tab's unbind(...)/rebind(...) key list (tab-specific — that's what
+# distinguishes them, since the print(3)+accept bind itself is identical
+# text in both tabs), or tab-switching would silently stay dead while
+# search mode is active.
+bind3_count=$(command grep -coE -- "--bind='3:print\(3\)\+accept'" "$DASHBOARD")
+assert_equals "2" "$bind3_count" "3:print(3)+accept bound in both tab fzf calls"
+ws_unbind=$(command grep -oE -- "unbind\(1,2,3,K,r,R,z,a,\],\[,\?\)" "$DASHBOARD")
+assert_contains "$ws_unbind" "1,2,3" "Workspaces tab's unbind(...) set includes 3"
+wt_unbind=$(command grep -oE -- "unbind\(1,2,3,n,g,K,R,\?\)" "$DASHBOARD")
+assert_contains "$wt_unbind" "1,2,3" "Worktrees tab's unbind(...) set includes 3"
 
 # ──────────────────────────────────────────────────────────────────────────
 # 3. Main loop dispatches the help tab; --tab help is a valid CLI value

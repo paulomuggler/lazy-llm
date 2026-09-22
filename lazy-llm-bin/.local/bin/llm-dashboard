@@ -263,10 +263,10 @@ render_sessions_tab() {
     # didn't fit its column, not multi-line headers as such).
     local _legend="● working  ◐ waiting  ○ idle  ? unknown"
     if [[ "$_budget" -ge 85 ]]; then
-      header="enter:switch K:kill/rm r:rename z:fold a:add-pane ]/[:cycle-pane R:refresh"
+      header="/:search enter:switch K:kill/rm r:rename z:fold a:add-pane ]/[:cycle-pane R:refresh"
       [[ "$_budget" -ge 40 ]] && header+=$'\n'"$_legend"
     elif [[ "$_budget" -ge 50 ]]; then
-      header="enter:switch K:kill a:add-pane R:refresh"
+      header="/:search enter:switch K:kill a:add-pane R:refresh"
       [[ "$_budget" -ge 40 ]] && header+=$'\n'"$_legend"
     else
       header=""
@@ -286,6 +286,24 @@ render_sessions_tab() {
   preview_cmd+='tmux capture-pane -p -e -S -200 -t "$pid" 2>/dev/null || echo "(could not capture pane $pid)"; '
   preview_cmd+='else echo "(no AI pane to preview)"; fi'
 
+  # Modal search. --expect's single-key actions (r, K, a, ...) ALWAYS
+  # intercept their key the instant it's pressed, even mid-query with
+  # --disabled/--no-input active — confirmed by direct testing: those two
+  # flags only gate whether OTHER, unbound characters reach the query, they
+  # don't touch --expect at all, so --expect-only can't be fixed this way.
+  # The real fix: drop --expect and give each action key an explicit
+  # `print(KEY)+accept` --bind (same two-line "key\nselection" stdout shape
+  # --expect produced — verified byte-for-byte — so dispatch's `head -1`/
+  # `tail -1` parsing below needs no changes), then use unbind(...)/
+  # rebind(...) to actually REMOVE those key bindings while searching and
+  # restore them on exit. "/" unbinds them, hides+enables the query input;
+  # esc clears the query, hides the input, and rebinds them — "q" stays the
+  # one dedicated close key, so esc is free for "leave search" instead of
+  # aborting. `enter` gets its own explicit `print()+accept` (empty key
+  # line) so a plain switch/open still round-trips through the same two-line
+  # shape; it's never unbound since Enter is never a filter character. Fixes
+  # the "fuzzy search crashes the pane after the third filter keystroke"
+  # report, which was --expect's action keys firing mid-filter, not a crash.
   local selection key
   selection=$(printf '%s\n' "$lines" | fzf \
     --ansi \
@@ -297,9 +315,16 @@ render_sessions_tab() {
     --with-nth=2 \
     --preview="$preview_cmd" \
     --preview-window="right:55%:follow" \
+    --disabled --no-input \
+    --bind='enter:print()+accept' \
+    --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
+    --bind='K:print(K)+accept' --bind='r:print(r)+accept' --bind='R:print(R)+accept' \
+    --bind='z:print(z)+accept' --bind='a:print(a)+accept' \
+    --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
+    --bind='/:unbind(1,2,3,K,r,R,z,a,],[,?)+show-input+enable-search' \
+    --bind='esc:clear-query+hide-input+rebind(1,2,3,K,r,R,z,a,],[,?)' \
     --bind='q:abort' \
     --bind="start:pos(${_start_pos})" \
-    --expect="1,2,3,K,r,R,z,a,],[,?" \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
@@ -401,9 +426,9 @@ render_worktrees_tab() {
     local _budget
     _budget=$(_dashboard_header_budget)
     if [[ "$_budget" -ge 50 ]]; then
-      header="enter:open n:new g:lazygit K:cleanup R:refresh"
+      header="/:search enter:open n:new g:lazygit K:cleanup R:refresh"
     elif [[ "$_budget" -ge 30 ]]; then
-      header="enter:open n:new K:cleanup"
+      header="/:search enter:open n:new K:cleanup"
     else
       header=""
     fi
@@ -418,6 +443,7 @@ render_worktrees_tab() {
   preview_cmd+='echo; echo "=== git log -10 ==="; git -C "$wt" -c color.ui=always log --oneline -10 2>&1; '
   preview_cmd+='else echo "(preview unavailable: $wt)"; fi'
 
+  # Modal search — see the matching comment on the Workspaces tab's fzf call.
   local selection key
   selection=$(echo "$lines" | fzf \
     --ansi \
@@ -427,8 +453,14 @@ render_worktrees_tab() {
     --header="$header" \
     --preview="$preview_cmd" \
     --preview-window="right:55%:follow" \
+    --disabled --no-input \
+    --bind='enter:print()+accept' \
+    --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
+    --bind='n:print(n)+accept' --bind='g:print(g)+accept' \
+    --bind='K:print(K)+accept' --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
+    --bind='/:unbind(1,2,3,n,g,K,R,?)+show-input+enable-search' \
+    --bind='esc:clear-query+hide-input+rebind(1,2,3,n,g,K,R,?)' \
     --bind='q:abort' \
-    --expect="1,2,3,n,g,K,R,?" \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
@@ -733,7 +765,9 @@ render_help_tab() {
     ""
     "GLOBAL"
     " ?      open this Help tab"
-    " q  Esc close the dashboard"
+    " q      close the dashboard"
+    " /      search (type to filter)"
+    " Esc    cancel search"
     ""
     "ROW TYPES (Workspaces tab)"
     " ▾  ▸   workspace (expanded/folded)"
