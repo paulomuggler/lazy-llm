@@ -2,9 +2,9 @@
 slug: claude-hook-status-desktop-notify
 title: Hook-driven status for Claude panes + desktop notification on needs-attention
 priority: P1
-status: pending
+status: in-progress
 created: 2026-09-22_04:37
-updated: 2026-09-22_04:37
+updated: 2026-09-22_04:46
 depends-on: []
 tags: [status-detection, hooks, notifications, claude-only]
 commits: []
