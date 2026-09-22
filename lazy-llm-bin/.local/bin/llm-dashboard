@@ -73,6 +73,33 @@ glyph_for() {
   esac
 }
 
+# Same status -> color mapping as llm-status/llm-pane-border (see their own
+# palette comments), reused here so the tree's glyphs read the same as
+# everywhere else instead of the plain-text gray they were rendered in
+# before. These are raw truecolor ANSI escapes (\033[38;2;R;G;Bm), not
+# tmux's #[fg=...] syntax — this is plain fzf row text shown via --ansi, a
+# different rendering context than the status-right segment or pane border.
+glyph_color_for() {
+  case "$1" in
+    working) printf '#ffff00' ;;
+    waiting) printf '#ff00af' ;;
+    idle)    printf '#5fff00' ;;
+    *)       printf '#8a8a8a' ;;
+  esac
+}
+
+_ansi_fg() {
+  local hex="${1#\#}"
+  printf '\033[38;2;%d;%d;%dm' "$((16#${hex:0:2}))" "$((16#${hex:2:2}))" "$((16#${hex:4:2}))"
+}
+
+# Glyph wrapped in its status color + reset — what tree rows actually use;
+# glyph_for stays plain for the legend/Help-tab text, which is already
+# followed by its own label and shouldn't carry a dangling color reset.
+glyph_for_colored() {
+  printf '%s%s\033[0m' "$(_ansi_fg "$(glyph_color_for "$1")")" "$(glyph_for "$1")"
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 # Workspaces tab
 # ──────────────────────────────────────────────────────────────────────────
@@ -168,11 +195,10 @@ render_sessions_tab() {
       reply_panes="$REPLY_PANES"; reply_tools="$REPLY_TOOLS"; reply_idx="${REPLY_IDX:-0}"
       reply_names="$REPLY_PANE_NAMES"
 
-      local -a pane_arr=() tool_arr=() name_arr=()
+      local -a pane_arr=() tool_arr=()
       if [[ -n "$reply_panes" ]]; then
         read -ra pane_arr <<< "$reply_panes"
         read -ra tool_arr <<< "$reply_tools"
-        [[ -n "$reply_names" ]] && read -ra name_arr <<< "$reply_names"
       else
         # Legacy/single-pane fallback: @AI_PANES was never set for this window
         # (e.g. a workspace that's never had a second pane added).
@@ -184,6 +210,23 @@ render_sessions_tab() {
           pane_arr=("$single_pane_id")
           tool_arr=("$single_tool")
         fi
+      fi
+
+      # "Active pane" heuristic: tmux's OWN per-window pane_active flag —
+      # the pane last given real focus in that window — instead of
+      # @AI_PANE_IDX (only updated by llm-cycle, so it goes stale the moment
+      # focus moves any other way: mouse click, prefix+arrow, etc.).
+      # Reported directly as "still not working" after the @AI_PANE_IDX
+      # version; tmux already tracks this natively and correctly per window,
+      # no extra bookkeeping needed. Falls back to @AI_PANE_IDX only when
+      # the actually-focused pane isn't one of this workspace's AI panes at
+      # all (e.g. focus is on the editor/prompt pane, not an AI one).
+      local focused_pane_id focus_i
+      focused_pane_id=$(tmux list-panes -t "$name:$first_win" -f '#{pane_active}' -F '#{pane_id}' 2>/dev/null | head -1) || focused_pane_id=""
+      if [[ -n "$focused_pane_id" ]]; then
+        for focus_i in "${!pane_arr[@]}"; do
+          [[ "${pane_arr[$focus_i]}" == "$focused_pane_id" ]] && { reply_idx="$focus_i"; break; }
+        done
       fi
 
       # Workspace row's aggregate glyph: worst-case across its panes, in the
@@ -198,10 +241,11 @@ render_sessions_tab() {
           idle)    saw_idle=true ;;
         esac
       done
-      local agg_glyph="?"
-      if   [[ "$saw_waiting" == true ]]; then agg_glyph=$(glyph_for waiting)
-      elif [[ "$saw_working" == true ]]; then agg_glyph=$(glyph_for working)
-      elif [[ "$saw_idle"    == true ]]; then agg_glyph=$(glyph_for idle)
+      local agg_glyph
+      agg_glyph=$(glyph_for_colored unknown)
+      if   [[ "$saw_waiting" == true ]]; then agg_glyph=$(glyph_for_colored waiting)
+      elif [[ "$saw_working" == true ]]; then agg_glyph=$(glyph_for_colored working)
+      elif [[ "$saw_idle"    == true ]]; then agg_glyph=$(glyph_for_colored idle)
       fi
 
       local short_dir="${dir/#$HOME/\~}"
@@ -228,10 +272,10 @@ render_sessions_tab() {
           # "_" no-override placeholder), else the tool name. Status
           # detection below always uses $tool, never the display label —
           # renaming a pane must not change what it's detected as.
-          local display_label="${name_arr[$i]:-_}"
-          [[ "$display_label" == "_" ]] && display_label="$tool"
+          local display_label
+          display_label=$(lazy_llm_pane_display_label "$tool" "$reply_names" "$i")
           st=$(lazy_llm_detect_pane_status "$pid" "$tool")
-          glyph=$(glyph_for "$st")
+          glyph=$(glyph_for_colored "$st")
           local pane_display
           pane_display=$(printf '    ↳ %-12s %s' "$display_label" "$glyph")
           # Bold instead of an "(active)" text tag — real ANSI codes (not
@@ -304,8 +348,19 @@ render_sessions_tab() {
   # shape; it's never unbound since Enter is never a filter character. Fixes
   # the "fuzzy search crashes the pane after the third filter keystroke"
   # report, which was --expect's action keys firing mid-filter, not a crash.
+  # --height=100%: the user's own shell exports FZF_DEFAULT_OPTS with
+  # "--height 40%" (a sane default for ad-hoc interactive fzf use), which
+  # every fzf call in THIS script silently inherits unless overridden —
+  # confirmed live as the actual cause of "big outer popup, fixed small
+  # inner pane" (chat preview, git log, and the Help tab all stopped short
+  # at ~40% of the popup's real height, exactly matching the report; a
+  # plain --height=100% test in the same popup filled it completely). A
+  # script embedding fzf for its own UI should never rely on the invoking
+  # shell's ambient fzf preferences — every fzf call below sets its own
+  # --height explicitly for this reason, not just this one.
   local selection key
   selection=$(printf '%s\n' "$lines" | fzf \
+    --height=100% \
     --ansi \
     --reverse \
     --border=rounded \
@@ -443,9 +498,11 @@ render_worktrees_tab() {
   preview_cmd+='echo; echo "=== git log -10 ==="; git -C "$wt" -c color.ui=always log --oneline -10 2>&1; '
   preview_cmd+='else echo "(preview unavailable: $wt)"; fi'
 
-  # Modal search — see the matching comment on the Workspaces tab's fzf call.
+  # Modal search + --height=100% — see the matching comments on the
+  # Workspaces tab's fzf call.
   local selection key
   selection=$(echo "$lines" | fzf \
+    --height=100% \
     --ansi \
     --reverse \
     --border=rounded \
@@ -531,7 +588,7 @@ dispatch_action() {
       # Use llm-sessions --kill for the validated kill path (checks @lazy_llm marker)
       local confirm
       confirm=$(printf 'no\nyes' | fzf \
-        --reverse --border=rounded --header="Kill workspace '$name'?" \
+        --height=100% --reverse --border=rounded --header="Kill workspace '$name'?" \
         --prompt="confirm> " || echo no)
       if [[ "$confirm" == "yes" ]]; then
         "$HOME/.local/bin/llm-sessions" --kill "$name" >&2 || true
@@ -541,7 +598,7 @@ dispatch_action() {
       local name="${action#action:rename:}"
       local new_name
       new_name=$(echo "" | fzf --print-query \
-        --reverse --border=rounded \
+        --height=100% --reverse --border=rounded \
         --header="Rename workspace '$name' to:" \
         --prompt="new name> " \
         --query="$name" \
@@ -580,7 +637,7 @@ dispatch_action() {
         [[ "$current_label" == "_" ]] && current_label="${tool_arr[$idx]:-pane}"
         local new_label
         new_label=$(echo "" | fzf --print-query \
-          --reverse --border=rounded \
+          --height=100% --reverse --border=rounded \
           --header="Rename pane $((idx + 1)) (currently '$current_label') to:" \
           --prompt="new label> " \
           --query="$current_label" \
@@ -605,7 +662,7 @@ dispatch_action() {
       # lazy_llm_detect_pane_status — found live: pressing 'a' then Esc closed
       # the entire popup instead of returning to the tree.
       tool=$(printf 'claude\ngemini\ncodex\ngrok\naider' | fzf \
-        --reverse --border=rounded --prompt="tool> " \
+        --height=100% --reverse --border=rounded --prompt="tool> " \
         --header="Pick an AI tool to add (esc to cancel):" \
         --no-info || true)
       [[ -n "$tool" ]] && "$HOME/.local/bin/llm-add" -t "$tool" >&2 || true
@@ -615,7 +672,7 @@ dispatch_action() {
       [[ -z "$idx" ]] && return 0
       local confirm
       confirm=$(printf 'no\nyes' | fzf \
-        --reverse --border=rounded --header="Remove pane $idx?" \
+        --height=100% --reverse --border=rounded --header="Remove pane $idx?" \
         --prompt="confirm> " || echo no)
       [[ "$confirm" == "yes" ]] && "$HOME/.local/bin/llm-remove" -f "$idx" >&2 || true
       ;;
@@ -640,7 +697,7 @@ dispatch_action() {
       local new_branch
       # Same errexit hazard as action:pane-add above — `|| true` needed or
       # Esc here kills the whole dashboard.
-      new_branch=$(echo "" | fzf --print-query --reverse --border=rounded \
+      new_branch=$(echo "" | fzf --print-query --height=100% --reverse --border=rounded \
         --header="New worktree — branch name (will be created from HEAD if it doesn't exist):" \
         --prompt="branch> " --no-info \
         --bind 'enter:accept-non-empty' | head -1 || true)
@@ -699,14 +756,14 @@ _dashboard_worktree_cleanup_flow() {
 
   local confirm body
   body=$(printf 'Cleanup worktree: %s\nBranch: %s\n%s' "$path" "$branch" "${warnings_text:-(no warnings — clean removal)}")
-  confirm=$(printf 'no\nyes' | fzf --reverse --border=rounded \
+  confirm=$(printf 'no\nyes' | fzf --height=100% --reverse --border=rounded \
     --header="$body" --prompt="remove worktree? " || echo no)
   [[ "$confirm" != "yes" ]] && return 0
 
   local default_choice="yes"
   [[ -n "$warnings_text" ]] && default_choice="no"
   local del_branch
-  del_branch=$(printf 'no\nyes' | fzf --reverse --border=rounded \
+  del_branch=$(printf 'no\nyes' | fzf --height=100% --reverse --border=rounded \
     --header="Also delete branch '$branch'? (data loss risk if warnings shown)" \
     --prompt="delete branch ($default_choice)? " || echo "$default_choice")
 
@@ -814,6 +871,7 @@ render_help_tab() {
 
   local selection key
   selection=$(printf '%s\n' "$body" | fzf \
+    --height=100% \
     --reverse \
     --border=rounded \
     --prompt="help> " \
