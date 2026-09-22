@@ -632,43 +632,76 @@ _dashboard_worktree_cleanup_flow() {
 # ──────────────────────────────────────────────────────────────────────────
 
 render_help_tab() {
-  local body
-  body="lazy-llm dashboard — keybindings
+  # Two-column layout (user-requested — a plain scrolling list of every key
+  # read as a wall of text). Built by zipping two arrays rather than one big
+  # string, so column widths stay exact regardless of content edits.
+  local -a left=(
+    "TABS"
+    " 1   Workspaces"
+    " 2   Worktrees"
+    " 3   Help (this tab)"
+    ""
+    "WORKSPACES TAB"
+    " Enter  ws row: switch"
+    "        pane row: switch + focus"
+    " z      fold/unfold panes"
+    " n      new workspace"
+    " r      rename workspace"
+    " K      ws: kill · pane: remove"
+    "        (current workspace only)"
+    " R      refresh"
+    ""
+    "CURRENT WORKSPACE ONLY"
+    " a      add AI pane"
+    " ]  [   cycle next/prev pane"
+  )
+  local -a right=(
+    "WORKTREES TAB"
+    " Enter  open/attach in worktree"
+    " n      new worktree + workspace"
+    " g      launch lazygit"
+    " K      atomic cleanup"
+    " R      refresh"
+    ""
+    "GLOBAL"
+    " ?      open this Help tab"
+    " q  Esc close the dashboard"
+    ""
+    "ROW TYPES (Workspaces tab)"
+    " ▾  ▸   workspace (expanded/folded)"
+    " ↳      an AI pane, nested under it"
+  )
 
-  Tabs
-    1            switch to Workspaces tab
-    2            switch to Worktrees tab
-    3            this tab
+  local lw=34 rw=37
+  local rows=${#left[@]}
+  [[ ${#right[@]} -gt "$rows" ]] && rows=${#right[@]}
 
-  Workspaces tab — a tree: every lazy-llm workspace, its AI panes nested
-  beneath it. Row-dependent keys act on whatever's highlighted.
-    Enter        on a workspace row: switch to it
-                 on a pane row: switch to its workspace AND focus that pane
-    z            fold/unfold the highlighted workspace's panes
-    n            new lazy-llm workspace
-    r            rename the highlighted workspace
-    K            on a workspace row: kill it (with confirmation)
-                 on a pane row: remove that pane — only for the CURRENT
-                 workspace (the one this dashboard was opened from); on
-                 another workspace's pane row, shows why it's unsupported
-    R            refresh list
+  # Manual char-count padding, not printf %-*s — the field width printf
+  # computes for %s is byte-based, so any row containing a multi-byte
+  # glyph (▾ ↳ · are all 2-3 bytes in UTF-8) comes out under-padded and
+  # the right border drifts left. ${#text} is bash's own length operator,
+  # which counts CHARACTERS correctly in a UTF-8 locale — use that instead.
+  _help_pad() {
+    local text="$1" width="$2" pad=$(( $2 - ${#1} ))
+    [[ "$pad" -lt 0 ]] && pad=0
+    printf '%s%*s' "$text" "$pad" ""
+  }
+  # Same reasoning for the border rule — `tr ' ' '─'` operates byte-wise and
+  # mangles a multi-byte replacement character; build it by repetition
+  # instead.
+  _help_rule() {
+    local n="$1" s="" i
+    for ((i = 0; i < n; i++)); do s+="─"; done
+    printf '%s' "$s"
+  }
 
-  Workspaces tab — these three always act on the CURRENT workspace (the one
-  this dashboard was opened from), regardless of what's highlighted:
-    a            add an AI pane (tool picker)
-    ]            cycle to next AI pane
-    [            cycle to previous AI pane
-
-  Worktrees tab
-    Enter        open/attach lazy-llm workspace in worktree (via lazy-llm -W)
-    n            new worktree + workspace (prompts for branch)
-    g            launch lazygit pointed at the worktree
-    K            atomic cleanup (workspace + worktree + optional branch)
-    R            refresh list
-
-  Global
-    ?            open this tab from Workspaces or Worktrees
-    q / Esc       close the dashboard"
+  local body="lazy-llm dashboard — keybindings"$'\n'
+  body+="╭$(_help_rule $((lw + 2)))┬$(_help_rule $((rw + 2)))╮"
+  local i
+  for ((i = 0; i < rows; i++)); do
+    body+=$'\n'"│ $(_help_pad "${left[i]:-}" "$lw") │ $(_help_pad "${right[i]:-}" "$rw") │"
+  done
+  body+=$'\n'"╰$(_help_rule $((lw + 2)))┴$(_help_rule $((rw + 2)))╯"
 
   local selection key
   selection=$(printf '%s\n' "$body" | fzf \

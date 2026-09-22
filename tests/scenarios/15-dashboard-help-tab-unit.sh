@@ -97,8 +97,8 @@ fi
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
 echo "Test 8: help body covers Workspaces, Worktrees, and fold/pane-row behavior..."
-assert_contains "$help_body" "Workspaces tab" "help body covers the Workspaces tab"
-assert_contains "$help_body" "Worktrees tab" "help body covers the Worktrees tab"
+assert_contains "$help_body" "WORKSPACES TAB" "help body covers the Workspaces tab"
+assert_contains "$help_body" "WORKTREES TAB" "help body covers the Worktrees tab"
 assert_contains "$help_body" "fold/unfold" "help body documents the fold key"
 assert_contains "$help_body" "pane row" "help body documents pane-row-specific behavior"
 
