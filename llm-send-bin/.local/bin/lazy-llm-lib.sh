@@ -494,6 +494,11 @@ lazy_llm_read_multi_state_for() {
   REPLY_PANES=$(tmux show-option -wv -t "$session:$window" @AI_PANES 2>/dev/null) || REPLY_PANES=""
   REPLY_TOOLS=$(tmux show-option -wv -t "$session:$window" @AI_TOOLS 2>/dev/null) || REPLY_TOOLS=""
   REPLY_IDX=$(tmux show-option -wv -t "$session:$window" @AI_PANE_IDX 2>/dev/null) || REPLY_IDX="0"
+  # Optional per-pane DISPLAY label override (space-separated, parallel to
+  # @AI_TOOLS; "_" marks "no override, use the tool name"). Separate from
+  # @AI_TOOLS itself so renaming a pane's display label can never break
+  # tool-specific status detection.
+  REPLY_PANE_NAMES=$(tmux show-option -wv -t "$session:$window" @AI_PANE_NAMES 2>/dev/null) || REPLY_PANE_NAMES=""
 }
 
 # Swap the visible AI pane in <session:window> to the pane at <target_idx> in its

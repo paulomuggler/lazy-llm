@@ -98,6 +98,7 @@ glyph_for() {
 #   "action:switch-pane:<name>:<idx0>"   — switch to workspace + focus that pane
 #   "action:kill:<name>"                 — kill selected workspace
 #   "action:rename:<name>"               — rename selected workspace
+#   "action:rename-pane:<name>:<idx0>"   — rename that pane's DISPLAY label
 #   "action:toggle:<name>"               — collapse/expand that workspace's panes
 #   "action:pane-add"                    — add AI pane to the CURRENT workspace
 #                                           (the one this dashboard was opened
@@ -162,14 +163,16 @@ render_sessions_tab() {
       # Full per-pane list for this workspace's first window — every AI pane
       # gets its own row + glyph, not just the first (the old Sessions tab's
       # limitation this task exists to fix).
-      local reply_panes reply_tools reply_idx
+      local reply_panes reply_tools reply_idx reply_names
       lazy_llm_read_multi_state_for "$name" "$first_win"
       reply_panes="$REPLY_PANES"; reply_tools="$REPLY_TOOLS"; reply_idx="${REPLY_IDX:-0}"
+      reply_names="$REPLY_PANE_NAMES"
 
-      local -a pane_arr=() tool_arr=()
+      local -a pane_arr=() tool_arr=() name_arr=()
       if [[ -n "$reply_panes" ]]; then
         read -ra pane_arr <<< "$reply_panes"
         read -ra tool_arr <<< "$reply_tools"
+        [[ -n "$reply_names" ]] && read -ra name_arr <<< "$reply_names"
       else
         # Legacy/single-pane fallback: @AI_PANES was never set for this window
         # (e.g. a workspace that's never had a second pane added).
@@ -221,10 +224,16 @@ render_sessions_tab() {
       if [[ -z "${_collapsed[$name]:-}" ]]; then
         for i in "${!pane_arr[@]}"; do
           local pid="${pane_arr[$i]}" tool="${tool_arr[$i]:-?}" glyph
+          # Display label: the custom rename if one's set (and isn't the
+          # "_" no-override placeholder), else the tool name. Status
+          # detection below always uses $tool, never the display label —
+          # renaming a pane must not change what it's detected as.
+          local display_label="${name_arr[$i]:-_}"
+          [[ "$display_label" == "_" ]] && display_label="$tool"
           st=$(lazy_llm_detect_pane_status "$pid" "$tool")
           glyph=$(glyph_for "$st")
           local pane_display
-          pane_display=$(printf '    ↳ %-12s %s' "$tool" "$glyph")
+          pane_display=$(printf '    ↳ %-12s %s' "$display_label" "$glyph")
           # Bold instead of an "(active)" text tag — real ANSI codes (not
           # tmux's #[..] syntax), since this is plain fzf row text rendered
           # via --ansi, a different rendering context than status-right/
@@ -327,7 +336,15 @@ render_sessions_tab() {
         echo "action:refresh"
       fi
       ;;
-    r)     [[ -z "$chosen_ws" ]] && echo "action:refresh" || echo "action:rename:$chosen_ws" ;;
+    r)
+      if [[ -n "$chosen_pane_idx" ]]; then
+        echo "action:rename-pane:$chosen_ws:$chosen_pane_idx"
+      elif [[ -n "$chosen_ws" ]]; then
+        echo "action:rename:$chosen_ws"
+      else
+        echo "action:refresh"
+      fi
+      ;;
     R)     echo "action:refresh" ;;
     z)     [[ -z "$chosen_ws" ]] && echo "action:refresh" || echo "action:toggle:$chosen_ws" ;;
     a)     echo "action:pane-add" ;;
@@ -504,6 +521,46 @@ dispatch_action() {
           || echo "Could not rename to $new_name" >&2
       fi
       ;;
+    action:rename-pane:*)
+      # Per-pane DISPLAY label, stored separately from @AI_TOOLS (which
+      # still names the actual tool binary/detection pattern — renaming a
+      # pane must not break status detection). @AI_PANE_NAMES is a
+      # space-separated array parallel to @AI_TOOLS/@AI_PANES; "_" marks a
+      # slot with no override (falls back to the tool name).
+      local rest="${action#action:rename-pane:}"
+      local name="${rest%%:*}"
+      local idx="${rest#*:}"
+      local win
+      win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1)
+      if [[ -n "$win" ]]; then
+        lazy_llm_read_multi_state_for "$name" "$win"
+        local -a tool_arr=() name_arr=()
+        read -ra tool_arr <<< "$REPLY_TOOLS"
+        if [[ -n "$REPLY_PANE_NAMES" ]]; then
+          read -ra name_arr <<< "$REPLY_PANE_NAMES"
+        fi
+        # Pad name_arr out to tool_arr's length with "_" placeholders.
+        local j
+        for ((j = ${#name_arr[@]}; j < ${#tool_arr[@]}; j++)); do
+          name_arr+=("_")
+        done
+        local current_label="${name_arr[$idx]:-_}"
+        [[ "$current_label" == "_" ]] && current_label="${tool_arr[$idx]:-pane}"
+        local new_label
+        new_label=$(echo "" | fzf --print-query \
+          --reverse --border=rounded \
+          --header="Rename pane $((idx + 1)) (currently '$current_label') to:" \
+          --prompt="new label> " \
+          --query="$current_label" \
+          --no-info \
+          --bind 'enter:accept-non-empty' \
+          --expect=enter | head -1 || true)
+        if [[ -n "$new_label" ]] && [[ "$new_label" != "$current_label" ]]; then
+          name_arr[$idx]="$new_label"
+          tmux set-option -w -t "$name:$win" @AI_PANE_NAMES "${name_arr[*]}"
+        fi
+      fi
+      ;;
     action:refresh)
       : # outer loop re-renders the current tab
       ;;
@@ -657,7 +714,7 @@ render_help_tab() {
     " Enter  ws row: switch"
     "        pane row: switch + focus"
     " z      fold/unfold panes"
-    " r      rename workspace"
+    " r      rename ws / pane label"
     " K      ws: kill · pane: remove"
     "        (current workspace only)"
     " R      refresh"
@@ -820,7 +877,7 @@ while true; do
     tab:*)
       current_tab="${result#tab:}"
       ;;
-    action:switch:*|action:switch-pane:*|action:toggle:*|action:kill:*|action:rename:*|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
+    action:switch:*|action:switch-pane:*|action:toggle:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
       dispatch_action "$result"
       # Switch action exits the popup; for others we re-enter the current tab
       [[ "$result" == action:switch:* || "$result" == action:switch-pane:* ]] && break
