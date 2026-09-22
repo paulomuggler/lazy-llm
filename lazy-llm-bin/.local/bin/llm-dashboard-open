@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
-# llm-dashboard-open - launch llm-dashboard in a popup sized to its actual
-# content, instead of a fixed percentage that leaves a mostly-empty popup
-# open when there are only a couple of workspaces.
+# llm-dashboard-open - launch llm-dashboard in a popup sized generously
+# against the current terminal, instead of a fixed 70%.
+#
+# History: this used to compute height from the tree's content-row count,
+# aiming to eliminate blank space below a short list. That solved the wrong
+# problem — the preview pane shares the popup's height with the list (they're
+# a side-by-side split), so shrinking the popup to match a short list ALSO
+# shrinks the preview, and a short preview reads badly for actual
+# conversation content. Corrected per direct user feedback: default to a
+# generous height (most of the terminal), with a floor so it's never
+# unusably short and a ceiling so it never crowds out the terminal's own
+# chrome. No content-based shrinking — vertical space for reading the
+# preview matters more than eliminating blank rows below a short tree.
 #
 # Bound to Prefix+S (see lazy-llm's window-setup function) via `run-shell`,
 # since tmux's own `bind-key ... display-popup -h N` needs N computed before
@@ -10,42 +20,16 @@
 
 set -euo pipefail
 
-_lib_sibling="$(dirname "$0")/lazy-llm-lib.sh"
-if [[ -f "$_lib_sibling" ]]; then
-  # shellcheck source=/dev/null
-  source "$_lib_sibling"
-else
-  # shellcheck source=/dev/null
-  source "$(dirname "$0")/../../../llm-send-bin/.local/bin/lazy-llm-lib.sh"
-fi
-
-# Rough row estimate: one row per workspace, one more per AI pane it has
-# (the tree is expanded by default), plus a fixed chrome allowance (border,
-# two header lines, fzf's own stats/prompt line). Doesn't need to be exact —
-# just close enough that the popup isn't dominated by blank space.
-estimate_rows() {
-  local data rows=0
-  data=$(lazy_llm_gather_sessions 2>/dev/null) || { echo 0; return; }
-  [[ -z "$data" ]] && { echo 0; return; }
-  local name dir tools wins attached
-  while IFS=$'\t' read -r name dir tools wins attached; do
-    rows=$((rows + 1))
-    local pane_count
-    pane_count=$(wc -w <<< "$tools")
-    rows=$((rows + pane_count))
-  done <<< "$data"
-  echo "$rows"
-}
-
-CHROME=6
-MIN_HEIGHT=16
-
-content_rows=$(estimate_rows)
-height=$((content_rows + CHROME))
-[[ "$height" -lt "$MIN_HEIGHT" ]] && height=$MIN_HEIGHT
+# Generous default: most of the terminal. Floor keeps it usable on a tiny
+# terminal; there's no separate ceiling constant because TARGET_PERCENT
+# itself (comfortably under 100) is already the ceiling relative to the
+# client's own height.
+TARGET_PERCENT=90
+MIN_HEIGHT=24
 
 client_h=$(tmux display-message -p '#{client_height}' 2>/dev/null) || client_h=50
-max_height=$((client_h * 85 / 100))
-[[ "$height" -gt "$max_height" ]] && height=$max_height
+height=$((client_h * TARGET_PERCENT / 100))
+[[ "$height" -lt "$MIN_HEIGHT" ]] && height=$MIN_HEIGHT
+[[ "$height" -gt "$client_h" ]] && height=$client_h
 
-exec tmux display-popup -E -w 90% -h "${height}" "$HOME/.local/bin/llm-dashboard" "$@"
+exec tmux display-popup -E -w 92% -h "${height}" "$HOME/.local/bin/llm-dashboard" "$@"
