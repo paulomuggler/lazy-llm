@@ -168,6 +168,36 @@ Candidate approaches, in rough order of trying (cheapest first):
 ### Follow-up
 - None filed.
 
+## Correction (2026-09-22_05:17)
+
+While starting `statusbar-dashboard-hint`/before `dashboard-help-tab`, discovered the
+header-width fix above was based on a **wrong measurement baseline**: I measured
+truncation against the *popup's* width (90% of terminal), but fzf's `--header` is
+only as wide as the *list column* when a right-side preview is active (~45% of the
+popup) — confirmed by live-testing the actual dashboard at 80 columns, where the
+82/67-char two-line header from this task still truncated with `..`.
+
+Measured real available header width at several terminal sizes (80→~31 chars,
+100→~43, 120→~52, 160→~70) — no fixed line length reliably fits while also trying to
+enumerate every key. Replaced both populated-state headers with a short, static
+pointer (`"[Workspaces] ?:help q:close"`, `"[Worktrees] ?:help q:close"`) that fits
+even at 80 columns with margin, and shortened both empty-state headers too. The full
+keybinding list now lives entirely in the `?` help overlay — deferred to
+[[dashboard-help-tab]], which is where a persistent fuller surface belongs, not a
+header sharing space with the preview pane.
+
+Re-verified end-to-end (not just isolated fzf calls this time): launched the real
+`llm-dashboard` directly against real live workspace data at 80 and 150 columns, both
+tabs, all states. Headers fit completely; preview panes show clean truncated lines
+(confirming the wrap fix from this task still holds together with this correction).
+Full test suite re-run, unchanged from baseline.
+
+Commit: `26cb22e` — dashboard: correct header-width fix — measure against the list
+column, not popup.
+
+All acceptance criteria above remain met — the header-truncation criterion is now
+met on a corrected, verified basis rather than the flawed one.
+
 ## Verify Plan
 
 Self-verified inline (per the note on `dashboard-workspace-nomenclature`).
