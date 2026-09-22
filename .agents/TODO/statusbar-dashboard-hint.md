@@ -2,9 +2,9 @@
 slug: statusbar-dashboard-hint
 title: Add a status-bar reminder of the dashboard keybinding
 priority: P2
-status: pending
+status: in-progress
 created: 2026-09-22_04:37
-updated: 2026-09-22_04:37
+updated: 2026-09-22_05:10
 depends-on: [dashboard-workspace-nomenclature]
 tags: [ux, discoverability, statusbar, tmux]
 commits: []
