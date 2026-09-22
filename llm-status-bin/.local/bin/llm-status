@@ -14,9 +14,13 @@
 # Inside the content segment, every part IS separated by a literal "│"
 # (summary, each pane tile, the dashboard hint) — that's the user's "AI |
 # sessions info | session a | session b | etc | dash hint" ask. The active
-# pane's tile swaps to the strong-blue background (same color as the chip
-# and cap) instead of a separator, so "which pane is focused" reads as
-# "which tile matches the brand accent" at a glance.
+# pane's tile is bold + the strong-blue accent text color (not a filled
+# background) — a background swap was tried first and reported as visibly
+# uneven ("doesn't fill all the way between the │ separators"), which reads
+# as the faded/strong blues being too close for tmux's #[bg=...] box edges
+# to look clean at this scale. Bold+color avoids that whole class of
+# alignment issue and matches how the dashboard tree already marks its own
+# active row (bold, not a fill).
 #
 # For use in tmux status-right: set -g status-right '#(llm-status)'
 #
@@ -39,11 +43,11 @@
 #   ● working   ○ idle   ◐ waiting   ? unknown
 #
 # Output shape:
-#   [AI] 3ws 1◐ │ claude ● │ gemini ◐ │ Dash ^B+S ▐
+#   [AI] 3ws 1◐ │ claude ● │ gemini ◐ │ Dash ^B+S
 #        ^^^^^^   ^^^^^^^^   ^^^^^^^^   ^^^^^^^^^
 #        summary  current window's own AI panes    dashboard hint —
-#        across   (active pane's tile is filled     ^B is this tmux's
-#        every    with the strong-blue accent)       actual prefix key
+#        across   (active pane's name is bold +     ^B is this tmux's
+#        every    strong-blue accent text)           actual prefix key
 #        workspace
 
 set -euo pipefail
@@ -54,7 +58,6 @@ source "$(dirname "$0")/lazy-llm-lib.sh"
 readonly C_CHIP="#00afff"
 readonly C_CHIP_FG="#080808"
 readonly C_CONTENT_BG="#005f87"
-readonly C_ACTIVE_BG="$C_CHIP"
 readonly C_TEXT="#e4e4e4"
 readonly C_DIM="#bcd4e0"
 readonly C_WORKING="#ffff00"
@@ -81,22 +84,24 @@ glyph_color() {
   esac
 }
 
-# Render one pane's tile (one "part" of the content segment). Args: tool
-# status is-active(0|1). Active swaps to the strong-blue accent background
-# (same color as the chip and cap) instead of the content segment's own
-# faded-blue — that's the "active pane" signal, no separate highlight color
-# to invent.
+# Render one pane's tile (one "part" of the content segment). Args: label
+# (the pane's resolved+clamped display label — its dashboard rename if one's
+# set, else the tool name; see lazy_llm_pane_display_label/
+# lazy_llm_clamp_label in lazy-llm-lib.sh) status is-active(0|1). Active =
+# bold + strong-blue accent text color, same background as every other part
+# (see the header comment for why this replaced the earlier
+# background-fill approach).
 render_tile() {
-  local tool="$1" status="$2" active="$3"
+  local label="$1" status="$2" active="$3"
   local color glyph
   color=$(glyph_color "$status")
   glyph=$(glyph_for "$status")
   if [ "$active" = "1" ]; then
     printf '#[fg=%s,bg=%s,bold]%s #[fg=%s,bg=%s,bold]%s#[nobold]' \
-      "$C_CHIP_FG" "$C_ACTIVE_BG" "$tool" "$color" "$C_ACTIVE_BG" "$glyph"
+      "$C_CHIP" "$C_CONTENT_BG" "$label" "$color" "$C_CONTENT_BG" "$glyph"
   else
     printf '#[fg=%s,bg=%s]%s #[fg=%s,bg=%s]%s' \
-      "$C_TEXT" "$C_CONTENT_BG" "$tool" "$color" "$C_CONTENT_BG" "$glyph"
+      "$C_TEXT" "$C_CONTENT_BG" "$label" "$color" "$C_CONTENT_BG" "$glyph"
   fi
 }
 
@@ -152,10 +157,21 @@ join_parts() {
 # The three macro segments (chip / content / cap) are distinguished by
 # color alone, per user request — no literal separator between THEM, only
 # inside the content segment (join_parts above).
+#
+# The cap used to be a "▐" (right-half-block) glyph with bg=default, meant
+# to fade the accent color out — instead it showed as a visible black seam,
+# reported directly. Root cause: "▐" renders its LEFT half in the
+# background color and only its RIGHT half in the foreground color: setting
+# bg=default put a hard dark half-cell right up against the solid-blue
+# space before it, which is a seam, not a fade — the two colors never
+# actually blended, they just sat adjacent. Fixed by dropping the
+# half-block trick: the cap is now a plain solid-blue space, same bg the
+# whole segment already uses, with one hard #[default] cut at the very end
+# — a clean edge instead of a fake gradient that wasn't actually gradual.
 emit() {
   local content="$1"
-  printf '#[fg=%s,bg=%s,bold] AI #[fg=%s,bg=%s,nobold] %s #[bg=%s] #[fg=%s,bg=default]▐#[default]\n' \
-    "$C_CHIP_FG" "$C_CHIP" "$C_TEXT" "$C_CONTENT_BG" "$content" "$C_CHIP" "$C_CHIP"
+  printf '#[fg=%s,bg=%s,bold] AI #[fg=%s,bg=%s,nobold] %s #[bg=%s]  #[default]\n' \
+    "$C_CHIP_FG" "$C_CHIP" "$C_TEXT" "$C_CONTENT_BG" "$content" "$C_CHIP"
 }
 
 # Resolve pane context (exit silently on failure — status bar must not error)
@@ -176,7 +192,8 @@ if [ -z "$AI_PANES" ]; then
     ai_pane_id=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_PANE_ID 2>/dev/null) || ai_pane_id=""
     status="unknown"
     [ -n "$ai_pane_id" ] && status=$(lazy_llm_detect_pane_status "$ai_pane_id" "$AI_TOOL")
-    emit "$(join_parts "$summary_text" "$(render_tile "$AI_TOOL" "$status" 1)" "$hint_text")"
+    label=$(lazy_llm_clamp_label "$AI_TOOL" 15)
+    emit "$(join_parts "$summary_text" "$(render_tile "$label" "$status" 1)" "$hint_text")"
   fi
   exit 0
 fi
@@ -187,10 +204,24 @@ read -ra tool_arr <<< "$AI_TOOLS"
 current_idx="${AI_PANE_IDX:-0}"
 total=${#tool_arr[@]}
 
+# "Active" tile = tmux's own per-window pane_active flag (last real focus in
+# this window), not the stale @AI_PANE_IDX — same fix, same reasoning, as
+# the dashboard tree's active-pane heuristic (see llm-dashboard's comment on
+# this). Falls back to @AI_PANE_IDX if the focused pane isn't one of this
+# window's AI panes (focus is on the editor/prompt pane instead).
+focused_pane_id=$(tmux list-panes -t "$_SESSION:$_WINDOW" -f '#{pane_active}' -F '#{pane_id}' 2>/dev/null | head -1) || focused_pane_id=""
+if [ -n "$focused_pane_id" ]; then
+  for i in "${!pane_arr[@]}"; do
+    [ "${pane_arr[$i]}" = "$focused_pane_id" ] && { current_idx="$i"; break; }
+  done
+fi
+
 # Single pane: simple tile
 if [ "$total" -le 1 ]; then
   status=$(lazy_llm_detect_pane_status "${pane_arr[0]}" "${tool_arr[0]}")
-  emit "$(join_parts "$summary_text" "$(render_tile "${tool_arr[0]}" "$status" 1)" "$hint_text")"
+  label=$(lazy_llm_pane_display_label "${tool_arr[0]}" "$AI_PANE_NAMES" 0)
+  label=$(lazy_llm_clamp_label "$label" 15)
+  emit "$(join_parts "$summary_text" "$(render_tile "$label" "$status" 1)" "$hint_text")"
   exit 0
 fi
 
@@ -200,7 +231,9 @@ for i in "${!tool_arr[@]}"; do
   status=$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]}")
   active=0
   [ "$i" -eq "$current_idx" ] && active=1
-  parts+=("$(render_tile "${tool_arr[$i]}" "$status" "$active")")
+  label=$(lazy_llm_pane_display_label "${tool_arr[$i]}" "$AI_PANE_NAMES" "$i")
+  label=$(lazy_llm_clamp_label "$label" 15)
+  parts+=("$(render_tile "$label" "$status" "$active")")
 done
 parts+=("$hint_text")
 emit "$(join_parts "${parts[@]}")"

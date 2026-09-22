@@ -59,7 +59,7 @@ lazy_llm_get_prompt_target() {
 }
 
 # Read all multi-pane state into variables.
-# Sets: AI_PANES, AI_TOOLS, AI_PANE_IDX, AI_HOLD_WIN, AI_TOOL
+# Sets: AI_PANES, AI_TOOLS, AI_PANE_IDX, AI_HOLD_WIN, AI_TOOL, AI_PANE_NAMES
 # Requires: _SESSION, _WINDOW
 lazy_llm_read_multi_state() {
   AI_PANES=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_PANES 2>/dev/null) || true
@@ -67,6 +67,7 @@ lazy_llm_read_multi_state() {
   AI_PANE_IDX=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_PANE_IDX 2>/dev/null) || true
   AI_HOLD_WIN=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN 2>/dev/null) || true
   AI_TOOL=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_TOOL 2>/dev/null) || true
+  AI_PANE_NAMES=$(tmux show-option -wv -t "$_SESSION:$_WINDOW" @AI_PANE_NAMES 2>/dev/null) || true
 }
 
 # Check if a tmux pane is still alive.
@@ -128,11 +129,16 @@ _LAZY_LLM_HOOK_STATUS_MAX_AGE=30
 
 # Read a Claude Code hook-written status for a pane, if fresh.
 # Written by dev-env's ~/.claude/hooks/lazy-llm-status-notify.sh on the
-# Notification (permission_prompt/idle_prompt -> waiting) and Stop
-# (-> idle) hook events. The hook never writes "working" — a pane that's
-# actively generating has no fresh file (or an aged-out one), and falls
-# through to the content-scrape path, which detects "working" fine via the
-# interrupt-hint pattern.
+# Notification:permission_prompt (-> waiting — genuinely blocked on a
+# decision) and Notification:idle_prompt / Stop (-> idle) hook events.
+# idle_prompt deliberately maps to "idle", not "waiting" — it's Claude
+# Code's own delayed idle nudge, not a new blocking state; mapping it to
+# "waiting" was overwriting Stop's correct "idle" and is why finished
+# sessions used to get stuck showing waiting (see the hook script's own
+# comment for the full story). The hook never writes "working" — a pane
+# that's actively generating has no fresh file (or an aged-out one), and
+# falls through to the content-scrape path, which detects "working" fine
+# via the interrupt-hint pattern.
 # Args:   $1 pane_id
 # Stdout: waiting | idle   (only if a fresh file says so)
 # Returns 1 (nothing echoed) if no usable hook file exists.
@@ -628,4 +634,40 @@ lazy_llm_compute_summary() {
     [[ "$has_waiting" == true ]] && waiting_count=$((waiting_count + 1))
   done <<< "$data"
   printf '%s %s\n' "$ws_count" "$waiting_count"
+}
+
+# Resolve a pane's DISPLAY label: its custom rename from @AI_PANE_NAMES if
+# one's set (and isn't the "_" no-override placeholder), else the plain
+# tool name. Shared by llm-status and llm-pane-border so a pane rename
+# (dashboard's 'r' on a pane row) shows up everywhere the pane's identity is
+# rendered, not just in the dashboard tree it was set from. Deliberately
+# never used for status DETECTION (that always keys off $tool) — renaming
+# a pane's display must not change what it's detected as.
+# Args:   $1 tool_name   $2 pane_names (space-separated, parallel to
+#         @AI_PANES/@AI_TOOLS — pass "" if unavailable)   $3 index
+# Stdout: the display label
+lazy_llm_pane_display_label() {
+  local tool="${1:-?}" pane_names="${2:-}" idx="${3:-0}"
+  if [[ -n "$pane_names" ]]; then
+    local -a _names=()
+    read -ra _names <<< "$pane_names"
+    local label="${_names[$idx]:-_}"
+    [[ "$label" != "_" ]] && { printf '%s' "$label"; return; }
+  fi
+  printf '%s' "$tool"
+}
+
+# Clamp a label to at most N visible characters, appending a single "…" when
+# truncated (so the result is still exactly N chars wide, not N+1) — for
+# space-constrained single-line surfaces (llm-status tiles) where an
+# arbitrary custom pane name could otherwise blow out the status line's
+# layout. ${#s} counts CHARACTERS in a UTF-8 locale, not bytes — same
+# reasoning as llm-dashboard's _help_pad (see coding-standards/frameworks/
+# tmux-fzf.md on printf %-*s's byte-vs-character width bug).
+# Args:   $1 label   $2 max_len (default 15)
+lazy_llm_clamp_label() {
+  local label="$1" max="${2:-15}"
+  [[ "${#label}" -le "$max" ]] && { printf '%s' "$label"; return; }
+  [[ "$max" -le 1 ]] && { printf '%s' "${label:0:$max}"; return; }
+  printf '%s…' "${label:0:$((max - 1))}"
 }
