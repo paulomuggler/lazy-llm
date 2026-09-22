@@ -32,6 +32,15 @@ height=$((client_h * TARGET_PERCENT / 100))
 [[ "$height" -lt "$MIN_HEIGHT" ]] && height=$MIN_HEIGHT
 [[ "$height" -gt "$client_h" ]] && height=$client_h
 
+# Resolve the calling workspace HERE, in run-shell's own context, and pass
+# it into the popup explicitly — verified live that this is necessary: a
+# popup's child process does NOT reliably inherit the calling pane/session
+# context (TMUX_PANE is unset inside it, and the ambient
+# `tmux display-message -p` fallback resolved to a DIFFERENT, unrelated
+# session in testing, not the one that opened the popup). Passing it in via
+# `-e` sidesteps that entirely — see coding-standards/frameworks/tmux-fzf.md.
+launch_session=$(tmux display-message -p '#S' 2>/dev/null) || launch_session=""
+
 # Universal nav hints (same on every tab) go in the popup's own title bar,
 # not fzf's --header — the title spans the FULL popup width (it's tmux's
 # own border, not constrained by the list column fzf's preview pane eats
@@ -42,4 +51,6 @@ height=$((client_h * TARGET_PERCENT / 100))
 # content is the same regardless of which tab is active.
 TITLE=" lazy-llm │ 1:workspaces 2:worktrees 3:help │ ?:help q:close "
 
-exec tmux display-popup -E -w 92% -h "${height}" -T "${TITLE}" "$HOME/.local/bin/llm-dashboard" "$@"
+exec tmux display-popup -E -w 92% -h "${height}" -T "${TITLE}" \
+  -e "LAZY_LLM_LAUNCH_SESSION=${launch_session}" \
+  "$HOME/.local/bin/llm-dashboard" "$@"

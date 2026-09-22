@@ -118,8 +118,15 @@ render_sessions_tab() {
   # no tmux session at all) leaves this empty; the tree still renders fine,
   # those specific actions just become unavailable/no-ops, same as they'd be
   # unreachable entirely in the pre-merge Panes tab under the same condition.
-  local launch_ws=""
-  if lazy_llm_resolve_pane 2>/dev/null && lazy_llm_resolve_session_window 2>/dev/null; then
+  # Prefer the explicit value llm-dashboard-open resolved and passed in
+  # (-e LAZY_LLM_LAUNCH_SESSION=...) — verified live that a popup's child
+  # process does NOT reliably inherit the calling session via ambient
+  # resolution (TMUX_PANE unset inside it, and the display-message fallback
+  # resolved to an unrelated session in testing). Fall back to the ambient
+  # lookup only for direct `llm-dashboard` invocation without the wrapper
+  # (e.g. manual CLI use, `--tab` testing).
+  local launch_ws="${LAZY_LLM_LAUNCH_SESSION:-}"
+  if [[ -z "$launch_ws" ]] && lazy_llm_resolve_pane 2>/dev/null && lazy_llm_resolve_session_window 2>/dev/null; then
     launch_ws="$_SESSION"
   fi
 
