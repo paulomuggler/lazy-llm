@@ -12,7 +12,8 @@
 - [x] [dashboard-workspace-nomenclature](done/dashboard-workspace-nomenclature.md) - Rename user-facing "session" to "workspace" throughout lazy-llm UI copy
 - [x] [statusbar-dashboard-hint](done/statusbar-dashboard-hint.md) - Add a status-bar reminder of the dashboard keybinding
 
-## Backlog (1)
+## Backlog (2)
 
 ### P3 - Low
 - [-] [lazy-llm-refinement-pass](backlog/lazy-llm-refinement-pass.md) - Refinement pass over lazy-llm feature space and codebase
+- [-] [pane-auto-naming-from-conversation](backlog/pane-auto-naming-from-conversation.md) - Auto-rename AI panes/workspaces from conversation content (hook and/or LLM call)
