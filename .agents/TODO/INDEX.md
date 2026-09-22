@@ -1,10 +1,9 @@
 # TODO Index
 > Auto-generated. Run `/todo lint` to regenerate.
 
-## Pending (5)
+## Pending (4)
 
 ### P1 - High
-- [ ] [claude-hook-status-desktop-notify](claude-hook-status-desktop-notify.md) - Hook-driven status for Claude panes + desktop notification on needs-attention
 - [ ] [dashboard-tree-view-consolidation](dashboard-tree-view-consolidation.md) - Consolidate Sessions + Panes tabs into a single collapsible workspace/pane tree
 
 ### P2 - Normal
@@ -12,8 +11,9 @@
 - [ ] [dashboard-preview-render-fix](dashboard-preview-render-fix.md) - Fix dashboard layout — header truncation and corrupted ANSI preview rendering
 - [ ] [statusbar-dashboard-hint](statusbar-dashboard-hint.md) - Add a status-bar reminder of the dashboard keybinding
 
-## Done (1)
+## Done (2)
 
+- [x] [claude-hook-status-desktop-notify](done/claude-hook-status-desktop-notify.md) - Hook-driven status for Claude panes + desktop notification on needs-attention
 - [x] [dashboard-workspace-nomenclature](done/dashboard-workspace-nomenclature.md) - Rename user-facing "session" to "workspace" throughout lazy-llm UI copy
 
 ## Backlog (1)
