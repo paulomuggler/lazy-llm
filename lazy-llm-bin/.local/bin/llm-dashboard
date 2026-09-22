@@ -44,6 +44,23 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
+# Adaptive header width. A right-side preview means --header only gets the
+# LIST column's share of the popup (~45%, not the popup's own width — see
+# dashboard-preview-render-fix's correction) — but that column's absolute
+# width still varies a lot by terminal (a 27-char "?:help q:close" fallback
+# is only necessary on a narrow terminal; a wide one has room for the real
+# keybinding list). Measure the actual client width and pick accordingly,
+# instead of hardcoding for the narrowest case everyone pays for.
+# ──────────────────────────────────────────────────────────────────────────
+_dashboard_header_budget() {
+  local client_w
+  client_w=$(tmux display-message -p '#{client_width}' 2>/dev/null) || client_w=100
+  # popup is 90% of client width, list column is ~45% of the popup, minus a
+  # few columns for the row-select border/marker and rounding slack.
+  echo $(( client_w * 90 / 100 * 45 / 100 - 4 ))
+}
+
+# ──────────────────────────────────────────────────────────────────────────
 # Glyph mapping (shared with llm-status; kept here too so the dashboard
 # doesn't pull in another source file just for one tiny function).
 # ──────────────────────────────────────────────────────────────────────────
@@ -188,13 +205,20 @@ render_sessions_tab() {
     lines="${lines%$'\n'}"
     # Deliberately short and static — NOT an enumeration of every key. With a
     # right-side preview active, --header's available width is the LIST
-    # column's share (~45% of the popup), not the popup's own width — at a
-    # 90-column terminal that's only ~30 characters before fzf truncates with
-    # '..', regardless of how many lines the header string has. Trying to
-    # enumerate keys here is fundamentally fragile against terminal width;
-    # the full list lives in the '?' help overlay instead (see dashboard-help-tab
-    # in .agents/TODO, which builds a more persistent version of this).
-    header="[Workspaces] ?:help q:close"
+    # column's share (~45% of the popup), not the popup's own width. Rather
+    # than permanently hiding the keybinding list to survive an 80-column
+    # terminal (which cost every wider terminal the same information for no
+    # reason), measure the actual available width and pick the richest
+    # header that fits. The full list is always in the '?' Help tab too.
+    local _budget
+    _budget=$(_dashboard_header_budget)
+    if [[ "$_budget" -ge 60 ]]; then
+      header="[Workspaces] enter:switch n:new K:kill/rm r:rename z:fold"$'\n'"a:add-pane ]/[:cycle-pane R:refresh ?:help q:close"
+    elif [[ "$_budget" -ge 42 ]]; then
+      header="[Workspaces] enter:switch n:new K:kill"$'\n'"a:add-pane ?:help q:close"
+    else
+      header="[Workspaces] ?:help q:close"
+    fi
   fi
 
   # Preview: branch on the row's hidden id (field 1) to find the right pane —
@@ -314,8 +338,16 @@ render_worktrees_tab() {
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
-    # Short and static — see the matching comment on the Workspaces tab's header.
-    header="[Worktrees] ?:help q:close"
+    # Adaptive width — see the matching comment on the Workspaces tab's header.
+    local _budget
+    _budget=$(_dashboard_header_budget)
+    if [[ "$_budget" -ge 50 ]]; then
+      header="[Worktrees] enter:open n:new g:lazygit K:cleanup"$'\n'"R:refresh ?:help q:close"
+    elif [[ "$_budget" -ge 40 ]]; then
+      header="[Worktrees] enter:open n:new K:cleanup"$'\n'"?:help q:close"
+    else
+      header="[Worktrees] ?:help q:close"
+    fi
   fi
 
   # Preview: git status -sb + recent log for the selected worktree path.
