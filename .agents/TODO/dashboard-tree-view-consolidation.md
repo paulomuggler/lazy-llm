@@ -2,9 +2,9 @@
 slug: dashboard-tree-view-consolidation
 title: Consolidate Sessions + Panes tabs into a single collapsible workspace/pane tree
 priority: P1
-status: pending
+status: in-progress
 created: 2026-09-22_04:37
-updated: 2026-09-22_04:37
+updated: 2026-09-22_04:52
 depends-on: [dashboard-workspace-nomenclature]
 tags: [ux, dashboard, tui, tree-view]
 commits: []
