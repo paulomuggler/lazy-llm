@@ -163,20 +163,17 @@ render_sessions_tab() {
 
   local data
   data=$(lazy_llm_gather_sessions)
-
-  # Put the launching workspace first, so it (and, via --bind load:pos below,
-  # its active pane) is what's highlighted the moment the dashboard opens —
-  # not whatever happened to sort first alphabetically/by tmux's own order.
-  if [[ -n "$launch_ws" && -n "$data" ]]; then
-    # awk, not grep -- launch_ws is compared against field 1 exactly (not as
-    # a regex/substring pattern), so a workspace name containing characters
-    # that are regex-special, or that happens to be a substring of another
-    # workspace's name or path, can't misfire this.
-    data=$(awk -F'\t' -v w="$launch_ws" '$1==w{first=$0; next} {rest = rest $0 ORS} END{if (first != "") print first; printf "%s", rest}' <<< "$data")
-    # Trailing newline from the ORS-joined "rest" block would otherwise
-    # become a stray empty row in the tree.
-    data="${data%$'\n'}"
-  fi
+  # Deliberately NOT reordered to put the launch workspace first. Tried
+  # that (awk-based reorder, same idea as a "most recently used" list) and
+  # it was explicitly rejected: it defeats the point of the cursor
+  # highlight now that load:pos(N) actually works — a STABLE list order
+  # (same position every time, regardless of which workspace is active) is
+  # what makes the tree glanceable and short-term learnable across repeat
+  # visits; re-sorting it on every open adds back the exact cognitive load
+  # the highlight was meant to remove. lazy_llm_gather_sessions's own order
+  # (tmux list-sessions's order — stable across invocations, doesn't
+  # change with activity) is used as-is; load:pos(N) below still jumps the
+  # cursor straight to the active pane wherever it naturally falls.
 
   local lines="" header
   # 1-based line number to place the cursor on when the dashboard opens —
