@@ -2,13 +2,14 @@
 slug: dashboard-manual-list-reordering
 title: Manual reordering of dashboard tree rows (Ctrl+Up/Down), scoped per tree level
 priority: P2
-status: done
+status: in-progress
 created: 2026-09-23_04:20
-updated: 2026-09-23_06:22
+updated: 2026-09-23_13:34
 depends-on: []
 tags: [enhancement, dashboard, ux]
 commits: [eeaf8d7, 3125c32, 110a424]
 model: opus
+owner: homelab-zrh-dev-2339310
 human-validation: pending
 ---
 
@@ -190,6 +191,27 @@ other action keys (K, r, R, a, ], [, ?) still use:
       multi-pane tmux session/server before shipping — ANSI-aware
       `capture-pane -e` for cursor-after-reorder placement, `tmux
       show-option` for persisted order state, not just code inspection
+
+### Follow-up round — k/j alternate keybinds (2026-09-23)
+
+Direct request: Ctrl+Arrow is unreliable over some SSH/tunneled terminals
+(the combo gets eaten or remapped somewhere in the chain before it reaches
+the popup), so a modifier-free fallback was needed alongside Ctrl-Up/Ctrl-Down,
+not instead of it.
+
+- [ ] `k`/`j` bound as plain alternates for reorder-up/reorder-down,
+      identical behavior to Ctrl-Up/Ctrl-Down (same `--reorder-transform`
+      handler, same direction mapping)
+- [ ] `k`/`j` included in the `/`-search unbind/rebind lists (same pattern
+      as every other single-letter action key) — remain typable in a search
+      query, don't leak into fuzzy matching
+- [ ] No regression to Ctrl-Up/Ctrl-Down (both key sets must keep working)
+- [ ] Verified live on a disposable isolated tmux server — same rigor as
+      the original round (ANSI-aware `capture-pane -e`, fzf PID check,
+      persisted-order check via `tmux show-option`)
+- [ ] Existing test suite (`tests/scenarios/16-dashboard-manual-reorder-unit.sh`
+      + full `tests/test-runner.sh`) still passes; no new failures beyond
+      the pre-existing `01`-`08` environment-dependent baseline
 
 ## Work Report
 
