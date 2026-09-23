@@ -6,6 +6,49 @@ local config = {
 	path_completion_max_results = 5000, -- Max results for @ path completion
 }
 
+-- Helper: is the current pane the lazy-llm prompt pane? (mirrors the
+-- implementation in nvim-note-plugin/note.lua — no shared lua module between
+-- these plugin files, so this stays a local copy)
+local function is_prompt_pane()
+	local tmux_pane = vim.env.TMUX_PANE
+	if not tmux_pane then
+		return false
+	end
+
+	local session = vim.trim(vim.fn.system("tmux display-message -t " .. tmux_pane .. " -p '#S' 2>/dev/null"))
+	local window = vim.trim(vim.fn.system("tmux display-message -t " .. tmux_pane .. " -p '#I' 2>/dev/null"))
+
+	if session == "" or window == "" then
+		return false
+	end
+
+	local result = vim.fn.system("tmux show-option -wv -t " .. session .. ":" .. window .. " @PROMPT_PANE_ID 2>/dev/null")
+	local prompt_pane_id = vim.trim(result)
+
+	if prompt_pane_id ~= "" then
+		return tmux_pane == prompt_pane_id
+	end
+
+	-- Legacy fallback (index-based, pre-dates stable pane IDs)
+	result = vim.fn.system("tmux show-option -wv -t " .. session .. ":" .. window .. " @PROMPT_PANE 2>/dev/null")
+	local prompt_pane = vim.trim(result)
+	return prompt_pane ~= "" and tmux_pane == prompt_pane
+end
+
+-- Helper: create a new prompt backing file (same convention as
+-- lazy-llm-bin's create_prompt_file()) and open it in the current window.
+local function open_new_prompt_file()
+	local prompts_dir = vim.fn.getcwd() .. "/.lazy-llm/prompts"
+	vim.fn.mkdir(prompts_dir, "p")
+
+	local path = prompts_dir .. "/prompt-" .. os.date("%Y%m%d-%H%M%S") .. ".md"
+	if vim.fn.filereadable(path) == 0 then
+		vim.fn.writefile({}, path)
+	end
+
+	vim.cmd("edit " .. vim.fn.fnameescape(path))
+end
+
 -- Helper function to get tmux pane_base_index
 local function get_pane_base_index()
 	local handle = io.popen("tmux show-options -gw | grep pane-base-index | awk '{print $2}'")
@@ -656,6 +699,32 @@ return {
 		} or {},
 		-- Setup autocmd for blink-like auto-triggering on text change (only in tmux)
 		init = vim.env.TMUX and function()
+			-- Override LazyVim's default <leader>fn ("New File" / :enew), but only
+			-- while in the prompt pane — everywhere else keeps stock :enew.
+			--
+			-- LazyVim sets its own <leader>fn inside lazyvim.config.keymaps, which
+			-- is itself loaded by an autocmd on User VeryLazy. Registering our own
+			-- VeryLazy autocmd is NOT enough on its own — confirmed live that
+			-- LazyVim's keymaps-loading autocmd can end up registered *after*
+			-- ours, so it fires later and clobbers our override. vim.schedule()
+			-- defers the actual vim.keymap.set to the next event-loop tick, i.e.
+			-- after every synchronous VeryLazy autocmd (LazyVim's included) has
+			-- already run — that ordering is what actually guarantees we win.
+			vim.api.nvim_create_autocmd("User", {
+				pattern = "VeryLazy",
+				callback = function()
+					vim.schedule(function()
+						vim.keymap.set("n", "<leader>fn", function()
+							if is_prompt_pane() then
+								open_new_prompt_file()
+							else
+								vim.cmd("enew")
+							end
+						end, { desc = "New File" })
+					end)
+				end,
+			})
+
 			local debounce_timer = nil
 
 			-- Use InsertCharPre to detect when user is typing (not backspacing)
