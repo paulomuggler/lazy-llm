@@ -1,7 +1,8 @@
 -- Glow markdown preview for the LazyVim setup.
 -- Requires the glow CLI (installed via install-glow.sh).
 --   :Glow         glow.nvim's own full-window preview
---   <leader>mg    toggle a full-screen glow overlay of the current buffer
+--   <leader>mg / <leader>uM
+--                 toggle a full-screen glow overlay of the current buffer
 --                 (see lua/glow_overlay.lua; q / <Esc> or buffer switch closes)
 
 return {
@@ -19,6 +20,14 @@ return {
           require("glow_overlay").toggle()
         end,
         desc = "Glow overlay (toggle, current buffer)",
+        ft = "markdown",
+      },
+      {
+        "<leader>uM",
+        function()
+          require("glow_overlay").toggle()
+        end,
+        desc = "Glow overlay (full screen)",
         ft = "markdown",
       },
     },

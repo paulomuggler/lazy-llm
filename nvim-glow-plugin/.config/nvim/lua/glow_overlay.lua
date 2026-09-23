@@ -53,7 +53,7 @@ function M.open(src)
     row = 0,
     col = 0,
     width = vim.o.columns,
-    height = math.max(1, vim.o.lines - vim.o.cmdheight - 1),
+    height = math.max(1, vim.o.lines - vim.o.cmdheight),
     style = "minimal",
     border = "none",
   })
