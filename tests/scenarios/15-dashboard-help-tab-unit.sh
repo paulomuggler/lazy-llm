@@ -65,7 +65,9 @@ bind3_count=$(command grep -coE -- "--bind='3:print\(3\)\+accept'" "$DASHBOARD")
 assert_equals "0" "$bind3_count" "no tab fzf call binds 3 to an action"
 dispatch3_count=$(command grep -cE '^\s*3\)\s+echo "tab:help"' "$DASHBOARD") || dispatch3_count=0
 assert_equals "0" "$dispatch3_count" "no tab dispatch case routes key 3 to tab:help"
-ws_unbind=$(command grep -oE -- "unbind\(1,2,K,r,R,z,a,\],\[,\?\)" "$DASHBOARD")
+# ,ctrl-up,ctrl-down appended by dashboard-manual-list-reordering (same
+# unbind/rebind list 'z' already lives in) — pattern updated to match.
+ws_unbind=$(command grep -oE -- "unbind\(1,2,K,r,R,z,a,\],\[,\?,ctrl-up,ctrl-down\)" "$DASHBOARD")
 assert_contains "$ws_unbind" "1,2,K" "Workspaces tab's unbind(...) set excludes 3"
 wt_unbind=$(command grep -oE -- "unbind\(1,2,n,g,K,R,\?\)" "$DASHBOARD")
 assert_contains "$wt_unbind" "1,2,n" "Worktrees tab's unbind(...) set excludes 3"
