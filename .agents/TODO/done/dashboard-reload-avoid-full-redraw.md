@@ -2,14 +2,14 @@
 slug: dashboard-reload-avoid-full-redraw
 title: Use fzf's reload() to avoid a full fzf relaunch on fold/toggle/refresh
 priority: P2
-status: in-progress
+status: done
 created: 2026-09-23_04:20
-updated: 2026-09-23_05:50
+updated: 2026-09-23_05:55
 depends-on: []
 tags: [enhancement, dashboard, performance, ux]
 commits: [d451421, 121dcbf, 52c91ff]
 model: opus
-owner: homelab-zrh-dev-2339310
+human-validation: pending
 ---
 
 # Avoid full redraw/reprint on dashboard actions
@@ -716,3 +716,233 @@ but it means AC3's documented sub-claim is inaccurate and the Work Report's
 "verified live" claim for this specific case should not be trusted as-is.
 
 VERDICT: fail (1 item)
+
+### Re-verify round 1 (rework) — 2026-09-23
+
+Independent re-verification of commits `52c91ff` (code fix) and `bb279de`
+(task-file update), performed from scratch — did not trust the rework's own
+claimed verification in its Work Report. Reviewer: fresh agent instance, no
+prior context beyond reading this task file and the diff.
+
+**Diff read in full** (`git show 52c91ff`): confirmed it does what the Work
+Report's Rework round 1 section describes — `z`'s bind changed from
+`execute-silent(...--toggle-fold...)+reload(...--emit-rows)` to
+`transform($_dashboard_self --fold-transform {1})`; a new `--fold-transform`
+CLI mode toggles the fold flag, rebuilds rows via `_dashboard_build_rows`,
+computes the target row (same id if it survives, else `ws:<name>` of its
+parent, else row 1 as a last-resort fallback) via `awk`, and prints
+`reload-sync(...--emit-rows)+pos(N)`; `--track`/`--id-nth=1` removed from the
+fzf call entirely; `load:pos(${_start_pos})` changed to
+`load:pos(${_start_pos})+unbind(load)`; old `--toggle-fold` CLI mode retired;
+`tests/scenarios/13-...` Tests 11–13 rewritten to match.
+
+**Environment:** tmux 3.7c, fzf 0.74.3 — same versions the Work Report names.
+Isolated tmux server on socket `verify-fold-round2-<pid>` (distinct from the
+prior round's `verify-dashboard-reload` socket), with two fresh
+`@lazy_llm`-marked sessions (`workspace-alpha`, `workspace-beta`), each with
+a REAL split pane (2 panes per session), tagged via window-scoped
+`@AI_PANES`/`@AI_TOOLS` = `claude gemini`, plus a `driver` session running
+`llm-dashboard --tab workspaces` directly so its pane's fzf process could be
+inspected. Driven via `tmux send-keys`/`tmux capture-pane -p -e` (ANSI-aware,
+per this project's `start`-vs-`load` postmortem discipline). Server killed at
+the end (`tmux -L verify-fold-round2-<pid> kill-server`), confirmed gone via
+a subsequent `list-sessions` failure. **Confirmed the real/default tmux
+server's own sessions (`dev-env`, `ai-dev-workflow`, `microdots_digital`)
+were untouched throughout** — see the Environment note below for one
+pre-existing hygiene issue found (not introduced by this round).
+
+- [x] **Diff read in full** — matches the Work Report's own description of
+      the mechanism change; no surprises vs. what was claimed.
+- [x] **AC3 vanish-case, reproduced twice from clean process state** —
+      **PASS, the fix holds.**
+      - *Run 1*: fresh dashboard launch (`LAZY_LLM_LAUNCH_SESSION=workspace-alpha`,
+        cursor auto-landed on alpha's active `gemini` row via `load:pos(3)`,
+        confirmed via `-e` capture highlight). Pressed Down×3 to reach
+        `workspace-beta`'s nested `gemini` row (row 6, confirmed via `-e`
+        highlight before pressing `z`). Pressed `z`: `workspace-beta` folded
+        (▾→▸) **and** the cursor highlight landed exactly on
+        `workspace-beta`'s own row (row 4) — not row 1, not an error.
+      - *Run 2*: fully fresh process (`q`-quit the first fzf, confirmed via
+        `ps -p <old pid>` returning nothing, then relaunched with
+        `LAZY_LLM_LAUNCH_SESSION=workspace-beta` this time — a deliberately
+        different launch workspace than Run 1, to rule out a launch-workspace-
+        specific coincidence). Cursor auto-landed on `workspace-beta`'s
+        `gemini` row (row 6, `load:pos(6)`, confirmed live via the actual
+        running fzf command line's `--bind=load:pos(6)+unbind(load)` seen in
+        `ps -o cmd`). Pressed `z` directly on that row (no navigation needed
+        — already the target row): `workspace-beta` folded (▾→▸) and cursor
+        landed on `workspace-beta`'s own row (row 4) again. Same result, two
+        independent clean launches, two different starting configurations.
+      - Both runs' `awk`-computed fallback (parent `ws:<name>` row when the
+        tracked id vanishes) matches exactly what the code comment at
+        `llm-dashboard` ~1104 describes.
+- [x] **Primary case re-verified under the NEW mechanism** — **PASS.**
+      Navigated Up×5 to `workspace-alpha`'s own row (row 1, confirmed via
+      `-e` highlight), pressed `z`: folded (▾→▸), cursor stayed on row 1
+      (`workspace-alpha`'s own row). Pressed `z` again: unfolded (▸→▾),
+      cursor still on row 1. Confirms this case wasn't broken by dropping
+      `--track`/`--id-nth` in favor of `pos(N)`.
+- [x] **AC1 (no relaunch)** — **PASS**, re-confirmed under the new
+      `transform()`/`reload-sync()` mechanism. Resolved the fzf PID via
+      `pstree -p <driver_pane_pid>` (PID 2881434 for Run 1, PID 2889444 for
+      Run 2) and cross-checked with `ps -o pid,lstart -p <pid>` (not just PID
+      reuse — matches this task's own AC1 verify-plan instruction). PID and
+      start timestamp were identical before/after every single `z` press
+      across both runs, including a dedicated 3-consecutive-toggle burst on
+      Run 2 (fold→unfold→fold, `lstart` unchanged all 3 times). Transient
+      `{fzf}` thread PIDs under the main fzf PID changed per reload, exactly
+      the expected signature (short-lived `transform()`/`reload-sync()`
+      subprocess threads), not a relaunch.
+- [x] **AC2 (fold state scoping)** — **PASS**, re-confirmed under the new
+      mechanism. `tmux show-option -v -t workspace-beta @lazy_llm_collapsed`
+      read `1` immediately after folding beta and reverted to "invalid
+      option" (unset) after unfolding, in lockstep with each `z`; throughout,
+      `workspace-alpha`'s own `@lazy_llm_collapsed` stayed unset
+      ("invalid option") while beta was folded, and vice versa when alpha
+      was later folded — scoping is per-session, unaffected by the
+      `--track`/`transform()` mechanism change.
+- [x] **`load:pos(...)+unbind(load)` fix confirmed real, not just
+      plausible-sounding** — **PASS.** Two independent lines of evidence:
+      1. Live source-of-truth check: `ps -o cmd -p <fzf_pid>` on the actual
+         running fzf process (not just grepping the script source) showed
+         the real bind string verbatim — `--bind=load:pos(3)+unbind(load)`
+         (Run 1) and `--bind=load:pos(6)+unbind(load)` (Run 2) — confirming
+         it's genuinely what fzf received.
+      2. Behavioral check: if `load` were still re-firing on every
+         `reload-sync` (the pre-fix bug), the cursor would keep snapping
+         back to the LAUNCH position (row 3 in Run 1, row 6 in Run 2) after
+         every fold. Instead, across Run 1's sequence (fold beta from row 6
+         → lands row 4; unfold → stays row 4; navigate to row 1; fold alpha
+         → stays row 1; unfold → stays row 1) and Run 2's 3-toggle burst
+         (stays row 4 throughout), the cursor never once reset to the
+         launch row after the first render. This is exactly the behavior
+         `+unbind(load)` is supposed to produce and is inconsistent with the
+         pre-fix bug still being present.
+- [x] **Tests** — `tests/scenarios/13-dashboard-panes-tab-unit.sh`: **13/13
+      passed**, re-run standalone. `tests/test-runner.sh` full suite:
+      **7 passed / 8 failed**, and the 8 failures are exactly
+      `01-simple-send` through `08-workspace-local-dirs` — identical to both
+      the original Work Report's and the first Verify Report's baseline, no
+      new failures.
+- [x] **`set -e` safety in the new `--fold-transform` code path** — checked
+      every new bare `var=$(cmd)` in the diff against this project's
+      `tmux-fzf.md` standard:
+      - `_dashboard_fold_ws=$(_dashboard_ws_from_id "$_dashboard_fold_id")`
+        (no `|| true`) — safe: `_dashboard_ws_from_id`'s body is a bare
+        `case` statement with no matching-pattern fallback arm; in bash, an
+        unmatched `case` returns 0 itself (confirmed empirically with a
+        minimal `set -e` repro), so the function always returns 0 regardless
+        of input — this was already true before the rework (unchanged
+        function) and re-confirmed here, not assumed.
+      - `[[ -n "$_dashboard_fold_ws" ]] && lazy_llm_toggle_collapsed ...` —
+        safe both ways: if the `[[ ]]` guard is false, bash's `set -e`
+        explicitly exempts a command used as the tested half of an `&&`/`||`
+        list (confirmed empirically: a failing first term in `A && B` does
+        NOT trigger `set -e`); if the guard is true,
+        `lazy_llm_toggle_collapsed` (`lazy-llm-lib.sh:548`) always returns 0
+        (both its branches end in `tmux ... 2>/dev/null || true`, no
+        explicit `return`) — read the function body directly, not assumed.
+      - The two `_dashboard_fold_pos=$(printf ... | awk ...) || true`
+        assignments — explicitly guarded, safe.
+      - `[[ -n "$_dashboard_fold_pos" ]] || _dashboard_fold_pos=1` — the `||`
+        fallback is a trivial variable assignment, always succeeds.
+      - Directly exercised the edge case live: `llm-dashboard --fold-transform ''`
+        and `--fold-transform 'garbage'` both exited 0, both printed the
+        row-1 fallback `reload-sync(...)+pos(1)`, no tmux mutation occurred
+        for either (id never resolved to a workspace name, so
+        `lazy_llm_toggle_collapsed` was never called).
+      - **No `set -e` regressions found** in the new code path.
+- [x] **Code-site spot checks**: `_dashboard_self` (line 56) still resolves
+      to an absolute path (unchanged by this diff); `z`'s bind (line 484)
+      reads exactly `z:transform($_dashboard_self --fold-transform {1})`,
+      confirmed both in source and in the live `ps -o cmd` output of the
+      running fzf process; `_dashboard_build_rows` is still called directly
+      (no `$(...)` wrapper) from all three call sites now
+      (`render_sessions_tab`, `--emit-rows`, `--fold-transform`).
+
+**Environment note (not a code defect, but worth flagging):** the real/
+default tmux server (not any `-L` isolated socket) was found to still be
+hosting four leftover sessions — `fzftest3`, `fzftest4`, `fzftest5`,
+`fzftest6` — all plain unmarked `bash` panes (no `@lazy_llm` option set),
+created in the 05:20–05:23 timestamp window, which matches this task's own
+Rework round 1 timeframe and its own admitted incident ("one early
+diagnostic command in this round was accidentally run without `-L` scoping
+and briefly read the real server's session list"). Rework round 1's own
+audit claimed this was contained to a read-only listing with no mutation,
+but these four sessions' existence on the real server indicates actual
+session creation leaked onto the default/real tmux server during that
+round, contradicting that audit's completeness. They were left untouched by
+this re-verify round (not created by this round, and deleting other rounds'
+artifacts from the real server wasn't part of this task's scope) — flagging
+for cleanup/awareness rather than acting on them unilaterally. Separately,
+running the prescribed `tests/test-runner.sh` full suite (item 6 of this
+verify pass) left its own `test-*` sessions on the real/default server too
+(a pre-existing, unrelated behavior of the test harness itself when its
+01–08 scenarios fail on TTY allocation in this sandbox) — those were cleaned
+up via the test suite's own sanctioned `tests/test-runner.sh --cleanup`
+mechanism before finishing this round.
+
+**Summary:** All items re-verified live and independently, from scratch, on
+a freshly isolated tmux server, hold exactly as the rework's Work Report
+claims. The specific vanish-case bug the original Verify Report caught
+(cursor resets to row 1 instead of landing on the parent workspace row) is
+confirmed FIXED — reproduced correctly (i.e., the fix holding) twice from
+clean process state, with two different launch/navigation configurations.
+The primary case, AC1 (no relaunch), and AC2 (fold-state scoping) all still
+hold under the new `transform()`/`reload-sync()`/`pos(N)` mechanism. The
+second, deeper `load`-refires-on-every-reload bug is confirmed genuinely
+fixed by `+unbind(load)`, verified via the live running process's own bind
+string, not just source inspection. No `set -e` safety regressions in the
+new code. Both test suites match their established baselines exactly, no
+new failures.
+
+VERDICT: **pass** — all four acceptance criteria now hold, including AC3's
+previously-failing vanish-case sub-claim.
+
+## Human Validation
+
+**Commit(s):** `d451421`, `121dcbf`, `52c91ff`
+
+### Checks
+
+- [ ] **Assess real-world smoothness of fold/unfold** — In your normal lazy-llm
+      dashboard (a live popup, not an isolated `tmux -L` test server), open the
+      Workspaces tab on a session with nested panes and press `z` repeatedly on
+      both a workspace row and a nested pane row. Judge by eye whether the
+      toggle now feels instant/flicker-free, matching what motivated this task
+      in the first place. Two full rounds of agent verification confirmed the
+      *mechanism* is correct (identical fzf PID/lstart across toggles, correct
+      cursor placement in every case including the vanish-case edge case) —
+      what no agent verified is whether it actually *reads* as smooth to a
+      human eye in ordinary interactive use, which is the only thing the
+      mechanism check can't stand in for.
+
+### Design Decisions
+
+- **Scope limited to `z` (fold/unfold) only.** refresh/rename/add-pane/kill
+  were left on the old exit+relaunch path and noted as Follow-up rather than
+  built speculatively. *Assess: is deferring those the right call, or should
+  this task's scope have covered more of them?*
+- **`--emit-rows`/`--fold-transform` added as flags on `llm-dashboard` itself**
+  rather than a new `llm-*` binary, to avoid separate stow/install wiring for
+  dashboard-internal plumbing never meant to be run standalone.
+- **Fold state externalized to a session-scoped tmux option**
+  (`@lazy_llm_collapsed`), matching the existing `@lazy_llm` precedent rather
+  than the window-scoped pattern `@AI_PANES` et al. use.
+- **Cursor-tracking mechanism changed mid-task.** Started with
+  `--track --id-nth=1`, replaced in Rework round 1 with an explicit
+  `transform()`-computed `pos(N)` plus `load:pos(...)+unbind(load)`, after two
+  distinct bugs were found (no fallback when a tracked row vanishes entirely;
+  `load` silently refiring on every reload). The final mechanism was
+  independently re-verified from scratch in a second verify round and passed.
+- **Test 10's old `_collapsed`-array assertions were rewritten**, not
+  preserved as a dead-code-compatible shim, since the brief explicitly
+  directed removing the in-process array this task made obsolete.
+
+### Sign-off
+
+| Status | Validator | Date | Notes |
+|--------|-----------|------|-------|
+| | | | |
+
+Status: PASS / FAIL / SKIP / PARTIAL
