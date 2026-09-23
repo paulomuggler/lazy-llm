@@ -27,11 +27,12 @@
 # Tab keys:            1 (Workspaces), 2 (Worktrees)
 # Workspaces actions:  Enter (switch, or switch+focus-pane on a pane row),
 #                     K (kill workspace / remove pane), r (rename),
-#                     z (fold/unfold), a (add pane, current workspace),
-#                     ]/[ (cycle pane, current workspace), R (refresh),
-#                     ? (help), q/Esc (quit), / (search), Tab (done
-#                     searching — NOT Esc, which always quits, even mid-
-#                     search, per direct request)
+#                     z (fold/unfold), Ctrl-Up/Ctrl-Down (reorder row,
+#                     scoped to its own tree level), a (add pane, current
+#                     workspace), ]/[ (cycle pane, current workspace),
+#                     R (refresh), ? (help), q/Esc (quit), / (search),
+#                     Tab (done searching — NOT Esc, which always quits,
+#                     even mid-search, per direct request)
 #
 # Usage: llm-dashboard [--tab workspaces|worktrees|help] [--help]
 
@@ -193,7 +194,16 @@ _dashboard_build_rows() {
   local launch_ws="$1"
   local data
   data=$(lazy_llm_gather_sessions)
-  # Deliberately NOT reordered to put the launch workspace first. Tried
+  # Apply the persisted MANUAL order (dashboard-manual-list-reordering,
+  # Ctrl+Up/Down) before anything below walks $data — this is the one
+  # place workspace order gets applied; render_sessions_tab, --emit-rows
+  # and --reorder-transform all go through this function, so there's a
+  # single source of truth for the applied order, same reasoning as
+  # _dashboard_build_rows itself existing. A workspace not yet in the
+  # persisted order is appended in gather_sessions's own natural order
+  # (see lazy_llm_apply_ws_order) — never silently hidden.
+  data=$(lazy_llm_apply_ws_order "$data")
+  # Deliberately NOT auto-reordered to put the launch workspace first. Tried
   # that (awk-based reorder, same idea as a "most recently used" list) and
   # it was explicitly rejected: it defeats the point of the cursor
   # highlight now that load:pos(N) actually works — a STABLE list order
@@ -465,6 +475,22 @@ render_sessions_tab() {
   # involved — so --track/--id-nth were dropped from this fzf call entirely
   # (not layered underneath) once pos(N) already covers every case,
   # including the one --track used to.
+  #
+  # Ctrl-Up/Ctrl-Down (dashboard-manual-list-reordering) copy 'z'/
+  # --fold-transform's shape exactly, for the same reasons: bound directly
+  # to transform(...), never round-trip through print(KEY)+accept/exit, and
+  # the out-of-process --reorder-transform handler (CLI-parsing block at
+  # the bottom of this file) does the mutate-rebuild-reposition dance and
+  # prints back reload-sync(...)+pos(N) — reload-sync, not reload, for the
+  # identical confirmed-live async race --fold-transform's own comment
+  # documents. Scoped to the row's own tree level inside
+  # --reorder-transform: a "ws:" id reorders among workspaces
+  # (lazy_llm_move_ws_order, persisted to the server-scoped
+  # @lazy_llm_ws_order option), a "pane:" id reorders among that
+  # workspace's own panes only (lazy_llm_move_pane_order, persisted
+  # straight into @AI_PANES/@AI_TOOLS/@AI_PANE_NAMES — no separate order
+  # option needed, those arrays' own element order IS the pane order).
+  # Both helpers no-op (not error) at either end of their sibling list.
   local selection key
   selection=$(printf '%s\n' "$lines" | fzf \
     --height=100% \
@@ -484,8 +510,10 @@ render_sessions_tab() {
     --bind="z:transform($_dashboard_self --fold-transform {1})" \
     --bind='a:print(a)+accept' \
     --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
-    --bind='/:unbind(1,2,K,r,R,z,a,],[,?)+show-input+enable-search' \
-    --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?)' \
+    --bind="ctrl-up:transform($_dashboard_self --reorder-transform up {1})" \
+    --bind="ctrl-down:transform($_dashboard_self --reorder-transform down {1})" \
+    --bind='/:unbind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down)+show-input+enable-search' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down)' \
     --bind='q:abort' \
     --bind="load:pos(${_start_pos})+unbind(load)" \
   ) || { echo "quit"; return 0; }
@@ -940,6 +968,7 @@ render_help_tab() {
     " Enter  ws row: switch"
     "        pane row: switch + focus"
     " z      fold/unfold panes"
+    " ^Up ^Dn reorder row (own level)"
     " r      rename ws / pane label"
     " K      ws: kill · pane: remove"
     "        (current workspace only)"
@@ -1047,6 +1076,9 @@ Inside the dashboard:
              row / open worktree)
   n          new worktree+workspace (Worktrees — no workspace-level 'new' from here)
   z          fold/unfold a workspace's panes (Workspaces)
+  Ctrl-Up,   reorder a row among its own tree-level siblings — a workspace
+  Ctrl-Down  row among workspaces, a pane row among that workspace's own
+             panes only (Workspaces)
   a          add an AI pane to the CURRENT workspace (Workspaces — the one
              this dashboard was opened from, not whatever's highlighted)
   g          launch lazygit (Worktrees)
@@ -1137,6 +1169,78 @@ while [[ $# -gt 0 ]]; do
       # about blocking behavior for exactly this kind of chained-action
       # ordering, not just multi-select preservation).
       printf 'reload-sync(%s --emit-rows)+pos(%s)\n' "$_dashboard_self" "$_dashboard_fold_pos"
+      exit 0
+      ;;
+    --reorder-transform)
+      # Reload-plumbing only, not for interactive use: fzf's transform()
+      # action (bound to Ctrl-Up/Ctrl-Down in render_sessions_tab)
+      # re-invokes this script with this flag as an independent subprocess
+      # — same shape as --fold-transform (see its own comment and the
+      # Ctrl-Up/Ctrl-Down bind comment above the fzf call for the full
+      # rationale; not re-litigated here).
+      #
+      # Takes a direction ("up" or "down") and a raw tree row id
+      # ("ws:<name>" or "pane:<name>:<idx0>:<pane_id>", i.e. fzf's {1}):
+      # moves that row among its OWN tree-level siblings only (a "ws:" id
+      # reorders workspaces via lazy_llm_move_ws_order, persisted to the
+      # server-scoped @lazy_llm_ws_order option; a "pane:" id reorders that
+      # workspace's own panes via lazy_llm_move_pane_order, persisted
+      # straight into @AI_PANES/@AI_TOOLS/@AI_PANE_NAMES — see both
+      # helpers' own comments in lazy-llm-lib.sh), rebuilds the row list,
+      # and prints back `reload-sync(...)+pos(N)` where N is the 1-based
+      # line the moved row now occupies in the NEW list.
+      shift
+      _dashboard_reorder_dir="${1:-}"; shift
+      _dashboard_reorder_id="${1:-}"
+      _dashboard_reorder_ws=$(_dashboard_ws_from_id "$_dashboard_reorder_id")
+
+      case "$_dashboard_reorder_id" in
+        ws:*)
+          [[ -n "$_dashboard_reorder_ws" ]] && lazy_llm_move_ws_order "$_dashboard_reorder_ws" "$_dashboard_reorder_dir"
+          ;;
+        pane:*)
+          # "pane:<name>:<idx0>:<pane_id>" — idx0 is the 3rd colon-delimited
+          # segment (same parsing _dashboard_ws_from_id's own case
+          # statement implies but doesn't itself expose).
+          _dashboard_reorder_rest="${_dashboard_reorder_id#pane:}"
+          _dashboard_reorder_rest2="${_dashboard_reorder_rest#*:}"
+          _dashboard_reorder_pidx="${_dashboard_reorder_rest2%%:*}"
+          if [[ -n "$_dashboard_reorder_ws" && -n "$_dashboard_reorder_pidx" ]]; then
+            _dashboard_reorder_win=$(tmux list-windows -t "$_dashboard_reorder_ws" -F '#{window_index}' 2>/dev/null | head -1)
+            [[ -n "$_dashboard_reorder_win" ]] && lazy_llm_move_pane_order "$_dashboard_reorder_ws" "$_dashboard_reorder_win" "$_dashboard_reorder_pidx" "$_dashboard_reorder_dir"
+          fi
+          ;;
+      esac
+
+      _dashboard_build_rows "${LAZY_LLM_LAUNCH_SESSION:-}"
+
+      # Cursor target after the move: for a workspace row, the id STRING
+      # itself is unchanged by the swap ("ws:<name>" doesn't encode
+      # position) so the same $1==id match --fold-transform uses works
+      # unmodified. For a pane row the id's <idx0> segment IS the row's
+      # position, so it changes across the swap (e.g. pane:foo:1:%3 becomes
+      # pane:foo:0:%3 after moving up) — match on the trailing pane_id
+      # field instead (stable across the swap) rather than the full id.
+      _dashboard_reorder_pos=""
+      case "$_dashboard_reorder_id" in
+        ws:*)
+          _dashboard_reorder_pos=$(printf '%s\n' "$REPLY_ROWS" | awk -F'\t' -v id="$_dashboard_reorder_id" '$1==id{print NR; exit}') || true
+          ;;
+        pane:*)
+          _dashboard_reorder_pid="${_dashboard_reorder_id##*:}"
+          _dashboard_reorder_pos=$(printf '%s\n' "$REPLY_ROWS" | awk -F'\t' -v pid="$_dashboard_reorder_pid" '{split($1,f,":"); if (f[1]=="pane" && f[4]==pid) {print NR; exit}}') || true
+          ;;
+      esac
+      if [[ -z "$_dashboard_reorder_pos" && -n "$_dashboard_reorder_ws" ]]; then
+        _dashboard_reorder_pos=$(printf '%s\n' "$REPLY_ROWS" | awk -F'\t' -v id="ws:${_dashboard_reorder_ws}" '$1==id{print NR; exit}') || true
+      fi
+      [[ -n "$_dashboard_reorder_pos" ]] || _dashboard_reorder_pos=1
+
+      # reload-sync, NOT reload — identical confirmed-live async race as
+      # --fold-transform (a plain reload()'s chained pos(N) can be
+      # discarded before the new list actually lands); see its own comment
+      # for the full root-cause writeup.
+      printf 'reload-sync(%s --emit-rows)+pos(%s)\n' "$_dashboard_self" "$_dashboard_reorder_pos"
       exit 0
       ;;
     --help|-h) usage; exit 0 ;;
