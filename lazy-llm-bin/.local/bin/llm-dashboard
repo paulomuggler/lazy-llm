@@ -74,43 +74,21 @@ _dashboard_header_budget() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────
-# Glyph mapping (shared with llm-status; kept here too so the dashboard
-# doesn't pull in another source file just for one tiny function).
+# Status glyphs: the mapping itself (lazy_llm_status_glyph /
+# lazy_llm_status_color) lives in the lib, shared with llm-status and
+# llm-pane-border. The dashboard only adds the ANSI wrapping below — these
+# are raw truecolor escapes (\033[38;2;R;G;Bm), not tmux's #[fg=...]
+# syntax, since this is plain fzf row text shown via --ansi, a different
+# rendering context than the status-right segment or pane border.
 # ──────────────────────────────────────────────────────────────────────────
-glyph_for() {
-  case "$1" in
-    working) printf '●' ;;
-    idle)    printf '○' ;;
-    waiting) printf '◐' ;;
-    *)       printf '?' ;;
-  esac
-}
-
-# Same status -> color mapping as llm-status/llm-pane-border (see their own
-# palette comments), reused here so the tree's glyphs read the same as
-# everywhere else instead of the plain-text gray they were rendered in
-# before. These are raw truecolor ANSI escapes (\033[38;2;R;G;Bm), not
-# tmux's #[fg=...] syntax — this is plain fzf row text shown via --ansi, a
-# different rendering context than the status-right segment or pane border.
-glyph_color_for() {
-  case "$1" in
-    working) printf '#ffff00' ;;
-    waiting) printf '#ff00af' ;;
-    idle)    printf '#5fff00' ;;
-    *)       printf '#8a8a8a' ;;
-  esac
-}
-
 _ansi_fg() {
   local hex="${1#\#}"
   printf '\033[38;2;%d;%d;%dm' "$((16#${hex:0:2}))" "$((16#${hex:2:2}))" "$((16#${hex:4:2}))"
 }
 
-# Glyph wrapped in its status color + reset — what tree rows actually use;
-# glyph_for stays plain for the legend/Help-tab text, which is already
-# followed by its own label and shouldn't carry a dangling color reset.
+# Glyph wrapped in its status color + reset — what tree rows actually use.
 glyph_for_colored() {
-  printf '%s%s\033[0m' "$(_ansi_fg "$(glyph_color_for "$1")")" "$(glyph_for "$1")"
+  printf '%s%s\033[0m' "$(_ansi_fg "$(lazy_llm_status_color "$1")")" "$(lazy_llm_status_glyph "$1")"
 }
 
 # Extract the workspace/session name from a tree row id ("ws:<name>" or
@@ -266,13 +244,15 @@ _dashboard_build_rows() {
       fi
 
       # Workspace row's aggregate glyph: worst-case across its panes, in the
-      # order a human would want to notice — needs-you beats busy beats idle.
-      local saw_waiting=false saw_working=false saw_idle=false
+      # order a human would want to notice — blocked-on-you beats
+      # your-turn beats busy beats idle.
+      local saw_waiting=false saw_unread=false saw_working=false saw_idle=false
       local i st
       for i in "${!pane_arr[@]}"; do
         st=$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]:-claude}")
         case "$st" in
           waiting) saw_waiting=true ;;
+          unread)  saw_unread=true ;;
           working) saw_working=true ;;
           idle)    saw_idle=true ;;
         esac
@@ -280,6 +260,7 @@ _dashboard_build_rows() {
       local agg_glyph
       agg_glyph=$(glyph_for_colored unknown)
       if   [[ "$saw_waiting" == true ]]; then agg_glyph=$(glyph_for_colored waiting)
+      elif [[ "$saw_unread"  == true ]]; then agg_glyph=$(glyph_for_colored unread)
       elif [[ "$saw_working" == true ]]; then agg_glyph=$(glyph_for_colored working)
       elif [[ "$saw_idle"    == true ]]; then agg_glyph=$(glyph_for_colored idle)
       fi
@@ -374,7 +355,8 @@ render_sessions_tab() {
     # it actually fits, as its own line (each line is sized independently;
     # what made the old multi-line header "look awful" was content that
     # didn't fit its column, not multi-line headers as such).
-    local _legend="● working  ◐ waiting  ○ idle  ? unknown"
+    # "? unknown" is left to the Help tab — rare, and it kept this line short.
+    local _legend="◐ waiting  ◉ unread  ● working  ○ idle"
     if [[ "$_budget" -ge 85 ]]; then
       header="/:search enter:switch K:kill/rm r:rename z:fold a:add-pane ]/[:cycle-pane R:refresh"
       [[ "$_budget" -ge 40 ]] && header+=$'\n'"$_legend"
@@ -758,6 +740,11 @@ dispatch_action() {
       local win
       win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1)
       [[ -n "$win" ]] && lazy_llm_cycle_to_index "$name" "$win" "$idx"
+      # Picking a pane row is looking at it, even when it was already the
+      # one in view (cycle_to_index no-ops then, and clears nothing).
+      local picked_pane
+      picked_pane=$(tmux show-option -wv -t "$name:$win" @AI_PANES 2>/dev/null | awk -v i="$idx" '{print $(i+1)}') || picked_pane=""
+      lazy_llm_clear_unread "$picked_pane"
       tmux switch-client -t "$name" 2>/dev/null \
         || tmux attach-session -t "$name" 2>/dev/null \
         || echo "Could not switch to $name" >&2
@@ -1013,9 +1000,10 @@ render_help_tab() {
     " bold   the pane currently in view"
     ""
     "STATUS GLYPHS"
+    " ◐      waiting (blocked on you)"
+    " ◉      unread (done, your turn)"
     " ●      working (generating)"
-    " ◐      waiting (needs you)"
-    " ○      idle (ready)"
+    " ○      idle (already seen)"
     " ?      unknown"
   )
 

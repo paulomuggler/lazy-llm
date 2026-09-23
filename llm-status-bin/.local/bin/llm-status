@@ -32,23 +32,19 @@
 #   #005f87   muted blue         — content segment background — the
 #                                  "faded blue" (derived from colour_4, not
 #                                  in the theme table, but same hue family)
-#   colour_5  #ffff00 yellow     — working (generating)
-#   colour_10 #ff00af pink       — waiting (needs you) — also the summary's
-#                                  waiting-count color, so it's the same
-#                                  "needs attention" signal at both scopes
-#   colour_11 #5fff00 green      — idle (ready)
-#   colour_3  #8a8a8a light gray — unknown / dim text
 #
-# Status glyphs:
-#   ● working   ○ idle   ◐ waiting   ? unknown
+# Status glyphs + their colors come from the lib (lazy_llm_status_glyph /
+# lazy_llm_status_color — one mapping shared with llm-pane-border and the
+# dashboard):
+#   ◐ waiting   ◉ unread (finished, your turn)   ● working   ○ idle   ? unknown
 #
 # Output shape:
-#   [AI] 3ws 1◐ │ claude ● │ gemini ◐ │ Dash ^B+S
-#        ^^^^^^   ^^^^^^^^   ^^^^^^^^   ^^^^^^^^^
-#        summary  current window's own AI panes    dashboard hint —
-#        across   (active pane's name is bold +     ^B is this tmux's
-#        every    strong-blue accent text)           actual prefix key
-#        workspace
+#   [AI] 3ws 1◐ 2◉ 1● │ claude ● │ gemini ◐ │ Dash ^B+S
+#        ^^^^^^^^^^^^^^   ^^^^^^^^   ^^^^^^^^   ^^^^^^^^^
+#        summary: AI      current window's own AI panes    dashboard hint —
+#        panes per        (active pane's name is bold +     ^B is this tmux's
+#        status, across   strong-blue accent text)           actual prefix key
+#        every workspace
 
 set -euo pipefail
 
@@ -60,29 +56,7 @@ readonly C_CHIP_FG="#080808"
 readonly C_CONTENT_BG="#005f87"
 readonly C_TEXT="#e4e4e4"
 readonly C_DIM="#bcd4e0"
-readonly C_WORKING="#ffff00"
-readonly C_WAITING="#ff00af"
-readonly C_IDLE="#5fff00"
-readonly C_UNKNOWN="#8a8a8a"
 readonly C_SEP="#3d7ea6"
-
-glyph_for() {
-  case "$1" in
-    working) printf '●' ;;
-    idle)    printf '○' ;;
-    waiting) printf '◐' ;;
-    *)       printf '?' ;;
-  esac
-}
-
-glyph_color() {
-  case "$1" in
-    working) printf '%s' "$C_WORKING" ;;
-    waiting) printf '%s' "$C_WAITING" ;;
-    idle)    printf '%s' "$C_IDLE" ;;
-    *)       printf '%s' "$C_UNKNOWN" ;;
-  esac
-}
 
 # Render one pane's tile (one "part" of the content segment). Args: label
 # (the pane's resolved+clamped display label — its dashboard rename if one's
@@ -94,8 +68,8 @@ glyph_color() {
 render_tile() {
   local label="$1" status="$2" active="$3"
   local color glyph
-  color=$(glyph_color "$status")
-  glyph=$(glyph_for "$status")
+  color=$(lazy_llm_status_color "$status")
+  glyph=$(lazy_llm_status_glyph "$status")
   if [ "$active" = "1" ]; then
     printf '#[fg=%s,bg=%s,bold]%s #[fg=%s,bg=%s,bold]%s#[nobold]' \
       "$C_CHIP" "$C_CONTENT_BG" "$label" "$color" "$C_CONTENT_BG" "$glyph"
@@ -110,14 +84,10 @@ render_tile() {
 # — shared with llm-pane-border, which needs the exact same summary. One
 # source of truth instead of two copies drifting apart.
 
+# The count markup itself only sets fg — the content background set here
+# carries through it.
 render_summary() {
-  local ws="$1" waiting="$2"
-  local out
-  out=$(printf '#[fg=%s,bg=%s]%sws' "$C_TEXT" "$C_CONTENT_BG" "$ws")
-  if [ "$waiting" -gt 0 ]; then
-    out+=$(printf ' #[fg=%s,bg=%s,bold]%s◐#[fg=%s,bg=%s,nobold]' "$C_WAITING" "$C_CONTENT_BG" "$waiting" "$C_TEXT" "$C_CONTENT_BG")
-  fi
-  printf '%s' "$out"
+  printf '#[fg=%s,bg=%s]%s' "$C_TEXT" "$C_CONTENT_BG" "$(lazy_llm_render_summary "$C_TEXT" "$@")"
 }
 
 # Dynamic dashboard hint — "^B+S" derived from whatever this tmux's prefix
@@ -181,8 +151,8 @@ lazy_llm_resolve_session_window || exit 0
 # Read multi-pane state
 lazy_llm_read_multi_state
 
-read -r _ws_count _waiting_count < <(lazy_llm_compute_summary)
-summary_text=$(render_summary "$_ws_count" "$_waiting_count")
+read -r -a _summary < <(lazy_llm_compute_summary)
+summary_text=$(render_summary "${_summary[@]}")
 hint_text=$(render_hint)
 
 # Fall back to single-pane mode

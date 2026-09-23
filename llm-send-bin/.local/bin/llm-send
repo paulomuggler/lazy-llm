@@ -24,6 +24,12 @@ if ! lazy_llm_validate_pane "$TARGET"; then
   exit 1
 fi
 
+# Sending the pane a prompt means you've engaged with its last output —
+# clear its unread marker. The prompt-buffer workflow never focuses the AI
+# pane, so the focus hook alone wouldn't catch this. TARGET may be a
+# relative ref (":.+"), so resolve it to the %N id the marker is keyed on.
+lazy_llm_clear_unread "$(tmux display-message -t "$TARGET" -p '#{pane_id}' 2>/dev/null || true)"
+
 IS_COMMAND=false
 INPUT_FILE=""
 

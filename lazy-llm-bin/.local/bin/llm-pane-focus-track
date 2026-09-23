@@ -23,16 +23,23 @@
 # read) every time focus lands ON an AI pane specifically, so it stays
 # correct even after focus later moves to the editor or prompt pane.
 #
+# Also clears the pane's "unread" marker (see lazy-llm-lib.sh's unread
+# section) — focusing a pane is looking at it.
+#
 # Usage: llm-pane-focus-track <pane_id> <session_name> <window_index>
 # (invoked via #{pane_id}/#{session_name}/#{window_index} format expansion
 # in the hook command itself — see lazy-llm's set-hook -g after-select-pane)
 
 set -euo pipefail
 
+source "$(dirname "$0")/lazy-llm-lib.sh"
+
 pane_id="${1:-}"
 session="${2:-}"
 window="${3:-}"
 [ -z "$pane_id" ] || [ -z "$session" ] || [ -z "$window" ] && exit 0
+
+lazy_llm_clear_unread "$pane_id"
 
 ai_panes=$(tmux show-option -wv -t "$session:$window" @AI_PANES 2>/dev/null) || exit 0
 [ -z "$ai_panes" ] && exit 0

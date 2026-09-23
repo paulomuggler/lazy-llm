@@ -182,30 +182,172 @@ _lazy_llm_read_hook_status() {
 # Capture a pane's recent content and classify it.
 # Args:   $1 pane_id   (required, %N format)
 #         $2 tool_name (optional, default: claude)
-# Stdout: working | idle | waiting | unknown
+# Stdout: working | waiting | unread | idle | unknown
 # Returns 0 always; emits "unknown" if capture fails.
 #
 # For tool=claude, prefers a fresh hook-written status (see
 # _lazy_llm_read_hook_status) over the content scrape below — hooks are
 # event-driven and don't suffer the scrape's timing/UI-text fragility.
 # Every other tool (gemini/codex/grok/aider) always uses the scrape path.
+#
+# "unread" is layered on top of an "idle" result — see the unread-marker
+# section below for what sets and clears it.
 lazy_llm_detect_pane_status() {
   local pane_id="${1:?pane_id required}"
   local tool="${2:-claude}"
+  local base
 
-  if [[ "$tool" == "claude" ]]; then
-    local hook_status
+  if [[ "$tool" == "claude" ]] && base=$(_lazy_llm_read_hook_status "$pane_id"); then
     # `if cmd=$(...); then` (not `cmd=$(...) && ...`) — a bare `&&` here would
     # trip callers' `set -e` on the common case of no hook file existing yet.
-    if hook_status=$(_lazy_llm_read_hook_status "$pane_id"); then
-      echo "$hook_status"
-      return 0
+    :
+  else
+    local content
+    content=$(tmux capture-pane -p -t "$pane_id" -S -200 2>/dev/null) || { echo unknown; return 0; }
+    base=$(printf '%s' "$content" | lazy_llm_detect_status_from_content "$tool")
+  fi
+
+  _lazy_llm_apply_unread "$pane_id" "$tool" "$base"
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Unread markers — "finished a turn, and you haven't looked at it since".
+#
+# Splits what used to be one "idle" state in two: a pane whose output is
+# sitting there waiting for you to read it and respond ("unread", ◉) vs one
+# you've already dealt with and that has nothing left to do ("idle", ○).
+#
+# A marker file ~/.cache/lazy-llm/unread/<pane_id> holds the pane's
+# #{pane_pid} — tmux reuses %N ids after a server restart, and a marker for
+# a dead pane must not light up whatever new pane inherits its id. No
+# age-out: a turn that finished overnight is still unread in the morning.
+#
+# Set by:
+#   - Claude's Stop hook (dev-env's lazy-llm-status-notify.sh, via
+#     lazy_llm_mark_unread) — event-driven, catches even sub-second turns.
+#   - Every other tool: a working -> idle transition seen by the scrape (a
+#     "busy" marker left by an earlier "working" observation). Only as fast
+#     as the pollers (status-interval), so a turn shorter than that can be
+#     missed. Not used for claude: the scrape's working pattern can flicker
+#     on old scrollback, which would re-mark a pane right after you'd
+#     cleared it; the hook has no such problem.
+#   Both skip a pane that's focused in an attached client — you watched it
+#   finish, there's nothing unread about it.
+# Cleared by lazy_llm_clear_unread, called wherever you actually engage the
+# pane: focusing it (llm-pane-focus-track), cycling it into view
+# (lazy_llm_cycle_to_index), sending it a prompt (llm-send — the prompt
+# buffer workflow never focuses the AI pane), or picking it in the
+# dashboard tree. Deliberately NOT cleared by the pane starting to work
+# again: that's always preceded by one of the above, or it's the agent
+# resuming on its own, in which case it'll stop again and be unread again.
+# ──────────────────────────────────────────────────────────────────────────
+_LAZY_LLM_UNREAD_DIR="$HOME/.cache/lazy-llm/unread"
+_LAZY_LLM_BUSY_DIR="$HOME/.cache/lazy-llm/busy"
+
+_lazy_llm_pane_pid() {
+  tmux display-message -t "$1" -p '#{pane_pid}' 2>/dev/null
+}
+
+# Is this the pane the user is looking at right now: the active pane of the
+# active window of a session with a client attached?
+# Returns 0 if so, 1 otherwise (including when the pane doesn't exist).
+lazy_llm_pane_is_focused() {
+  local flags
+  flags=$(tmux display-message -t "$1" -p '#{pane_active}#{window_active}#{?session_attached,1,0}' 2>/dev/null) || return 1
+  [[ "$flags" == "111" ]]
+}
+
+# Mark a pane unread, unless it's focused right now. Always returns 0 — it's
+# called from hooks and pollers that must never fail over it.
+lazy_llm_mark_unread() {
+  local pane_id="${1:-}" pid
+  [[ -n "$pane_id" ]] || return 0
+  lazy_llm_pane_is_focused "$pane_id" && return 0
+  pid=$(_lazy_llm_pane_pid "$pane_id") || return 0
+  [[ -n "$pid" ]] || return 0
+  mkdir -p "$_LAZY_LLM_UNREAD_DIR" 2>/dev/null || return 0
+  printf '%s\n' "$pid" > "$_LAZY_LLM_UNREAD_DIR/$pane_id" 2>/dev/null || true
+  return 0
+}
+
+# Always returns 0 (safe as a fire-and-forget call under set -e).
+lazy_llm_clear_unread() {
+  [[ -n "${1:-}" ]] || return 0
+  rm -f "$_LAZY_LLM_UNREAD_DIR/$1" 2>/dev/null || true
+  return 0
+}
+
+# Returns 0 if the pane has a valid unread marker. A marker whose pid no
+# longer matches the pane (dead pane, or %N reused after a server restart)
+# is removed on the spot.
+lazy_llm_is_unread() {
+  local pane_id="${1:-}" marker saved="" pid=""
+  marker="$_LAZY_LLM_UNREAD_DIR/$pane_id"
+  [[ -n "$pane_id" && -f "$marker" ]] || return 1
+  read -r saved < "$marker" 2>/dev/null || true
+  pid=$(_lazy_llm_pane_pid "$pane_id") || pid=""
+  if [[ -z "$pid" || "$saved" != "$pid" ]]; then
+    rm -f "$marker" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# Layer the unread state onto a base status (see section header).
+# Args: $1 pane_id  $2 tool  $3 base status   Stdout: final status
+_lazy_llm_apply_unread() {
+  local pane_id="$1" tool="$2" base="$3"
+  local busy="$_LAZY_LLM_BUSY_DIR/$pane_id"
+
+  if [[ "$tool" != "claude" ]]; then
+    if [[ "$base" == "working" ]]; then
+      { mkdir -p "$_LAZY_LLM_BUSY_DIR" && : > "$busy"; } 2>/dev/null || true
+    elif [[ "$base" == "idle" && -f "$busy" ]]; then
+      # rm first and only the caller whose rm succeeded marks — several
+      # pollers (status bar, pane borders, dashboard) run this concurrently.
+      rm "$busy" 2>/dev/null && lazy_llm_mark_unread "$pane_id" || true
     fi
   fi
 
-  local content
-  content=$(tmux capture-pane -p -t "$pane_id" -S -200 2>/dev/null) || { echo unknown; return 0; }
-  printf '%s' "$content" | lazy_llm_detect_status_from_content "$tool"
+  if [[ "$base" == "idle" ]] && lazy_llm_is_unread "$pane_id"; then
+    echo unread
+  else
+    echo "$base"
+  fi
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Status glyphs + colors — one mapping for every surface (status-right
+# tiles, pane borders, dashboard tree). Colors reuse dev-env's tmux theme
+# palette (tmux.conf.local's tmux_conf_theme_colour_* table):
+#   waiting  ◐  #ff00af pink    (colour_10) blocked on your decision
+#   unread   ◉  #5fff00 green   (colour_11) finished; your turn
+#   working  ●  #ffff00 yellow  (colour_5)  generating
+#   idle     ○  #bcbcbc gray                dealt with; nothing to do
+#   unknown  ?  #8a8a8a dim gray (colour_3)
+# Idle is deliberately the calm one now: before "unread" existed it was
+# green, but a pane you've already handled shouldn't compete for attention
+# with one that's waiting on you.
+# ──────────────────────────────────────────────────────────────────────────
+lazy_llm_status_glyph() {
+  case "$1" in
+    waiting) printf '◐' ;;
+    unread)  printf '◉' ;;
+    working) printf '●' ;;
+    idle)    printf '○' ;;
+    *)       printf '?' ;;
+  esac
+}
+
+lazy_llm_status_color() {
+  case "$1" in
+    waiting) printf '#ff00af' ;;
+    unread)  printf '#5fff00' ;;
+    working) printf '#ffff00' ;;
+    idle)    printf '#bcbcbc' ;;
+    *)       printf '#8a8a8a' ;;
+  esac
 }
 
 # Prune stale (dead) panes from AI_PANES/AI_TOOLS lists.
@@ -787,6 +929,8 @@ lazy_llm_cycle_to_index() {
 
   local target_tool="${tool_arr[$target_idx]}"
   tmux select-pane -t "$target_pane" -T "AI: $target_tool [$((target_idx + 1))/$total]"
+  # Cycling a pane into view is looking at it.
+  lazy_llm_clear_unread "$target_pane"
 }
 
 # Validate that the holding window exists; recreate if missing.
@@ -845,31 +989,63 @@ lazy_llm_panes_for_workspace() {
 }
 
 # Summary across every lazy-llm workspace, not just the caller's own
-# window. Echoes "<workspace-count> <waiting-count>\n" (the trailing
-# newline matters — see coding-standards/frameworks/tmux-fzf.md on
-# `read var < <(cmd)` under set -e). Cheap enough at typical scale (a
+# window. Echoes "<workspaces> <waiting> <unread> <working> <idle>\n" —
+# the last four are AI PANE counts by status (each pane is its own agent
+# session, so that's the unit worth counting; unknown panes aren't counted).
+# The trailing newline matters — see coding-standards/frameworks/tmux-fzf.md
+# on `read var < <(cmd)` under set -e. Cheap enough at typical scale (a
 # handful of workspaces) for the ~10s status-interval callers run this on.
 lazy_llm_compute_summary() {
   local data
-  data=$(lazy_llm_gather_sessions 2>/dev/null) || { printf '0 0\n'; return; }
+  data=$(lazy_llm_gather_sessions 2>/dev/null) || { printf '0 0 0 0 0\n'; return; }
   if [[ -z "$data" ]]; then
-    printf '0 0\n'
+    printf '0 0 0 0 0\n'
     return
   fi
-  local ws_count=0 waiting_count=0
+  local ws_count=0 n_waiting=0 n_unread=0 n_working=0 n_idle=0
   local name dir tools wins attached
   while IFS=$'\t' read -r name dir tools wins attached; do
     ws_count=$((ws_count + 1))
     local LAZY_LLM_SUMMARY_PANES=() LAZY_LLM_SUMMARY_TOOLS=()
     lazy_llm_panes_for_workspace "$name"
-    local i st has_waiting=false
+    local i st
     for i in "${!LAZY_LLM_SUMMARY_PANES[@]}"; do
       st=$(lazy_llm_detect_pane_status "${LAZY_LLM_SUMMARY_PANES[$i]}" "${LAZY_LLM_SUMMARY_TOOLS[$i]:-claude}")
-      [[ "$st" == "waiting" ]] && has_waiting=true
+      case "$st" in
+        waiting) n_waiting=$((n_waiting + 1)) ;;
+        unread)  n_unread=$((n_unread + 1)) ;;
+        working) n_working=$((n_working + 1)) ;;
+        idle)    n_idle=$((n_idle + 1)) ;;
+      esac
     done
-    [[ "$has_waiting" == true ]] && waiting_count=$((waiting_count + 1))
   done <<< "$data"
-  printf '%s %s\n' "$ws_count" "$waiting_count"
+  printf '%s %s %s %s %s\n' "$ws_count" "$n_waiting" "$n_unread" "$n_working" "$n_idle"
+}
+
+# Render lazy_llm_compute_summary's output as tmux markup:
+#   "3ws 1◐ 2◉ 1● 3○"
+# One "<count><glyph>" per status, in attention order, each in its status
+# color (bold for the two that want you: waiting, unread); zero counts are
+# omitted so a quiet setup reads as just "3ws". Shared by llm-status and
+# llm-pane-border so the two summaries can't drift.
+# Args: $1 text color to restore after each colored count, then the five
+#       numbers from lazy_llm_compute_summary.
+lazy_llm_render_summary() {
+  local text="$1" ws="$2" waiting="$3" unread="$4" working="$5" idle="$6"
+  local out="${ws}ws" st n attr
+  for st in waiting unread working idle; do
+    case "$st" in
+      waiting) n="$waiting" ;;
+      unread)  n="$unread" ;;
+      working) n="$working" ;;
+      idle)    n="$idle" ;;
+    esac
+    [[ "$n" =~ ^[0-9]+$ && "$n" -gt 0 ]] || continue
+    attr=""
+    [[ "$st" == "waiting" || "$st" == "unread" ]] && attr=",bold"
+    out+=" #[fg=$(lazy_llm_status_color "$st")${attr}]${n}$(lazy_llm_status_glyph "$st")#[fg=${text},nobold]"
+  done
+  printf '%s' "$out"
 }
 
 # Resolve a pane's DISPLAY label: its custom rename from @AI_PANE_NAMES if
