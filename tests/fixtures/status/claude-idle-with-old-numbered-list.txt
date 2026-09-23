@@ -1,0 +1,20 @@
+⏺ Here's the breakdown of the three remaining gaps:
+
+  1. A Variant/sweep primitive — nothing above the single-instance shape
+     represents "vary axis X, run N times, rank the results."
+  2. A generalized Artifact-capture step kind — filesystem snapshot,
+     screenshot, video, DOM state, not just agent trace/workspace diff.
+  3. A scoring step that invokes the existing criteria machinery over
+     whatever that capture produced.
+
+  That's a scoped move: sketch Variant and the generalized Artifact-capture
+  kind first, since those are the two things confirmed missing.
+
+  Where do you want to go next?
+
+✻ Brewed for 3m 21s · done 3:29 AM
+
+───────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

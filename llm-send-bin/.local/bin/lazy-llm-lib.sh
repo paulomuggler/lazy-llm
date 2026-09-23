@@ -109,9 +109,27 @@ lazy_llm_detect_status_from_content() {
       ;;
   esac
 
+  # waiting_pat's numbered-option alternative (matches Claude Code's actual
+  # permission-prompt UI, e.g. "1. Yes  2. Yes, and don't ask again  3. No")
+  # is indistinguishable from an ordinary markdown numbered list in Claude's
+  # own RESPONSE text — confirmed live against a real idle pane: a
+  # completed response ending in "1. A Variant primitive... 2. ... 3. ..."
+  # was misclassified as "waiting" purely from old scrollback, long after
+  # the turn had actually finished (this is why finished sessions kept
+  # showing waiting — not just the hook mapping bug fixed earlier, THIS
+  # too). A genuine interactive prompt is always near the CURRENT input
+  # line at the bottom of the pane; old scrollback several screens up never
+  # is. Scope this specific check to the last ~10 lines instead of the full
+  # capture, so a real prompt still matches but a numbered list left over
+  # from a finished response doesn't — tuned against the exact
+  # false-positive content above: a tail of 15 still caught 2 of its 3 list
+  # lines, 12 and 10 caught none.
+  local tail_content
+  tail_content=$(tail -n 10 <<< "$content")
+
   if grep -qE "$interrupt_pat" <<< "$content"; then
     echo working
-  elif grep -qE "$waiting_pat" <<< "$content"; then
+  elif grep -qE "$waiting_pat" <<< "$tail_content"; then
     echo waiting
   elif grep -qF "$prompt_pat" <<< "$content"; then
     echo idle

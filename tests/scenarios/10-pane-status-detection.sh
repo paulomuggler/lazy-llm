@@ -27,6 +27,15 @@ cases=(
     "idle:idle"
     "waiting-yn:waiting"
     "waiting-numbered:waiting"
+    # Regression: waiting-numbered's pattern (Claude Code's real numbered
+    # permission-prompt UI) is indistinguishable from an ordinary markdown
+    # numbered list in Claude's own RESPONSE text. Confirmed live against a
+    # real idle pane whose finished response ended in a 3-item numbered
+    # list — misclassified as "waiting" purely from old scrollback, long
+    # after the turn had actually finished. This fixture reproduces that
+    # exact shape (numbered list well above the tail, genuine idle prompt
+    # at the very end) and must detect idle, not waiting.
+    "idle-with-old-numbered-list:idle"
     "unknown:unknown"
 )
 
