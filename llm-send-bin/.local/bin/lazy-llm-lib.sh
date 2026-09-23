@@ -525,6 +525,35 @@ lazy_llm_read_multi_state_for() {
   REPLY_PANE_NAMES=$(tmux show-option -wv -t "$session:$window" @AI_PANE_NAMES 2>/dev/null) || REPLY_PANE_NAMES=""
 }
 
+# Fold (collapse) state for a workspace's pane tree in the dashboard's
+# Workspaces tab — a SESSION-scoped tmux option (parallel to how @lazy_llm
+# itself marks a session, not the -w window-scoped pattern @AI_PANES et al.
+# use), because fold state is a per-workspace property, not per-window.
+# Stored externally (not in an in-process bash array) specifically so it can
+# be read/written from a fresh subprocess with no access to the dashboard's
+# own memory — e.g. fzf's reload() action, which runs its bound command as an
+# independent process. See llm-dashboard's render_sessions_tab for the caller.
+#
+# Args:   $1 workspace/session name
+# Stdout: "1" if collapsed, empty otherwise. Returns 0 always (never lets a
+#         dead/renamed session under a caller's set -e take down the caller).
+lazy_llm_read_collapsed() {
+  local name="$1"
+  tmux show-option -v -t "$name" @lazy_llm_collapsed 2>/dev/null || true
+}
+
+# Toggle a workspace's fold state (see lazy_llm_read_collapsed). Returns 0
+# always, same reasoning as the reader.
+# Args: $1 workspace/session name
+lazy_llm_toggle_collapsed() {
+  local name="$1"
+  if [[ "$(lazy_llm_read_collapsed "$name")" == "1" ]]; then
+    tmux set-option -u -t "$name" @lazy_llm_collapsed 2>/dev/null || true
+  else
+    tmux set-option -t "$name" @lazy_llm_collapsed 1 2>/dev/null || true
+  fi
+}
+
 # Swap the visible AI pane in <session:window> to the pane at <target_idx> in its
 # @AI_PANES list. This is llm-cycle's core swap-pane logic, factored out so it can
 # be driven with an EXPLICIT target instead of llm-cycle's ambient "current pane"

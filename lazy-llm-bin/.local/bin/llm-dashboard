@@ -47,6 +47,14 @@ else
   source "$(dirname "$0")/../../../llm-send-bin/.local/bin/lazy-llm-lib.sh"
 fi
 
+# Absolute path to this script itself. Needed so the Workspaces tree's fold
+# key can bind fzf's execute-silent()/reload() actions to re-invoke this same
+# script — those run as independent subprocesses in fzf's own cwd (not
+# necessarily this script's directory, and not necessarily the cwd the
+# dashboard was originally launched from), so a bare/relative "$0" can't be
+# trusted there the way it can at top-level sourcing above.
+_dashboard_self="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)/$(basename "$0")"
+
 # ──────────────────────────────────────────────────────────────────────────
 # Adaptive header width. A right-side preview means --header only gets the
 # LIST column's share of the popup (~45%, not the popup's own width — see
@@ -104,6 +112,20 @@ glyph_for_colored() {
   printf '%s%s\033[0m' "$(_ansi_fg "$(glyph_color_for "$1")")" "$(glyph_for "$1")"
 }
 
+# Extract the workspace/session name from a tree row id ("ws:<name>" or
+# "pane:<name>:<idx0>:<pane_id>" — see the row-model comment above
+# render_sessions_tab). Shared by the interactive dispatch below and by
+# --toggle-fold (invoked out-of-process by fzf's execute-silent, which only
+# has the raw id, not the parsed chosen_ws render_sessions_tab computes for
+# its own accept path). Echoes empty for an unrecognized id.
+_dashboard_ws_from_id() {
+  local id="$1"
+  case "$id" in
+    ws:*)   printf '%s' "${id#ws:}" ;;
+    pane:*) local rest="${id#pane:}"; printf '%s' "${rest%%:*}" ;;
+  esac
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 # Workspaces tab
 # ──────────────────────────────────────────────────────────────────────────
@@ -117,11 +139,17 @@ glyph_for_colored() {
 #                                  <idx0> is its 0-based index into that
 #                                  workspace's @AI_PANES list
 #
-# Collapse state (_collapsed[name] set = collapsed) is a script-global
-# associative array declared near the bottom of this file, mutated by
-# dispatch_action so it survives across re-renders of this tab within one
-# dashboard invocation (render_workspaces_tab itself runs in a subshell via
-# command substitution, so it can only READ _collapsed, never write it).
+# Collapse state lives in a per-workspace tmux option (@lazy_llm_collapsed —
+# see lazy_llm_read_collapsed/lazy_llm_toggle_collapsed in lazy-llm-lib.sh),
+# NOT an in-process bash array: the 'z' fold/unfold key is bound directly to
+# fzf's execute-silent()+reload() actions (see below) so folding no longer
+# exits and relaunches fzf — and reload()'s command runs as an independent
+# subprocess with no access to this script's memory, so anything it needs
+# (fold flags, the row data itself) has to be readable from outside the
+# process. --emit-rows (dispatched from the CLI-parsing block at the bottom
+# of this file) is that same row-building logic exposed as a standalone mode
+# for exactly this reason; render_sessions_tab and --emit-rows both call
+# _dashboard_build_rows so there's one source of truth for the row format.
 #
 # Returns (echoes) one of:
 #   "tab:worktrees"                      — switch to worktrees tab
@@ -130,7 +158,6 @@ glyph_for_colored() {
 #   "action:kill:<name>"                 — kill selected workspace
 #   "action:rename:<name>"               — rename selected workspace
 #   "action:rename-pane:<name>:<idx0>"   — rename that pane's DISPLAY label
-#   "action:toggle:<name>"               — collapse/expand that workspace's panes
 #   "action:pane-add"                    — add AI pane to the CURRENT workspace
 #                                           (the one this dashboard was opened
 #                                           from — not whatever's highlighted;
@@ -142,25 +169,24 @@ glyph_for_colored() {
 #   "action:refresh"                     — re-render the tab
 #   "tab:help"                            — switch to the Help tab
 #   "quit"                               — exit dashboard
-render_sessions_tab() {
-  # Resolve the workspace this dashboard was launched from, if any — needed to
-  # scope 'a' / ']' / '[' / pane-row 'K' to the current workspace only (see
-  # header comment). A popup opened from outside any lazy-llm window (or from
-  # no tmux session at all) leaves this empty; the tree still renders fine,
-  # those specific actions just become unavailable/no-ops, same as they'd be
-  # unreachable entirely in the pre-merge Panes tab under the same condition.
-  # Prefer the explicit value llm-dashboard-open resolved and passed in
-  # (-e LAZY_LLM_LAUNCH_SESSION=...) — verified live that a popup's child
-  # process does NOT reliably inherit the calling session via ambient
-  # resolution (TMUX_PANE unset inside it, and the display-message fallback
-  # resolved to an unrelated session in testing). Fall back to the ambient
-  # lookup only for direct `llm-dashboard` invocation without the wrapper
-  # (e.g. manual CLI use, `--tab` testing).
-  local launch_ws="${LAZY_LLM_LAUNCH_SESSION:-}"
-  if [[ -z "$launch_ws" ]] && lazy_llm_resolve_pane 2>/dev/null && lazy_llm_resolve_session_window 2>/dev/null; then
-    launch_ws="$_SESSION"
-  fi
+# (fold/unfold does NOT round-trip through this return value — 'z' never
+# exits fzf, see the fzf --bind list below.)
 
+# Build the Workspaces tree's row list. Factored out of render_sessions_tab so
+# --emit-rows (fzf's reload() target for the fold key) can produce the exact
+# same rows from a cold, standalone process invocation. Called DIRECTLY (not
+# via command substitution) — a subshell would make the REPLY_START_POS
+# side-output invisible to the caller — same REPLY_* convention
+# lazy-llm-lib.sh's own multi-state readers already use.
+#
+# Args:   $1 launch_ws (may be empty) — used only to compute the initial
+#         cursor row; irrelevant to a reload (cursor tracking across reload is
+#         handled by fzf's own --track --id-nth=1 on the hidden id field, not
+#         by recomputing a start position).
+# Sets:   REPLY_ROWS (the row list, "" if no workspaces),
+#         REPLY_START_POS (1-based initial cursor row, default 1)
+_dashboard_build_rows() {
+  local launch_ws="$1"
   local data
   data=$(lazy_llm_gather_sessions)
   # Deliberately NOT reordered to put the launch workspace first. Tried
@@ -175,15 +201,10 @@ render_sessions_tab() {
   # change with activity) is used as-is; load:pos(N) below still jumps the
   # cursor straight to the active pane wherever it naturally falls.
 
-  local lines="" header
-  # 1-based line number to place the cursor on when the dashboard opens —
-  # defaults to 1 (top row); set precisely once we reach the launch
-  # workspace's active pane row below (or its own row, if it has none shown).
-  local _start_pos=1
-  local _line_no=0
-  if [[ -z "$data" ]]; then
-    header="no workspaces yet"
-  else
+  REPLY_ROWS=""
+  REPLY_START_POS=1
+  local lines="" _line_no=0
+  if [[ -n "$data" ]]; then
     while IFS=$'\t' read -r name dir tools wins attached; do
       local first_win
       first_win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1)
@@ -254,8 +275,10 @@ render_sessions_tab() {
       local mark=""
       [[ -n "$attached" ]] && mark=" *"
 
+      local collapsed
+      collapsed=$(lazy_llm_read_collapsed "$name")
       local fold_glyph="▾"
-      [[ -n "${_collapsed[$name]:-}" ]] && fold_glyph="▸"
+      [[ "$collapsed" == "1" ]] && fold_glyph="▸"
 
       local ws_display
       ws_display=$(printf '%s %-26s  %-40s  %s %-14s %sw%s' \
@@ -264,9 +287,9 @@ render_sessions_tab() {
       _line_no=$((_line_no + 1))
       # Fallback start position: the launch workspace's own row, in case it
       # has no pane rows to land on below (collapsed, or no panes at all).
-      [[ "$name" == "$launch_ws" ]] && _start_pos=$_line_no
+      [[ "$name" == "$launch_ws" ]] && REPLY_START_POS=$_line_no
 
-      if [[ -z "${_collapsed[$name]:-}" ]]; then
+      if [[ "$collapsed" != "1" ]]; then
         for i in "${!pane_arr[@]}"; do
           local pid="${pane_arr[$i]}" tool="${tool_arr[$i]:-?}" glyph
           # Display label: the custom rename if one's set (and isn't the
@@ -287,11 +310,42 @@ render_sessions_tab() {
           lines+="pane:${name}:${i}:${pid}"$'\t'"${pane_display}"$'\n'
           _line_no=$((_line_no + 1))
           # Precise start position: this workspace's currently-active pane.
-          [[ "$name" == "$launch_ws" && "$i" -eq "$reply_idx" ]] && _start_pos=$_line_no
+          [[ "$name" == "$launch_ws" && "$i" -eq "$reply_idx" ]] && REPLY_START_POS=$_line_no
         done
       fi
     done <<< "$data"
     lines="${lines%$'\n'}"
+  fi
+  REPLY_ROWS="$lines"
+}
+
+render_sessions_tab() {
+  # Resolve the workspace this dashboard was launched from, if any — needed to
+  # scope 'a' / ']' / '[' / pane-row 'K' to the current workspace only (see
+  # header comment). A popup opened from outside any lazy-llm window (or from
+  # no tmux session at all) leaves this empty; the tree still renders fine,
+  # those specific actions just become unavailable/no-ops, same as they'd be
+  # unreachable entirely in the pre-merge Panes tab under the same condition.
+  # Prefer the explicit value llm-dashboard-open resolved and passed in
+  # (-e LAZY_LLM_LAUNCH_SESSION=...) — verified live that a popup's child
+  # process does NOT reliably inherit the calling session via ambient
+  # resolution (TMUX_PANE unset inside it, and the display-message fallback
+  # resolved to an unrelated session in testing). Fall back to the ambient
+  # lookup only for direct `llm-dashboard` invocation without the wrapper
+  # (e.g. manual CLI use, `--tab` testing).
+  local launch_ws="${LAZY_LLM_LAUNCH_SESSION:-}"
+  if [[ -z "$launch_ws" ]] && lazy_llm_resolve_pane 2>/dev/null && lazy_llm_resolve_session_window 2>/dev/null; then
+    launch_ws="$_SESSION"
+  fi
+
+  _dashboard_build_rows "$launch_ws"
+  local lines="$REPLY_ROWS"
+  local _start_pos="$REPLY_START_POS"
+
+  local header
+  if [[ -z "$lines" ]]; then
+    header="no workspaces yet"
+  else
     # Deliberately short and static — NOT an enumeration of every key. With a
     # right-side preview active, --header's available width is the LIST
     # column's share (~45% of the popup), not the popup's own width. Universal
@@ -364,6 +418,29 @@ render_sessions_tab() {
   # script embedding fzf for its own UI should never rely on the invoking
   # shell's ambient fzf preferences — every fzf call below sets its own
   # --height explicitly for this reason, not just this one.
+  #
+  # 'z' (fold/unfold) is deliberately NOT a print(z)+accept binding like the
+  # other action keys — it never exits fzf at all. It's bound directly to
+  # execute-silent(...)+reload(...): execute-silent toggles this row's
+  # workspace's fold flag out-of-process (--toggle-fold, {1} is the hidden id
+  # field — same idiom the preview command above already uses for {1}), then
+  # reload(...) re-invokes this same script in --emit-rows mode and feeds its
+  # stdout back into the SAME running fzf process as the new list — no exit,
+  # no relaunch, no flicker (verified live: identical fzf PID across a fold
+  # action, via `ps --ppid <popup pane pid> --forest`). execute-silent is
+  # confirmed synchronous here (its toggle is visible to the reload's own
+  # read of the fold flag every time), and --track --id-nth=1 (below) is what
+  # keeps the cursor on the same row across that reload despite its display
+  # text (the fold glyph) changing — confirmed live: --track --id-nth=1
+  # tracks correctly by the HIDDEN id field even combined with
+  # --with-nth=2 transforming the visible line, contrary to the ambiguity in
+  # `man fzf`'s --nth (not --id-nth) section about "--nth is calculated
+  # against the transformed lines" when paired with --with-nth — that clause
+  # is about --nth (search scope), not --id-nth (reload identity), and
+  # doesn't apply here; don't assume otherwise without retesting. When the
+  # tracked row itself disappears (fold hid the very pane row focus was on),
+  # fzf falls back to the nearest remaining row rather than erroring or
+  # resetting to row 1 — also confirmed live, acceptable fallback UX.
   local selection key
   selection=$(printf '%s\n' "$lines" | fzf \
     --height=100% \
@@ -374,13 +451,16 @@ render_sessions_tab() {
     --header="$header" \
     --delimiter=$'\t' \
     --with-nth=2 \
+    --track \
+    --id-nth=1 \
     --preview="$preview_cmd" \
     --preview-window="right:55%:follow" \
     --disabled --no-input \
     --bind='enter:print()+accept' \
     --bind='1:print(1)+accept' --bind='2:print(2)+accept' \
     --bind='K:print(K)+accept' --bind='r:print(r)+accept' --bind='R:print(R)+accept' \
-    --bind='z:print(z)+accept' --bind='a:print(a)+accept' \
+    --bind="z:execute-silent($_dashboard_self --toggle-fold {1})+reload($_dashboard_self --emit-rows)" \
+    --bind='a:print(a)+accept' \
     --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
     --bind='/:unbind(1,2,K,r,R,z,a,],[,?)+show-input+enable-search' \
     --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?)' \
@@ -447,7 +527,6 @@ render_sessions_tab() {
       fi
       ;;
     R)     echo "action:refresh" ;;
-    z)     [[ -z "$chosen_ws" ]] && echo "action:refresh" || echo "action:toggle:$chosen_ws" ;;
     a)     echo "action:pane-add" ;;
     "]")   echo "action:pane-next" ;;
     "[")   echo "action:pane-prev" ;;
@@ -593,14 +672,6 @@ dispatch_action() {
       tmux switch-client -t "$name" 2>/dev/null \
         || tmux attach-session -t "$name" 2>/dev/null \
         || echo "Could not switch to $name" >&2
-      ;;
-    action:toggle:*)
-      local name="${action#action:toggle:}"
-      if [[ -n "${_collapsed[$name]:-}" ]]; then
-        unset "_collapsed[$name]"
-      else
-        _collapsed[$name]=1
-      fi
       ;;
     action:kill:*)
       local name="${action#action:kill:}"
@@ -956,6 +1027,28 @@ while [[ $# -gt 0 ]]; do
       esac
       shift
       ;;
+    --emit-rows)
+      # Reload-plumbing only, not for interactive use: fzf's reload() action
+      # (bound to 'z' fold/unfold in render_sessions_tab) re-invokes this
+      # script with this flag as an independent subprocess, and feeds its
+      # stdout back into the SAME running fzf as the tree's new row list —
+      # see the row-model comment above _dashboard_build_rows for why this
+      # has to be a standalone, out-of-process entry point rather than a
+      # function call into the popup's own bash state.
+      shift
+      _dashboard_build_rows "${LAZY_LLM_LAUNCH_SESSION:-}"
+      printf '%s\n' "$REPLY_ROWS"
+      exit 0
+      ;;
+    --toggle-fold)
+      # Reload-plumbing only — see --emit-rows above. Takes a raw tree row id
+      # ("ws:<name>" or "pane:<name>:<idx0>:<pane_id>", i.e. fzf's {1}) and
+      # flips that row's workspace's persisted fold flag.
+      shift
+      _dashboard_toggle_ws=$(_dashboard_ws_from_id "${1:-}")
+      [[ -n "$_dashboard_toggle_ws" ]] && lazy_llm_toggle_collapsed "$_dashboard_toggle_ws"
+      exit 0
+      ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -970,12 +1063,6 @@ if ! command -v fzf &>/dev/null; then
   exit 1
 fi
 
-# Per-workspace fold state for the Workspaces tree tab. render_sessions_tab
-# runs in a subshell (command substitution) and can only READ this; only
-# dispatch_action (run directly, in this shell) mutates it — see the header
-# comment on render_sessions_tab.
-declare -A _collapsed=()
-
 while true; do
   case "$current_tab" in
     workspaces) result=$(render_sessions_tab) ;;
@@ -988,7 +1075,7 @@ while true; do
     tab:*)
       current_tab="${result#tab:}"
       ;;
-    action:switch:*|action:switch-pane:*|action:toggle:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
+    action:switch:*|action:switch-pane:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
       dispatch_action "$result"
       # Switch action exits the popup; for others we re-enter the current tab
       [[ "$result" == action:switch:* || "$result" == action:switch-pane:* ]] && break
