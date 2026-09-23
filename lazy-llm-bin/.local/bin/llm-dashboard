@@ -48,7 +48,7 @@ else
 fi
 
 # Absolute path to this script itself. Needed so the Workspaces tree's fold
-# key can bind fzf's execute-silent()/reload() actions to re-invoke this same
+# key can bind fzf's transform()/reload-sync() actions to re-invoke this same
 # script — those run as independent subprocesses in fzf's own cwd (not
 # necessarily this script's directory, and not necessarily the cwd the
 # dashboard was originally launched from), so a bare/relative "$0" can't be
@@ -115,9 +115,9 @@ glyph_for_colored() {
 # Extract the workspace/session name from a tree row id ("ws:<name>" or
 # "pane:<name>:<idx0>:<pane_id>" — see the row-model comment above
 # render_sessions_tab). Shared by the interactive dispatch below and by
-# --toggle-fold (invoked out-of-process by fzf's execute-silent, which only
-# has the raw id, not the parsed chosen_ws render_sessions_tab computes for
-# its own accept path). Echoes empty for an unrecognized id.
+# --fold-transform (invoked out-of-process by fzf's transform(...), which
+# only has the raw id, not the parsed chosen_ws render_sessions_tab computes
+# for its own accept path). Echoes empty for an unrecognized id.
 _dashboard_ws_from_id() {
   local id="$1"
   case "$id" in
@@ -142,14 +142,18 @@ _dashboard_ws_from_id() {
 # Collapse state lives in a per-workspace tmux option (@lazy_llm_collapsed —
 # see lazy_llm_read_collapsed/lazy_llm_toggle_collapsed in lazy-llm-lib.sh),
 # NOT an in-process bash array: the 'z' fold/unfold key is bound directly to
-# fzf's execute-silent()+reload() actions (see below) so folding no longer
-# exits and relaunches fzf — and reload()'s command runs as an independent
+# fzf's transform() action (see below) so folding no longer exits and
+# relaunches fzf — and transform()'s command runs as an independent
 # subprocess with no access to this script's memory, so anything it needs
 # (fold flags, the row data itself) has to be readable from outside the
 # process. --emit-rows (dispatched from the CLI-parsing block at the bottom
 # of this file) is that same row-building logic exposed as a standalone mode
 # for exactly this reason; render_sessions_tab and --emit-rows both call
 # _dashboard_build_rows so there's one source of truth for the row format.
+# --fold-transform (also dispatched from that CLI-parsing block) is
+# transform()'s own target: it toggles the fold flag AND works out where the
+# cursor should land in the reloaded list, in one out-of-process call — see
+# its own comment for why cursor placement can't be left to fzf's --track.
 #
 # Returns (echoes) one of:
 #   "tab:worktrees"                      — switch to worktrees tab
@@ -173,16 +177,16 @@ _dashboard_ws_from_id() {
 # exits fzf, see the fzf --bind list below.)
 
 # Build the Workspaces tree's row list. Factored out of render_sessions_tab so
-# --emit-rows (fzf's reload() target for the fold key) can produce the exact
-# same rows from a cold, standalone process invocation. Called DIRECTLY (not
-# via command substitution) — a subshell would make the REPLY_START_POS
+# --emit-rows (fzf's reload-sync() target for the fold key) can produce the
+# exact same rows from a cold, standalone process invocation. Called DIRECTLY
+# (not via command substitution) — a subshell would make the REPLY_START_POS
 # side-output invisible to the caller — same REPLY_* convention
 # lazy-llm-lib.sh's own multi-state readers already use.
 #
 # Args:   $1 launch_ws (may be empty) — used only to compute the initial
-#         cursor row; irrelevant to a reload (cursor tracking across reload is
-#         handled by fzf's own --track --id-nth=1 on the hidden id field, not
-#         by recomputing a start position).
+#         cursor row; irrelevant to a reload (cursor placement across a fold
+#         reload is computed explicitly by --fold-transform and applied via
+#         pos(N), not by recomputing a start position here).
 # Sets:   REPLY_ROWS (the row list, "" if no workspaces),
 #         REPLY_START_POS (1-based initial cursor row, default 1)
 _dashboard_build_rows() {
@@ -421,26 +425,46 @@ render_sessions_tab() {
   #
   # 'z' (fold/unfold) is deliberately NOT a print(z)+accept binding like the
   # other action keys — it never exits fzf at all. It's bound directly to
-  # execute-silent(...)+reload(...): execute-silent toggles this row's
-  # workspace's fold flag out-of-process (--toggle-fold, {1} is the hidden id
-  # field — same idiom the preview command above already uses for {1}), then
-  # reload(...) re-invokes this same script in --emit-rows mode and feeds its
-  # stdout back into the SAME running fzf process as the new list — no exit,
-  # no relaunch, no flicker (verified live: identical fzf PID across a fold
-  # action, via `ps --ppid <popup pane pid> --forest`). execute-silent is
-  # confirmed synchronous here (its toggle is visible to the reload's own
-  # read of the fold flag every time), and --track --id-nth=1 (below) is what
-  # keeps the cursor on the same row across that reload despite its display
-  # text (the fold glyph) changing — confirmed live: --track --id-nth=1
-  # tracks correctly by the HIDDEN id field even combined with
-  # --with-nth=2 transforming the visible line, contrary to the ambiguity in
-  # `man fzf`'s --nth (not --id-nth) section about "--nth is calculated
-  # against the transformed lines" when paired with --with-nth — that clause
-  # is about --nth (search scope), not --id-nth (reload identity), and
-  # doesn't apply here; don't assume otherwise without retesting. When the
-  # tracked row itself disappears (fold hid the very pane row focus was on),
-  # fzf falls back to the nearest remaining row rather than erroring or
-  # resetting to row 1 — also confirmed live, acceptable fallback UX.
+  # transform(...): fzf runs the command and interprets its STDOUT as a
+  # further chain of actions to perform (`man fzf`, transform(...) action).
+  # --fold-transform (the command run) toggles this row's workspace's fold
+  # flag out-of-process ({1} is the hidden id field — same idiom the preview
+  # command above already uses for {1}), rebuilds the row list, and prints
+  # back `reload-sync(... --emit-rows)+pos(N)` — reload-sync() swaps in the
+  # new list in the SAME running fzf process (no exit, no relaunch, no
+  # flicker — verified live: identical fzf PID across a fold action, via
+  # `ps --ppid <popup pane pid> --forest`), and the chained pos(N) explicitly
+  # places the cursor afterward. reload-sync specifically, NOT plain reload —
+  # see --fold-transform's own comment for why: a plain reload(...)+pos(N) in
+  # one transform() output races (reload is async, pos(N) can land before/
+  # during it and gets discarded), confirmed live with a minimal repro before
+  # this was caught.
+  #
+  # An earlier version of this used fzf's own --track --id-nth=1 (tracks the
+  # cursor across a reload by the hidden id field) instead of an explicit
+  # pos(N). That works for the common case (cursor on the toggled workspace
+  # row itself — its id survives the reload, --track keeps the cursor on it
+  # despite the fold glyph changing), but --track has no structural fallback
+  # when the tracked id vanishes ENTIRELY from the reloaded list — which is
+  # exactly what happens when the cursor is on a nested pane row and 'z'
+  # folds that row's own parent workspace (folding always hides that
+  # workspace's pane rows, and a pane row can only be focused while its
+  # workspace is expanded, so this vanish case is the ONLY thing that can
+  # happen when 'z' is pressed on a pane row — never the reverse). Verified
+  # live (fzf 0.74.3, ANSI-aware `capture-pane -e`, reproduced from clean
+  # process state) that --track's actual fallback there is a reset to row 1,
+  # not the parent row, and `man fzf`'s own --id-nth section documents why:
+  # with --id-nth, --track's search for the tracked key BLOCKS cursor
+  # movement/query input until a match is found in the reload stream or the
+  # user cancels (Esc/Ctrl-C) — when the id can never be found (because it's
+  # genuinely gone), that's a real risk of a stuck/blocked UI, not just a
+  # cosmetic wrong-row landing. --fold-transform computes the correct target
+  # explicitly instead (same row's id if it survives, else its parent
+  # workspace's "ws:<name>" row) and positions with pos(N), which fzf
+  # documents as absolute-position placement, no tracking/search/blocking
+  # involved — so --track/--id-nth were dropped from this fzf call entirely
+  # (not layered underneath) once pos(N) already covers every case,
+  # including the one --track used to.
   local selection key
   selection=$(printf '%s\n' "$lines" | fzf \
     --height=100% \
@@ -451,21 +475,19 @@ render_sessions_tab() {
     --header="$header" \
     --delimiter=$'\t' \
     --with-nth=2 \
-    --track \
-    --id-nth=1 \
     --preview="$preview_cmd" \
     --preview-window="right:55%:follow" \
     --disabled --no-input \
     --bind='enter:print()+accept' \
     --bind='1:print(1)+accept' --bind='2:print(2)+accept' \
     --bind='K:print(K)+accept' --bind='r:print(r)+accept' --bind='R:print(R)+accept' \
-    --bind="z:execute-silent($_dashboard_self --toggle-fold {1})+reload($_dashboard_self --emit-rows)" \
+    --bind="z:transform($_dashboard_self --fold-transform {1})" \
     --bind='a:print(a)+accept' \
     --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
     --bind='/:unbind(1,2,K,r,R,z,a,],[,?)+show-input+enable-search' \
     --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?)' \
     --bind='q:abort' \
-    --bind="load:pos(${_start_pos})" \
+    --bind="load:pos(${_start_pos})+unbind(load)" \
   ) || { echo "quit"; return 0; }
   # `load`, not `start` — this is the actual bug behind "cursor always
   # lands on the first (workspace) row, never the active pane," reported
@@ -482,6 +504,31 @@ render_sessions_tab() {
   # mechanism in isolation (triggered by a real key) — never the actual
   # `start:pos(N)` binding rendered live with -e capture, which is the
   # only way this specific failure shows up.
+  #
+  # `+unbind(load)` (dashboard-reload-avoid-full-redraw rework round):
+  # `load` is NOT a one-shot "very first render" event the way it reads —
+  # confirmed live that it fires again on every SUBSEQUENT reload-sync(...)
+  # too (once the new list finishes loading), same as it does at startup.
+  # Left bound permanently, `load:pos(${_start_pos})` re-fires every time
+  # 'z' folds/unfolds and forces the cursor back to wherever it was at
+  # DASHBOARD LAUNCH, silently overriding --fold-transform's own explicit
+  # `pos(N)` for the row the cursor should land on after THIS reload — the
+  # two pos() calls race and `load`'s always won in testing. This was the
+  # actual root cause of the "cursor resets to row 1" bug the Verify Report
+  # caught (not a `--track` limitation, and not something `reload-sync`
+  # alone fixes — reload-sync was ALSO a genuine, separately-confirmed fix
+  # for an unrelated reload()-vs-pos() race, see --fold-transform's own
+  # comment, but by itself was not sufficient: with `load` still bound
+  # permanently, the symptom simply changed from "always row 1" to "always
+  # the launch-time row," which happened to equal row 1 in the exact repro
+  # used here but is the same class of bug). `+unbind(load)` makes the
+  # `load` bind fire exactly once — for the real initial launch position —
+  # and never again, so later reloads are governed solely by whatever
+  # explicit `pos(N)` that specific action chain provides. Verified live:
+  # without `+unbind(load)`, a minimal reproduction fzf instance with an
+  # otherwise-identical bind list reset to row 1 after every reload despite
+  # its own transform() chain explicitly calling `pos(2)`; adding
+  # `+unbind(load)` alone (no other change) fixed it.
 
   key=$(echo "$selection" | head -1)
   local chosen_line chosen_id
@@ -1040,13 +1087,56 @@ while [[ $# -gt 0 ]]; do
       printf '%s\n' "$REPLY_ROWS"
       exit 0
       ;;
-    --toggle-fold)
-      # Reload-plumbing only — see --emit-rows above. Takes a raw tree row id
-      # ("ws:<name>" or "pane:<name>:<idx0>:<pane_id>", i.e. fzf's {1}) and
-      # flips that row's workspace's persisted fold flag.
+    --fold-transform)
+      # Reload-plumbing only, not for interactive use: fzf's transform()
+      # action (bound to 'z' fold/unfold in render_sessions_tab) re-invokes
+      # this script with this flag as an independent subprocess and
+      # interprets its STDOUT as a chain of further fzf actions to run (see
+      # the 'z' bind's own comment for the full rationale/history — this
+      # replaced an earlier execute-silent(...)+reload(...) pair once a bug
+      # was found in relying on --track --id-nth=1 for cursor placement).
+      #
+      # Takes a raw tree row id ("ws:<name>" or "pane:<name>:<idx0>:<pane_id>",
+      # i.e. fzf's {1}): flips that row's workspace's persisted fold flag,
+      # rebuilds the row list, and prints back `reload-sync(...)+pos(N)`
+      # (reload-sync, not reload — see below) where N is the 1-based line of
+      # the row the cursor should land on in the NEW list — the SAME id's
+      # row if it still exists there, else (the case
+      # where 'z' was pressed on a pane row and its own parent workspace
+      # just got folded, hiding that row) its parent workspace's "ws:<name>"
+      # row. Falls back to row 1 only if neither is found (shouldn't happen
+      # for a real id from a live row, but keeps this from ever emitting an
+      # unusable pos()).
       shift
-      _dashboard_toggle_ws=$(_dashboard_ws_from_id "${1:-}")
-      [[ -n "$_dashboard_toggle_ws" ]] && lazy_llm_toggle_collapsed "$_dashboard_toggle_ws"
+      _dashboard_fold_id="${1:-}"
+      _dashboard_fold_ws=$(_dashboard_ws_from_id "$_dashboard_fold_id")
+      [[ -n "$_dashboard_fold_ws" ]] && lazy_llm_toggle_collapsed "$_dashboard_fold_ws"
+
+      _dashboard_build_rows "${LAZY_LLM_LAUNCH_SESSION:-}"
+
+      _dashboard_fold_pos=""
+      if [[ -n "$_dashboard_fold_id" ]]; then
+        _dashboard_fold_pos=$(printf '%s\n' "$REPLY_ROWS" | awk -F'\t' -v id="$_dashboard_fold_id" '$1==id{print NR; exit}') || true
+      fi
+      if [[ -z "$_dashboard_fold_pos" && -n "$_dashboard_fold_ws" ]]; then
+        _dashboard_fold_pos=$(printf '%s\n' "$REPLY_ROWS" | awk -F'\t' -v id="ws:${_dashboard_fold_ws}" '$1==id{print NR; exit}') || true
+      fi
+      [[ -n "$_dashboard_fold_pos" ]] || _dashboard_fold_pos=1
+
+      # reload-sync, NOT reload, here — confirmed live (fzf 0.74.3) that a
+      # plain reload(...)+pos(N) chained in one transform() output races:
+      # reload() is asynchronous, so the chained pos(N) can run before (or
+      # while) the new list is still loading and its effect gets discarded
+      # once the reload actually lands, leaving the cursor exactly where
+      # --track alone used to leave it (row 1) — silently reintroducing the
+      # bug this whole mechanism exists to fix. reload-sync(...) blocks
+      # until the reload command's full output is in, so the chained pos(N)
+      # applies to the list that's actually on screen. Verified live with a
+      # minimal repro fzf instance before trusting this in the real script
+      # (`man fzf`'s own reload(...) vs reload-sync(...) distinction is
+      # about blocking behavior for exactly this kind of chained-action
+      # ordering, not just multi-select preservation).
+      printf 'reload-sync(%s --emit-rows)+pos(%s)\n' "$_dashboard_self" "$_dashboard_fold_pos"
       exit 0
       ;;
     --help|-h) usage; exit 0 ;;

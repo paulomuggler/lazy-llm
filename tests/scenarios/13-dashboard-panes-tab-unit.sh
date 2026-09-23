@@ -174,16 +174,21 @@ else
 fi
 
 echo ""
-echo "Test 11: 'z' is bound to execute-silent+reload, not print+accept..."
-if command grep -qE "z:execute-silent\([^)]*--toggle-fold[^)]*\)\+reload\([^)]*--emit-rows" "$DASHBOARD"; then
-    print_pass "'z' binds execute-silent(...--toggle-fold...)+reload(...--emit-rows...) — never exits fzf"
+echo "Test 11: 'z' is bound to transform(...--fold-transform...), not print+accept..."
+if command grep -qE "z:transform\([^)]*--fold-transform[^)]*\)" "$DASHBOARD"; then
+    print_pass "'z' binds transform(...--fold-transform...) — never exits fzf"
 else
-    print_fail "'z' is not wired to execute-silent(...)+reload(...)"
+    print_fail "'z' is not wired to transform(...)"
 fi
 if command grep -q "bind='z:print(z)+accept'" "$DASHBOARD"; then
     print_fail "old 'z' print(z)+accept binding (exit+relaunch) still present"
 else
     print_pass "old 'z' print+accept binding removed"
+fi
+if command grep -qE "z:execute-silent\([^)]*--toggle-fold" "$DASHBOARD"; then
+    print_fail "old 'z' execute-silent(...--toggle-fold...)+reload(...) binding still present — should be transform(...--fold-transform...) now (dashboard-reload-avoid-full-redraw rework: --track's cursor fallback resets to row 1 when a tracked pane row's own parent is folded)"
+else
+    print_pass "old execute-silent(...--toggle-fold...)+reload(...) binding removed"
 fi
 if command grep -qE '^\s*z\)\s' "$DASHBOARD"; then
     print_fail "dead 'z' case arm still present in the key-dispatch case (z never reaches accept/selection now)"
@@ -192,24 +197,44 @@ else
 fi
 
 echo ""
-echo "Test 12: --track --id-nth=1 on the Workspaces fzf call (keeps the cursor on the same row across reload, by hidden id, despite --with-nth changing the displayed fold glyph)..."
-if command grep -q -- '--track' "$DASHBOARD" && command grep -q -- '--id-nth=1' "$DASHBOARD"; then
-    print_pass "--track --id-nth=1 present"
+echo "Test 12: cursor placement across a fold reload is computed explicitly (pos(N) in --fold-transform), not left to fzf's --track --id-nth (dashboard-reload-avoid-full-redraw rework: --track's own fallback empirically resets to row 1, not the parent row, when the tracked pane row's own parent gets folded and the tracked id vanishes from the reloaded list)..."
+# Only non-comment lines count — the rationale comments above the fzf call
+# and --fold-transform deliberately still mention --track/--id-nth in prose
+# (explaining why they were dropped), which a plain grep would misread as
+# the flags still being set.
+if command grep -v '^\s*#' "$DASHBOARD" | command grep -q -- '--track' \
+   || command grep -v '^\s*#' "$DASHBOARD" | command grep -qE -- "--id-nth[= ]"; then
+    print_fail "--track/--id-nth still set on the Workspaces fzf call — should be removed now that --fold-transform positions the cursor explicitly"
 else
-    print_fail "--track --id-nth=1 not found — a reload() would reset the cursor to the top"
+    print_pass "--track/--id-nth removed from the Workspaces fzf call (code, not just comments, checked)"
+fi
+if command grep -qE "printf 'reload-sync\(%s --emit-rows\)\+pos\(%s\)" "$DASHBOARD"; then
+    print_pass "--fold-transform prints reload-sync(...)+pos(N) — explicit cursor placement after the reload"
+else
+    print_fail "--fold-transform does not print reload-sync(...)+pos(N) — cursor placement after a fold reload is unaccounted for"
+fi
+if command grep -v '^\s*#' "$DASHBOARD" | command grep -qE "printf 'reload\(%s"; then
+    print_fail "--fold-transform uses plain reload(...) (not reload-sync) — confirmed live (fzf 0.74.3) that a chained pos(N) after a plain async reload() races and gets discarded"
+else
+    print_pass "--fold-transform does not use plain (non-sync) reload(...) for the fold key"
 fi
 
 echo ""
-echo "Test 13: --emit-rows / --toggle-fold CLI modes exist (reload()'s and execute-silent()'s out-of-process targets) and row-building is shared, not duplicated..."
-if command grep -q -- '--emit-rows)' "$DASHBOARD" && command grep -q -- '--toggle-fold)' "$DASHBOARD"; then
-    print_pass "--emit-rows and --toggle-fold CLI flags present"
+echo "Test 13: --emit-rows / --fold-transform CLI modes exist (transform()'s out-of-process target, folding toggle+reposition into one call) and row-building is shared, not duplicated..."
+if command grep -q -- '--emit-rows)' "$DASHBOARD" && command grep -q -- '--fold-transform)' "$DASHBOARD"; then
+    print_pass "--emit-rows and --fold-transform CLI flags present"
 else
-    print_fail "--emit-rows/--toggle-fold CLI flags missing"
+    print_fail "--emit-rows/--fold-transform CLI flags missing"
+fi
+if command grep -q -- '--toggle-fold)' "$DASHBOARD"; then
+    print_fail "old standalone --toggle-fold CLI mode still present — its logic should be folded into --fold-transform now"
+else
+    print_pass "old standalone --toggle-fold CLI mode retired"
 fi
 if command grep -q '_dashboard_build_rows' "$DASHBOARD"; then
-    print_pass "row-building factored into _dashboard_build_rows (used by both render_sessions_tab and --emit-rows)"
+    print_pass "row-building factored into _dashboard_build_rows (used by render_sessions_tab, --emit-rows, and --fold-transform)"
 else
-    print_fail "_dashboard_build_rows not found — row emission isn't factored out for --emit-rows to reuse"
+    print_fail "_dashboard_build_rows not found — row emission isn't factored out for reuse"
 fi
 
 echo ""
