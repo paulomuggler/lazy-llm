@@ -12,22 +12,26 @@
 #                   showed the current window's panes anyway — this shows
 #                   every workspace's panes, which is the point).
 #   2. Worktrees  - worktree lifecycle (see worktree-bridge-tab)
-#   3. Help       - the full keybinding reference, reachable via '3' or '?'
-#                   from either other tab. A tab rather than a transient
-#                   popup so it's consistent with the rest of the UI and
-#                   gets the full popup width (no preview split needed) —
-#                   see the header-width comment on render_sessions_tab for
-#                   why that width matters here.
+#   3. Help       - the full keybinding reference, reachable via '?' from
+#                   either other tab (not '3' — dropped as a redundant
+#                   second shortcut to the same tab, per direct request).
+#                   A tab rather than a transient popup so it's consistent
+#                   with the rest of the UI and gets the full popup width
+#                   (no preview split needed) — see the header-width
+#                   comment on render_sessions_tab for why that width
+#                   matters here.
 #
 # Designed to be launched via `tmux display-popup -E`; binds to Prefix+S.
 # All keybindings inside the popup are popup-scoped, single-letter, dense.
 #
-# Tab keys:            1 (Workspaces), 2 (Worktrees), 3 (Help)
+# Tab keys:            1 (Workspaces), 2 (Worktrees)
 # Workspaces actions:  Enter (switch, or switch+focus-pane on a pane row),
 #                     K (kill workspace / remove pane), r (rename),
 #                     z (fold/unfold), a (add pane, current workspace),
 #                     ]/[ (cycle pane, current workspace), R (refresh),
-#                     ? (help), q/Esc (quit)
+#                     ? (help), q/Esc (quit), / (search), Tab (done
+#                     searching — NOT Esc, which always quits, even mid-
+#                     search, per direct request)
 #
 # Usage: llm-dashboard [--tab workspaces|worktrees|help] [--help]
 
@@ -341,13 +345,18 @@ render_sessions_tab() {
   # `tail -1` parsing below needs no changes), then use unbind(...)/
   # rebind(...) to actually REMOVE those key bindings while searching and
   # restore them on exit. "/" unbinds them, hides+enables the query input;
-  # esc clears the query, hides the input, and rebinds them — "q" stays the
-  # one dedicated close key, so esc is free for "leave search" instead of
-  # aborting. `enter` gets its own explicit `print()+accept` (empty key
-  # line) so a plain switch/open still round-trips through the same two-line
-  # shape; it's never unbound since Enter is never a filter character. Fixes
-  # the "fuzzy search crashes the pane after the third filter keystroke"
-  # report, which was --expect's action keys firing mid-filter, not a crash.
+  # tab clears the query, hides the input, and rebinds them. NOT esc for
+  # "leave search" — tried that first, but it meant esc no longer closed
+  # the dashboard while searching, reported directly ("I'd like to keep
+  # the behavior that it always closes the dashboard as it was before").
+  # Esc is deliberately left unbound here so it falls back to fzf's own
+  # default (abort) unconditionally, in every mode — "q" remains the other
+  # close key, unchanged. `enter` gets its own explicit `print()+accept`
+  # (empty key line) so a plain switch/open still round-trips through the
+  # same two-line shape; it's never unbound since Enter is never a filter
+  # character. Fixes the "fuzzy search crashes the pane after the third
+  # filter keystroke" report, which was --expect's action keys firing
+  # mid-filter, not a crash.
   # --height=100%: the user's own shell exports FZF_DEFAULT_OPTS with
   # "--height 40%" (a sane default for ad-hoc interactive fzf use), which
   # every fzf call in THIS script silently inherits unless overridden —
@@ -377,7 +386,7 @@ render_sessions_tab() {
     --bind='z:print(z)+accept' --bind='a:print(a)+accept' \
     --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
     --bind='/:unbind(1,2,K,r,R,z,a,],[,?)+show-input+enable-search' \
-    --bind='esc:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?)' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?)' \
     --bind='q:abort' \
     --bind="start:pos(${_start_pos})" \
   ) || { echo "quit"; return 0; }
@@ -515,7 +524,7 @@ render_worktrees_tab() {
     --bind='n:print(n)+accept' --bind='g:print(g)+accept' \
     --bind='K:print(K)+accept' --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
     --bind='/:unbind(1,2,n,g,K,R,?)+show-input+enable-search' \
-    --bind='esc:clear-query+hide-input+rebind(1,2,n,g,K,R,?)' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,n,g,K,R,?)' \
     --bind='q:abort' \
   ) || { echo "quit"; return 0; }
 
@@ -820,9 +829,9 @@ render_help_tab() {
     ""
     "GLOBAL"
     " ?      open this Help tab"
-    " q      close the dashboard"
+    " q  Esc close the dashboard"
     " /      search (type to filter)"
-    " Esc    cancel search"
+    " Tab    done searching (back to keys)"
     ""
     "ROW TYPES (Workspaces tab)"
     " ▾  ▸   workspace (expanded/folded)"
