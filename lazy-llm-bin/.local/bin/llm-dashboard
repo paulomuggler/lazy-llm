@@ -27,8 +27,8 @@
 # Tab keys:            1 (Workspaces), 2 (Worktrees)
 # Workspaces actions:  Enter (switch, or switch+focus-pane on a pane row),
 #                     K (kill workspace / remove pane), r (rename),
-#                     z (fold/unfold), Ctrl-Up/Ctrl-Down (reorder row,
-#                     scoped to its own tree level), a (add pane, current
+#                     z (fold/unfold), Ctrl-Up/Ctrl-Down or k/j (reorder
+#                     row, scoped to its own tree level), a (add pane, current
 #                     workspace), ]/[ (cycle pane, current workspace),
 #                     R (refresh), ? (help), q/Esc (quit), / (search),
 #                     Tab (done searching — NOT Esc, which always quits,
@@ -491,6 +491,18 @@ render_sessions_tab() {
   # straight into @AI_PANES/@AI_TOOLS/@AI_PANE_NAMES — no separate order
   # option needed, those arrays' own element order IS the pane order).
   # Both helpers no-op (not error) at either end of their sibling list.
+  #
+  # 'k'/'j' are plain alternates for Ctrl-Up/Ctrl-Down (same
+  # --reorder-transform call, same up/down direction) — direct request:
+  # Ctrl+Arrow doesn't reach this popup cleanly over some SSH/tunneled
+  # terminals (the combo gets eaten or remapped somewhere in the chain),
+  # so a modifier-free vim-style fallback was needed. Safe to bind as plain
+  # letters for the same reason 'z'/'a'/'r'/'K'/'R'/'?' already are: this
+  # fzf instance runs with --disabled --no-input, so no key does anything
+  # unless explicitly bound, and the '/'-search unbind/rebind lists already
+  # remove every single-letter action key (this pair included) the instant
+  # '/' is pressed — 'j'/'k' remain fully typable in a search query, same
+  # as any other action letter already is.
   local selection key
   selection=$(printf '%s\n' "$lines" | fzf \
     --height=100% \
@@ -512,8 +524,10 @@ render_sessions_tab() {
     --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
     --bind="ctrl-up:transform($_dashboard_self --reorder-transform up {1})" \
     --bind="ctrl-down:transform($_dashboard_self --reorder-transform down {1})" \
-    --bind='/:unbind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down)+show-input+enable-search' \
-    --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down)' \
+    --bind="k:transform($_dashboard_self --reorder-transform up {1})" \
+    --bind="j:transform($_dashboard_self --reorder-transform down {1})" \
+    --bind='/:unbind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down,j,k)+show-input+enable-search' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down,j,k)' \
     --bind='q:abort' \
     --bind="load:pos(${_start_pos})+unbind(load)" \
   ) || { echo "quit"; return 0; }
@@ -969,6 +983,7 @@ render_help_tab() {
     "        pane row: switch + focus"
     " z      fold/unfold panes"
     " ^Up ^Dn reorder row (own level)"
+    " k  j   same, no-Ctrl alternate"
     " r      rename ws / pane label"
     " K      ws: kill · pane: remove"
     "        (current workspace only)"
@@ -1078,7 +1093,9 @@ Inside the dashboard:
   z          fold/unfold a workspace's panes (Workspaces)
   Ctrl-Up,   reorder a row among its own tree-level siblings — a workspace
   Ctrl-Down  row among workspaces, a pane row among that workspace's own
-             panes only (Workspaces)
+             panes only (Workspaces). k/j are no-Ctrl alternates for the
+             same two actions (useful over an SSH/tunneled terminal where
+             Ctrl+Arrow doesn't reach the popup cleanly).
   a          add an AI pane to the CURRENT workspace (Workspaces — the one
              this dashboard was opened from, not whatever's highlighted)
   g          launch lazygit (Worktrees)
@@ -1173,11 +1190,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reorder-transform)
       # Reload-plumbing only, not for interactive use: fzf's transform()
-      # action (bound to Ctrl-Up/Ctrl-Down in render_sessions_tab)
-      # re-invokes this script with this flag as an independent subprocess
-      # — same shape as --fold-transform (see its own comment and the
-      # Ctrl-Up/Ctrl-Down bind comment above the fzf call for the full
-      # rationale; not re-litigated here).
+      # action (bound to both Ctrl-Up/Ctrl-Down AND their no-Ctrl k/j
+      # alternates in render_sessions_tab — same handler either way, only
+      # the key differs) re-invokes this script with this flag as an
+      # independent subprocess — same shape as --fold-transform (see its
+      # own comment and the Ctrl-Up/Ctrl-Down bind comment above the fzf
+      # call for the full rationale; not re-litigated here).
       #
       # Takes a direction ("up" or "down") and a raw tree row id
       # ("ws:<name>" or "pane:<name>:<idx0>:<pane_id>", i.e. fzf's {1}):

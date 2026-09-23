@@ -261,6 +261,30 @@ else
     print_fail "@lazy_llm_ws_order is not persisted server-scoped"
 fi
 
+echo ""
+echo "Test 14: k/j are bound as no-Ctrl alternates for the same --reorder-transform actions..."
+k_bind=$(command grep -oE -- "--bind=\"k:[^\"]*\"" "$DASHBOARD")
+j_bind=$(command grep -oE -- "--bind=\"j:[^\"]*\"" "$DASHBOARD")
+assert_contains "$k_bind" "--reorder-transform up" "'k' binds to --reorder-transform up"
+assert_contains "$j_bind" "--reorder-transform down" "'j' binds to --reorder-transform down"
+
+echo ""
+echo "Test 15: k/j added to the /-search unbind/rebind key lists, same as ctrl-up/ctrl-down..."
+unbind_line=$(command grep -oE "unbind\([^)]*\)" "$DASHBOARD" | command grep 'ctrl-up' | head -1)
+rebind_line=$(command grep -oE "rebind\([^)]*\)" "$DASHBOARD" | command grep 'ctrl-up' | head -1)
+assert_contains "$unbind_line" ",j,k" "the '/' unbind list includes j and k"
+assert_contains "$rebind_line" ",j,k" "the 'tab' rebind list includes j and k"
+
+echo ""
+echo "Test 16: k/j do not collide with any other single-letter action bind..."
+other_j=$(command grep -oE -- "--bind='j:[^']*'" "$DASHBOARD")
+other_k=$(command grep -oE -- "--bind='k:[^']*'" "$DASHBOARD")
+if [ -z "$other_j" ] && [ -z "$other_k" ]; then
+    print_pass "no competing print(KEY)+accept-style bind exists for 'j' or 'k'"
+else
+    print_fail "found a competing bind for 'j' or 'k': '$other_j' '$other_k'"
+fi
+
 # ──────────────────────────────────────────────────────────────────────────
 # Summary
 # ──────────────────────────────────────────────────────────────────────────
