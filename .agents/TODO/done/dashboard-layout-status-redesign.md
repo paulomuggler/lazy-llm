@@ -518,3 +518,63 @@ blind attempt.
   verified; if a fresh "stuck on waiting" case turns up despite this,
   it needs live `tail -f`-style observation of the status file or
   temporary verbose hook logging to catch the exact event sequence.
+
+## Work Report (Round 6)
+
+**Date:** 2026-09-23_03:55
+
+Sixth round. The user gave a precise repro description for the first
+time ("cursor always lands on the first item, a workspace row, never a
+pane row — keyboard only, sort already correct") and asked directly what
+was causing both the sort and the highlight behavior. That precision is
+what cracked it — found and fixed the actual bug in one exchange, after
+three rounds of fixing real-but-not-the-actual-bug issues.
+
+### What was done
+Found and fixed the true root cause of "active-pane-on-open": **`--bind
+'start:pos(N)'` does not work.** The `start` event fires before fzf's
+list is far enough along for `pos()` to act on meaningfully; the cursor
+silently lands on row 1 regardless of N. Confirmed pixel-for-pixel: a
+minimal 5-row fzf list with `start:pos(3)` highlighted row 1 every time,
+while the identical `pos(3)` bound to a real keypress correctly
+highlighted row 3. Switched to `load:pos(N)` (fires once the initial
+data load completes) — fixed in every configuration tested, including
+the dashboard's real `--ansi --delimiter --with-nth` combination.
+Verified end-to-end against the real `dev-env` workspace with
+ANSI-aware capture (`tmux capture-pane -e`): the highlight now lands on
+the correct pane row, not the workspace row above it.
+
+Also corrected the tmux-fzf coding-standards guide, which had
+previously (wrongly) documented `start:pos(N)` as working — that wrong
+claim is very likely why this took three rounds: each round's
+verification trusted the documented claim and checked `_start_pos`'s
+computed VALUE or `pos()`'s mechanism via a real keypress, never the
+actual `start`-triggered binding rendered live with `-e` capture, which
+is the only way this specific failure is visible (a plain
+`capture-pane -p` shows a decorative gutter marker on every row that
+looks like a cursor but isn't).
+
+### Decisions made
+- Kept the existing "sort active workspace to top" behavior rather than
+  switching to a stable sort, since the user offered both but the
+  now-working pane-level highlight makes the combination (sort-to-top +
+  correct pane highlight) the better UX of the two options — flagged
+  this choice back rather than silently picking one.
+- Documented the verification method (ANSI-aware capture, or test the
+  same action via a real keypress first) directly in the coding-standards
+  guide, not just the fix — the wrong claim surviving three rounds was a
+  verification-methodology gap as much as a code bug.
+
+### Commits
+- `ecd50f8` — dashboard: the real active-pane-on-open fix — load:pos, not start:pos
+- (dev-env repo) `7cf5c12` — coding-standards/tmux-fzf: correct the start:pos(N) claim
+
+### Follow-up
+- Flagged directly to the user, unresolved: the `diag` tmux session
+  disappeared between two live checks this round, with no command this
+  session ran that targeted it and no matching entry in the tmux server's
+  (limited-depth) message log. Cannot confirm cause — asked the user to
+  confirm whether they closed it themselves.
+- Waiting/idle and active-pane-on-open are both now considered resolved
+  pending the user's next confirmation; no further action planned unless
+  they report otherwise.
