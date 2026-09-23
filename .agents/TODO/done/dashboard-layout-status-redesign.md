@@ -423,3 +423,98 @@ one investigated but not conclusively resolved.
   either live `tail -f`-style observation of the status file the moment
   it happens, or temporary verbose hook logging to catch the exact
   Notification/Stop event sequence — not yet attempted.
+
+## Work Report (Round 5)
+
+**Date:** 2026-09-23_03:45
+
+Fifth round, direct pasted feedback. Two clean fixes, one real root-cause
+find on the still-open waiting/idle item, and active-pane-on-open remains
+unresolved from the user's side despite passing every test this session
+could construct — handed back with a direct question rather than a fifth
+blind attempt.
+
+### What was done
+1. **Esc no longer closed the dashboard on Workspaces/Worktrees** —
+   direct regression from the search-mode feature: esc had been
+   repurposed to mean "leave search," so it stopped aborting the
+   dashboard while searching. Reported directly with an explicit
+   requirement: esc must always close, unconditionally. Fixed by
+   leaving esc unbound entirely (falls back to fzf's own default abort)
+   and moving "leave search mode" to Tab instead — verified live in both
+   modes (browse and mid-search).
+2. **Waiting/idle — real root cause found this time.** Investigated
+   with fresh live evidence rather than re-asserting the earlier fix:
+   checked all 5 real status files (none showed a fresh false "waiting"
+   at inspection time) and instead found the bug by testing the
+   content-scrape fallback directly against real pane content.
+   `waiting_pat`'s numbered-choice pattern (matches Claude Code's actual
+   permission-prompt UI) also matches an ordinary markdown numbered list
+   in Claude's own finished response text — confirmed against a real
+   pane whose completed response ended in a 3-item list, genuinely idle,
+   reported as "waiting." This bites once the hook-written idle status
+   ages past its 30s freshness window and falls through to content-scrape.
+   Fixed by scoping that specific check to the last 10 lines of the
+   capture (tuned empirically: 15 still caught 2 of 3 list lines, 12 and
+   10 caught none) — a real prompt is always near the bottom of the
+   pane, old response content never is. Added a regression fixture.
+3. **Active-pane-on-open — reported as still not working despite the
+   Round-4 fix.** Extensive re-investigation this round: tested the
+   hypothesis that opening the popup itself resets the tracked state
+   (disproved, twice, with a properly-attached test client); confirmed
+   the global hook is still correctly registered on the live server;
+   confirmed mouse-click and prefix-arrow pane navigation both route
+   through the same `select-pane` primitive the hook is bound to;
+   traced the dashboard's own internal `_start_pos` computation directly
+   against the REAL `dev-env` workspace's live state (4 AI panes,
+   `AI_PANE_IDX`/`pane_active`/the traced row position all agreeing) and
+   found it entirely self-consistent. Could not find or reproduce a
+   mechanism-level failure this round. Not shipping a fifth blind
+   change — handed back to the user with a direct question about exact
+   repro steps, since further guessing risks another failed round.
+4. **Commit message repair** (`e9f2d00` → `87e7962`): the original had
+   a shell-quoting bug (backtick-wrapped inline-code spans inside a
+   double-quoted `-m` string were executed as command substitutions,
+   silently dropping several technical terms). Fixed via a non-
+   interactive reset + cherry-pick replay (`git rebase -i` isn't
+   available in this environment) — reset to the parent commit,
+   re-applied the change with a corrected message from a file, replayed
+   the 3 commits that had landed on top. Verified the replayed tree is
+   byte-identical to the original (`git diff <backup> HEAD --stat` empty)
+   before deleting the safety backup branch. Also hit and fixed the SAME
+   class of bug a second time mid-round (an apostrophe in "Claude's own"
+   broke a single-quoted `-m` string) — adopted writing every commit
+   message to a temp file and using `git commit -F <file>` for the rest
+   of this round and going forward, which sidesteps shell quoting
+   entirely.
+
+### Decisions made
+- Did not attempt a fifth active-pane-on-open fix without new
+  information — three consecutive attempts (background/foreground
+  variants, `pane-focus-in` vs `after-select-pane`, the 3-pane focus
+  problem) all passed direct testing yet the user still reports it
+  broken. Continuing to guess without a concrete repro (exact pane/
+  window state, what was pressed, ideally a screenshot) has a low hit
+  rate and costs real time; asking directly is the better use of both.
+- Adopted file-based commit messages (`git commit -F <file>`) as a
+  standing practice after two separate shell-quoting corruptions in one
+  session — recorded here rather than only in the fix commit, since
+  it's a process change that should stick for future work in this
+  repo, not just this task.
+
+### Commits
+- `87e7962` — lazy-llm: real fix for active-pane-on-open — track AI-pane focus via a hook
+  (message-corrected replacement for the original `e9f2d00`)
+- `0a8ef26` — lib: fix waiting_pat false-matching Claude's own numbered-list output
+- `61fb76c` — dashboard: esc always closes the dashboard, even mid-search
+
+### Follow-up
+- **Active-pane-on-open**: needs the user's exact repro steps (which
+  workspace, what was focused/pressed immediately before opening the
+  dashboard, ideally a screenshot of what appeared vs. what was
+  expected) to make further progress — this session's own testing
+  cannot currently reproduce a failure.
+- **Waiting/idle**: the numbered-list false positive is fixed and
+  verified; if a fresh "stuck on waiting" case turns up despite this,
+  it needs live `tail -f`-style observation of the status file or
+  temporary verbose hook logging to catch the exact event sequence.
