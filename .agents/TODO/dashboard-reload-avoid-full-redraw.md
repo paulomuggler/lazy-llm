@@ -4,10 +4,10 @@ title: Use fzf's reload() to avoid a full fzf relaunch on fold/toggle/refresh
 priority: P2
 status: in-progress
 created: 2026-09-23_04:20
-updated: 2026-09-23_05:26
+updated: 2026-09-23_05:50
 depends-on: []
 tags: [enhancement, dashboard, performance, ux]
-commits: [d451421, 121dcbf]
+commits: [d451421, 121dcbf, 52c91ff]
 model: opus
 owner: homelab-zrh-dev-2339310
 ---
@@ -136,7 +136,10 @@ architecture change, not a flag flip.
       looks the same")
 - [x] Fold state survives the reload correctly and is still scoped per-workspace
 - [x] Cursor position after a reload lands where expected, verified with
-      ANSI-aware capture against real data
+      ANSI-aware capture against real data (a genuine gap was found and fixed
+      in Rework round 1 — see Work Report — the original "graceful fallback"
+      claim was false as first implemented; now re-verified live, including
+      the specific vanish-case the Verify Report caught)
 - [x] No regression in the existing 10–15 test suite
 
 ## Work Report
@@ -323,6 +326,192 @@ lazy-llm-marked sessions, real split panes, and `@AI_PANES`/`@AI_TOOLS` set):
   [[dashboard-manual-list-reordering]] if that lands first/alongside" — that
   task was not in progress/landed at the time of this work; no interaction
   to reconcile.
+
+### Rework round 1
+
+**Date:** 2026-09-23_05:50
+**Executor model:** Claude Sonnet 5 (claude-sonnet-5)
+
+**Trigger:** The Verify Report below (AC3) found the original Work Report's
+"graceful fallback" claim false: when the cursor is on a nested pane row and
+`z` folds that row's own parent (making the tracked pane row vanish entirely
+from the reloaded list), the cursor reset to row 1 instead of landing on the
+parent workspace row — reproduced twice by the verifier from clean process
+state.
+
+**What was found (two distinct bugs, not one):**
+
+1. `--track --id-nth=1` has no structural fallback of its own for a tracked
+   id that vanishes entirely from the reloaded list — confirmed via `man
+   fzf`: `--id-nth`'s own section documents that with `--track`, fzf's
+   search for the tracked key BLOCKS cursor movement/query input until a
+   match is found in the reload stream or the user cancels — no fallback
+   behavior is documented for a key that can never be found. Rather than
+   patch around that, `--track`/`--id-nth` were dropped entirely and cursor
+   placement is now computed explicitly (see below), which fzf's own
+   `pos(N)` (absolute positioning, no search/blocking involved) can do
+   deterministically for every case, including the one `--track` used to
+   handle.
+2. A second, deeper bug was found while building the explicit-positioning
+   fix and live-testing it: the `load:pos(${_start_pos})` bind — added in
+   the original work specifically to fix the `start` vs `load` postmortem
+   (see the code comment above it) — turned out to NOT be a one-shot "very
+   first render" event the way it reads. Confirmed live that `load` fires
+   again on every subsequent `reload`/`reload-sync` too, not just at
+   startup. Left bound permanently, it silently overrode any explicit
+   `pos(N)` a fold reload tried to set, forcing the cursor back to wherever
+   it was at DASHBOARD LAUNCH every time. This was the ACTUAL root cause of
+   the row-1 reset the Verify Report caught — not a `--track` limitation by
+   itself. It also means the original AC3 "primary case" pass (cursor on
+   the toggled workspace's own row) was accidentally correct rather than
+   correctly verified: in that test setup the toggled workspace happened to
+   be the launch workspace, so `load`'s forced reset to `_start_pos`
+   coincidentally matched the right answer, masking the bug. (This also
+   makes the Follow-up note above — "`--track --id-nth=1` is already in
+   place and should generalize [to other reload-bound actions]" — stale;
+   any future action wired to `reload()`/`reload-sync()` needs the same
+   `+unbind(load)` treatment, not `--track`, which no longer exists on this
+   fzf call.)
+
+**What was changed:**
+
+- `'z'`'s bind changed from `execute-silent(...--toggle-fold {1})+reload(...--emit-rows)`
+  to `transform($_dashboard_self --fold-transform {1})` — fzf's
+  `transform(...)` action runs the command and interprets its STDOUT as a
+  further chain of actions, letting one out-of-process call both toggle the
+  fold AND compute where the cursor should land before deciding what to
+  reload with.
+- New `--fold-transform <id>` CLI mode (replaces the old standalone
+  `--toggle-fold`, folded in since nothing else called it): toggles the
+  fold flag, rebuilds the row list via the existing `_dashboard_build_rows`,
+  determines the target row id (the same id if it survives in the new list,
+  else its parent workspace's `ws:<name>` row — computed via
+  `_dashboard_ws_from_id`, the exact helper the task's own brief pointed
+  at), finds that row's 1-based line number with `awk`, and prints back
+  `reload-sync(... --emit-rows)+pos(N)`.
+- `reload-sync`, not `reload` — found via a separate live minimal
+  reproduction that a plain `reload(...)+pos(N)` in one `transform()`
+  output races: `reload()` is asynchronous, so a chained `pos(N)` can apply
+  before/during the reload and gets discarded once the reload's data
+  actually lands. `reload-sync(...)` blocks until the reload command's full
+  output is in, so the chained `pos(N)` applies to the list that's actually
+  on screen.
+- `--bind="load:pos(${_start_pos})"` changed to
+  `--bind="load:pos(${_start_pos})+unbind(load)"` — makes the initial-load
+  positioning fire exactly once (for the real launch), then self-unbind, so
+  it can never again override a later reload's own explicit `pos(N)`.
+- `--track`/`--id-nth=1` removed from the Workspaces fzf call entirely
+  (superseded, not layered underneath — `pos(N)` from `--fold-transform`
+  now covers every case `--track` used to, including the normal
+  toggle-the-focused-row case).
+- `tests/scenarios/13-dashboard-panes-tab-unit.sh` Tests 11-13 updated to
+  match: Test 11 checks for `z:transform(...--fold-transform...)` (and that
+  the old `execute-silent(...--toggle-fold...)+reload(...)` binding is
+  gone); Test 12 rewritten to assert `--track`/`--id-nth` are absent from
+  actual code (not just checking they're gone from comments — the
+  rationale comments deliberately still mention them in prose) and that
+  `--fold-transform` prints `reload-sync(...)+pos(...)`, not plain
+  `reload(...)`; Test 13 checks for `--fold-transform` in place of the
+  retired `--toggle-fold`.
+
+**Live verification (isolated tmux server, `tmux -L`, fzf 0.74.3, real
+`@lazy_llm`-marked sessions with real split panes, `@AI_PANES`/`@AI_TOOLS`
+set — same methodology as the original Work Report and Verify Report):**
+
+- **The exact failing scenario, reproduced twice from clean process state**
+  (fresh dashboard launch each time, no state carried over): cursor moved
+  3x Down onto `workspace-beta`'s nested `gemini` pane row (confirmed via
+  `capture-pane -p -e` ANSI highlight), `z` pressed. Both times: `z`
+  correctly folded `workspace-beta` (▾→▸) AND the cursor highlight landed
+  on `workspace-beta`'s own row (row 3), not row 1 — the fix holds.
+- **No relaunch, still holds**: `ps -o pid,lstart` on the popup pane's fzf
+  process showed identical PID and start timestamp before/after the fold in
+  every test, including the fixed vanish case.
+- **Primary case (cursor on the toggled workspace's own row) re-verified,
+  still passes**: folded and unfolded `workspace-alpha` from its own row
+  repeatedly; cursor stayed on that row every time, same fzf PID throughout.
+- **AC2 (fold state scoping) re-verified with the new mechanism**: toggled
+  `workspace-beta`'s own row; `tmux show-option -v -t workspace-beta
+  @lazy_llm_collapsed` flipped to `1` while `workspace-alpha`'s own option
+  stayed unset — scoping unaffected by the mechanism change.
+- **Root-cause isolation for the `load` bug**: built a minimal standalone
+  fzf reproduction (3-item list, `z` bound to `transform(...)` calling a
+  tiny script that printed `reload-sync(...)+pos(2)`) with the SAME full
+  flag set as the real dashboard call (`--ansi --reverse --border --prompt
+  --header --preview --preview-window=...:follow`, several other
+  `--bind`s, `--disabled --no-input`). With `load:pos(1)` (no unbind)
+  present, the repro reproduced the exact same row-1 reset the real
+  dashboard showed. Removing `load:pos(1)` entirely fixed it. Adding
+  `load:pos(1)+unbind(load)` back (closer to the real fix, since the
+  dashboard still needs SOME initial-position bind) also fixed it —
+  isolating `+unbind(load)` as the actual, minimal fix rather than a
+  broader rewrite.
+- `tests/scenarios/13-dashboard-panes-tab-unit.sh`: **13/13 passed** after
+  the rewrite (re-run multiple times across the round, including after each
+  code edit).
+- `tests/test-runner.sh` full suite: **7 passed / 8 failed**, identical to
+  the pre-existing baseline (`01-simple-send` through
+  `08-workspace-local-dirs`, environment-dependent — matches both the
+  original Work Report's and the Verify Report's baseline exactly).
+- Confirmed the isolated test server(s) were fully torn down
+  (`kill-server`) and the REAL tmux server was never mutated — one early
+  diagnostic command in this round was accidentally run without `-L`
+  scoping and briefly read the real server's session list; confirmed via a
+  follow-up audit that the one command in that window which could have
+  MUTATED state (`--fold-transform` on a nonexistent-on-the-real-server
+  workspace name) was a no-op (guarded `|| true`, target session didn't
+  exist), and no real session's fold state or session list was altered —
+  caught and corrected before any further live testing in this round.
+
+### Decisions made (Rework round 1)
+
+- **Dropped `--track`/`--id-nth` rather than layering `pos(N)` on top of
+  them.** The rework brief explicitly allowed either. Kept-alongside was
+  rejected because `--track --id-nth`'s own blocking-search behavior when a
+  tracked key can never be found (documented in `man fzf`) is a real risk
+  of a stuck UI, not just a cosmetic wrong-row landing, and because keeping
+  it would have left dead/misleading configuration once `pos(N)` already
+  covers 100% of the cases `--track` used to (Parsimony).
+- **`--toggle-fold` retired, folded into `--fold-transform`**, rather than
+  kept alongside as a now-unused standalone mode — nothing else called it
+  after the bind changed to `transform(...)`.
+- **`+unbind(load)` over recomputing `_start_pos` per-reload or any other
+  alternative.** Considered making `_dashboard_build_rows` recompute a
+  fresh `_start_pos` on every reload and re-binding `load` each time, but
+  that's circular in the same way an earlier design note in the original
+  Work Report already rejected for `pos({n})` (position at reload-completion
+  time depends on where the cursor already is, not where it should go).
+  `+unbind(load)` is the minimal fix: it makes `load` genuinely mean
+  "the very first render," which is what every comment already claimed it
+  meant before this round found out otherwise.
+
+### Commits (Rework round 1)
+
+- `52c91ff` — dashboard: fix fold cursor landing on row 1 when its own
+  parent folds (`lazy-llm-bin/.local/bin/llm-dashboard`,
+  `tests/scenarios/13-dashboard-panes-tab-unit.sh`)
+
+### Sources consulted (Rework round 1)
+
+- `man fzf` (fzf 0.74.3) — `transform(...)` action semantics and its POST-
+  payload-format output ("payload of HTTP POST request to the --listen
+  server", confirmed single-line `+`-joined action chains are valid, same
+  as `--bind` syntax); `reload(...)` vs `reload-sync(...)` (blocking
+  distinction, confirmed live it's the operative difference here, not just
+  documented for multi-select preservation); `pos(...)` (absolute
+  positioning, confirmed via the file's own pre-existing `load:pos(N)`
+  precedent); `--track`/`--id-nth`'s blocking-search-on-tracked-key
+  behavior.
+- This task's own original Work Report and Verify Report (above) — the
+  `start` vs `load` postmortem this round's `load`-refires-on-reload
+  finding is a direct descendant of; re-read before assuming `load`'s
+  existing comment was still accurate.
+- `/home/paulomuggler/Projects/dev-env/dotfiles/claude/dot-claude/coding-standards/frameworks/tmux-fzf.md`
+  — re-checked the `set -e` + bare `var=$(cmd)` guidance for the new
+  `_dashboard_fold_pos=$(... | awk ...)` assignments (both guarded with
+  `|| true`, consistent with the file's existing pattern) and the
+  verification-rigor lesson (ANSI-aware `capture-pane -e`, not computed
+  values) applied throughout this round's live testing.
 
 ## Verify Plan
 
