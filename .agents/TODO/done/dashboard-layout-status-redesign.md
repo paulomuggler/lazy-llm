@@ -578,3 +578,49 @@ looks like a cursor but isn't).
 - Waiting/idle and active-pane-on-open are both now considered resolved
   pending the user's next confirmation; no further action planned unless
   they report otherwise.
+
+## Work Report (Round 7)
+
+**Date:** 2026-09-23_04:05
+
+Confirmed: the `diag` session disappearance was the user's own cleanup,
+unrelated to this session's work. Also confirmed via `git log` that the
+user has been committing to this same submodule directly and concurrently
+(`47cfa1e`, a pane rename via their own live usage) — useful context for
+why live state (e.g. `@AI_PANE_IDX`) shifted between checks in earlier
+rounds; not a bug, just concurrent real usage.
+
+Direct correction from the user on Round 6's own judgment call: I kept
+"sort active workspace to top" on my own reasoning after `load:pos(N)`
+started working, deciding that combination was "the better UX." The user
+pushed back — their actual point, which they'd already stated when
+offering the choice, is that a STABLE list order (same position every
+time) is what makes the tree glanceable and short-term learnable across
+repeat visits; re-sorting on every open defeats the point of a working
+per-pane highlight, which should remove the need to re-scan, not just
+relocate the target of the scan.
+
+### What was done
+Removed the awk-based "put launch workspace first" reorder entirely.
+The tree now uses `lazy_llm_gather_sessions`'s natural order (tmux
+`list-sessions`'s own order — stable, doesn't shift with activity).
+`load:pos(N)` still jumps the cursor to the active pane wherever it
+falls in that stable list. Verified live: launched the dashboard from
+two different real workspaces, identical row order both times, cursor
+correctly on each workspace's own pane row (not row 1, not forced to
+the top) in both cases.
+
+### Decisions made
+- Did not re-litigate or hedge on the correction — the user's reasoning
+  (cognitive load, glanceability, short-term learnability of a fixed
+  layout) is sound and was already stated once; the right move was to
+  just implement what was asked, not defend the unilateral call.
+
+### Commits
+- `469f987` — dashboard: stable list order instead of sort-active-workspace-to-top
+
+### Follow-up
+None — this closes out the active-pane-on-open thread (root cause fixed
+Round 6, ordering behavior corrected Round 7) and the diag-session
+question (confirmed user-initiated). Waiting/idle remains verified-fixed
+pending no further reports.
