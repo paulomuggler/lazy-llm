@@ -372,12 +372,12 @@ render_sessions_tab() {
     --preview-window="right:55%:follow" \
     --disabled --no-input \
     --bind='enter:print()+accept' \
-    --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
+    --bind='1:print(1)+accept' --bind='2:print(2)+accept' \
     --bind='K:print(K)+accept' --bind='r:print(r)+accept' --bind='R:print(R)+accept' \
     --bind='z:print(z)+accept' --bind='a:print(a)+accept' \
     --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
-    --bind='/:unbind(1,2,3,K,r,R,z,a,],[,?)+show-input+enable-search' \
-    --bind='esc:clear-query+hide-input+rebind(1,2,3,K,r,R,z,a,],[,?)' \
+    --bind='/:unbind(1,2,K,r,R,z,a,],[,?)+show-input+enable-search' \
+    --bind='esc:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?)' \
     --bind='q:abort' \
     --bind="start:pos(${_start_pos})" \
   ) || { echo "quit"; return 0; }
@@ -430,7 +430,6 @@ render_sessions_tab() {
     a)     echo "action:pane-add" ;;
     "]")   echo "action:pane-next" ;;
     "[")   echo "action:pane-prev" ;;
-    3)     echo "tab:help" ;;
     "?")   echo "tab:help" ;;
     *)
       if [[ -z "$chosen_ws" ]]; then
@@ -512,11 +511,11 @@ render_worktrees_tab() {
     --preview-window="right:55%:follow" \
     --disabled --no-input \
     --bind='enter:print()+accept' \
-    --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
+    --bind='1:print(1)+accept' --bind='2:print(2)+accept' \
     --bind='n:print(n)+accept' --bind='g:print(g)+accept' \
     --bind='K:print(K)+accept' --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
-    --bind='/:unbind(1,2,3,n,g,K,R,?)+show-input+enable-search' \
-    --bind='esc:clear-query+hide-input+rebind(1,2,3,n,g,K,R,?)' \
+    --bind='/:unbind(1,2,n,g,K,R,?)+show-input+enable-search' \
+    --bind='esc:clear-query+hide-input+rebind(1,2,n,g,K,R,?)' \
     --bind='q:abort' \
   ) || { echo "quit"; return 0; }
 
@@ -534,7 +533,6 @@ render_worktrees_tab() {
     g)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-lazygit:$chosen_path" ;;
     K)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-cleanup:$chosen_path" ;;
     R)   echo "action:refresh" ;;
-    3)   echo "tab:help" ;;
     "?") echo "tab:help" ;;
     *)
       [[ -z "$chosen_path" ]] && echo "quit" || echo "action:worktree-open:$chosen_path"

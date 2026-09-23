@@ -54,21 +54,21 @@ else
 fi
 
 echo ""
-echo "Test 4: '3' is bound (print+accept) and in both tabs' unbind/rebind sets..."
-# --expect is retired in favor of per-key print(KEY)+accept --bind entries
-# (--expect's key interception can't be gated by --disabled/--no-input, so
-# it broke the modal search feature — see the comment above the Workspaces
-# tab's fzf call in llm-dashboard). '3' must still have its own bind, and be
-# in each tab's unbind(...)/rebind(...) key list (tab-specific — that's what
-# distinguishes them, since the print(3)+accept bind itself is identical
-# text in both tabs), or tab-switching would silently stay dead while
-# search mode is active.
-bind3_count=$(command grep -coE -- "--bind='3:print\(3\)\+accept'" "$DASHBOARD")
-assert_equals "2" "$bind3_count" "3:print(3)+accept bound in both tab fzf calls"
-ws_unbind=$(command grep -oE -- "unbind\(1,2,3,K,r,R,z,a,\],\[,\?\)" "$DASHBOARD")
-assert_contains "$ws_unbind" "1,2,3" "Workspaces tab's unbind(...) set includes 3"
-wt_unbind=$(command grep -oE -- "unbind\(1,2,3,n,g,K,R,\?\)" "$DASHBOARD")
-assert_contains "$wt_unbind" "1,2,3" "Worktrees tab's unbind(...) set includes 3"
+echo "Test 4: '3' is NOT bound anywhere — '?' is the only help shortcut..."
+# '3' used to be a redundant second shortcut to the Help tab, alongside '?'.
+# Dropping it from the title bar's displayed hint (a prior round) but
+# leaving the KEY still bound was reported directly as a bug ('3' still
+# opened the help pane despite the hint being gone) — the fix has to remove
+# the binding itself, not just its display text, or a user who typed '3'
+# expecting it to filter/do nothing gets silently yanked into another tab.
+bind3_count=$(command grep -coE -- "--bind='3:print\(3\)\+accept'" "$DASHBOARD") || bind3_count=0
+assert_equals "0" "$bind3_count" "no tab fzf call binds 3 to an action"
+dispatch3_count=$(command grep -cE '^\s*3\)\s+echo "tab:help"' "$DASHBOARD") || dispatch3_count=0
+assert_equals "0" "$dispatch3_count" "no tab dispatch case routes key 3 to tab:help"
+ws_unbind=$(command grep -oE -- "unbind\(1,2,K,r,R,z,a,\],\[,\?\)" "$DASHBOARD")
+assert_contains "$ws_unbind" "1,2,K" "Workspaces tab's unbind(...) set excludes 3"
+wt_unbind=$(command grep -oE -- "unbind\(1,2,n,g,K,R,\?\)" "$DASHBOARD")
+assert_contains "$wt_unbind" "1,2,n" "Worktrees tab's unbind(...) set excludes 3"
 
 # ──────────────────────────────────────────────────────────────────────────
 # 3. Main loop dispatches the help tab; --tab help is a valid CLI value
