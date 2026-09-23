@@ -357,3 +357,69 @@ diagnose against, below) plus 7 new items.
 ### Follow-up
 None outstanding from this round — every item had enough evidence
 (screenshot or live measurement) to root-cause and fix directly.
+
+## Work Report (Round 4)
+
+**Date:** 2026-09-23_03:10
+
+Fourth round, direct pasted feedback (no screenshot this time). Two items;
+one investigated but not conclusively resolved.
+
+### What was done
+1. **'3' still opened Help** — Round 3 only removed the title bar's
+   displayed "3:help" hint text, not the underlying binding. Removed
+   `--bind='3:print(3)+accept'`, '3' from both tabs' unbind/rebind key
+   lists, and the `3) echo "tab:help"` dispatch case, for both Workspaces
+   and Worktrees. Verified live: '3' now a no-op, '?' still works.
+2. **Active-pane-on-open — real root cause found, third attempt.** Direct
+   testing (not assumption) found: a workspace has THREE panes (AI,
+   editor, prompt); tmux's `#{pane_active}` only tracks the single most-
+   recent one, so the moment focus moves to the editor/prompt pane (a lot
+   of real usage time, per this project's own documented workflow),
+   `#{pane_active}` no longer points at any AI pane and the Round-3 fix
+   had no fallback. New `llm-pane-focus-track` + a global tmux hook now
+   keep `@AI_PANE_IDX` pointing at the last AI pane given real focus,
+   persisting through later focus changes. Two dead ends hit and fixed en
+   route (both confirmed by direct testing, not assumed): the tmux manual
+   documents a `pane-focus-in` hook that doesn't actually exist in tmux
+   3.7c (`set-hook -g pane-focus-in` exits 0 and silently never fires) —
+   switched to `after-select-pane`, which does fire; and `run-shell -b`
+   (backgrounded) had a real race that sometimes dropped an update —
+   removed it, the script's cheap enough for the foreground.
+3. **Waiting-vs-idle glyph question — investigated, not conclusively
+   resolved.** The Round-3 `idle_prompt`->`waiting` mapping bug fix
+   (dev-env commit `cf2e807`, landed 01:59:58) predates this report
+   (02:50:04) by ~50 minutes; confirmed Claude Code hooks reload live
+   (file-watcher, no session-restart needed) so staleness isn't the
+   explanation. Checked every live status file at report time: none
+   showed a fresh (<30s) "waiting" entry — all either correctly idle or
+   correctly stale-and-falling-through to the content-scrape path. Could
+   not catch a live repro to diagnose further this round.
+
+### Decisions made
+- Answered the "what's making this difficult" question directly rather
+  than just re-attempting silently a fourth time: tmux's own
+  focus-tracking primitives (`#{pane_active}`, and the documented-but-
+  nonexistent `pane-focus-in`) don't match this project's actual 3-pane-
+  per-workspace shape, which is why two rounds of "obviously correct"
+  fixes each failed for a different, non-obvious reason. Told the user
+  plainly rather than let a third silent attempt stand un-scrutinized.
+- Caught and disclosed my own test-methodology error rather than let an
+  incorrect "still broken" conclusion stand: an earlier verification
+  pass this round wrongly concluded the fix hadn't worked, because the
+  disposable test session was missing the `@lazy_llm` marker option and
+  so never appeared in the gathered workspace list at all — a test setup
+  bug, not a real one. Corrected and re-verified before reporting back.
+
+### Commits
+- `c8335f0` — dashboard: remove '3' as a functional help-tab shortcut, not just its hint
+- `e9f2d00` — lazy-llm: real fix for active-pane-on-open — track AI-pane focus via a hook
+  (commit message partially corrupted by an unescaped-backtick shell
+  substitution bug on my end — flagged to the user directly rather than
+  amended without being asked, per standing commit discipline)
+
+### Follow-up
+- Waiting-vs-idle: if the user hits a fresh repro, the next step is
+  either live `tail -f`-style observation of the status file the moment
+  it happens, or temporary verbose hook logging to catch the exact
+  Notification/Stop event sequence — not yet attempted.
