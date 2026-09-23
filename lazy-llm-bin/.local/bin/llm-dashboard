@@ -164,7 +164,7 @@ render_sessions_tab() {
   local data
   data=$(lazy_llm_gather_sessions)
 
-  # Put the launching workspace first, so it (and, via --bind start:pos below,
+  # Put the launching workspace first, so it (and, via --bind load:pos below,
   # its active pane) is what's highlighted the moment the dashboard opens —
   # not whatever happened to sort first alphabetically/by tmux's own order.
   if [[ -n "$launch_ws" && -n "$data" ]]; then
@@ -388,8 +388,23 @@ render_sessions_tab() {
     --bind='/:unbind(1,2,K,r,R,z,a,],[,?)+show-input+enable-search' \
     --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?)' \
     --bind='q:abort' \
-    --bind="start:pos(${_start_pos})" \
+    --bind="load:pos(${_start_pos})" \
   ) || { echo "quit"; return 0; }
+  # `load`, not `start` — this is the actual bug behind "cursor always
+  # lands on the first (workspace) row, never the active pane," reported
+  # across multiple rounds despite every UPSTREAM computation (_start_pos,
+  # the active-pane heuristic) checking out correct every time. Confirmed
+  # directly, pixel-for-pixel: capture-pane -e against a minimal
+  # reproduction showed pos(3) correctly highlighting row 3 when bound to
+  # a real keypress, but silently landing on row 1 when bound to the
+  # `start` event — `start` fires before fzf's list is far enough along
+  # for pos() to act on meaningfully; `load` (fires once the initial data
+  # load completes) is the correct event for an initial cursor position.
+  # This was never caught earlier because every previous verification
+  # pass checked _start_pos's VALUE (via debug prints) or pos()'s
+  # mechanism in isolation (triggered by a real key) — never the actual
+  # `start:pos(N)` binding rendered live with -e capture, which is the
+  # only way this specific failure shows up.
 
   key=$(echo "$selection" | head -1)
   local chosen_line chosen_id
