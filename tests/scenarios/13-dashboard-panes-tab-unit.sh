@@ -14,6 +14,7 @@ REPO_ROOT="$TESTS_DIR/.."
 DASHBOARD="$REPO_ROOT/lazy-llm-bin/.local/bin/llm-dashboard"
 LLM_PANES="$REPO_ROOT/lazy-llm-bin/.local/bin/llm-panes"
 LAZY_LLM="$REPO_ROOT/lazy-llm-bin/.local/bin/lazy-llm"
+LIB="$REPO_ROOT/llm-send-bin/.local/bin/lazy-llm-lib.sh"
 
 # ──────────────────────────────────────────────────────────────────────────
 # 1. llm-panes is now a thin alias for --tab workspaces (panes live there now)
@@ -101,7 +102,11 @@ fi
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
 echo "Test 7: dispatch_action has tree action verbs..."
-for verb in switch-pane toggle pane-add pane-remove pane-remove-unsupported pane-next pane-prev; do
+# 'toggle' is deliberately NOT in this list — fold/unfold no longer
+# round-trips through dispatch_action at all (see Test 10-14 below,
+# dashboard-reload-avoid-full-redraw): 'z' is bound directly to fzf's
+# execute-silent()+reload(), so action:toggle is dead and was removed.
+for verb in switch-pane pane-add pane-remove pane-remove-unsupported pane-next pane-prev; do
     if command grep -q "action:$verb" "$DASHBOARD"; then
         print_pass "dispatch handles action:$verb"
     else
@@ -119,7 +124,6 @@ echo ""
 echo "Test 8: main loop allowlist includes the tree's action verbs..."
 loop_arm=$(command grep -E 'action:switch:\*\|action:switch-pane' "$DASHBOARD")
 assert_contains "$loop_arm" "switch-pane:" "loop arm includes switch-pane"
-assert_contains "$loop_arm" "toggle:" "loop arm includes toggle"
 assert_contains "$loop_arm" "pane-add" "loop arm includes pane-add"
 assert_contains "$loop_arm" "pane-remove:" "loop arm includes pane-remove"
 assert_contains "$loop_arm" "pane-remove-unsupported" "loop arm includes pane-remove-unsupported"
@@ -145,20 +149,75 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
-# 7. Fold/unfold state: declared once at script scope, toggled by dispatch_action
-#    (render_sessions_tab runs in a subshell and must only read it)
+# 7. Fold/unfold (dashboard-reload-avoid-full-redraw): 'z' no longer exits
+#    and relaunches fzf. State moved from an in-process bash array to a
+#    tmux option (a reload() subprocess has no access to this script's
+#    memory), and 'z' is bound directly to execute-silent()+reload() so the
+#    running fzf process is reused instead of restarted.
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
-echo "Test 10: fold state (_collapsed) declared once, mutated only in dispatch_action..."
+echo "Test 10: fold state externalized to a tmux option (not an in-process array)..."
 if command grep -q 'declare -A _collapsed' "$DASHBOARD"; then
-    print_pass "_collapsed associative array declared"
+    print_fail "_collapsed associative array still declared — a reload() subprocess can't see in-process bash state, so fold state must live outside the process"
 else
-    print_fail "_collapsed associative array not found"
+    print_pass "no in-process _collapsed array"
 fi
-if command grep -q '_collapsed\[\$name\]=1' "$DASHBOARD"; then
-    print_pass "toggle action sets _collapsed"
+if command grep -q 'lazy_llm_read_collapsed' "$LIB" && command grep -q 'lazy_llm_toggle_collapsed' "$LIB"; then
+    print_pass "lazy-llm-lib.sh provides lazy_llm_read_collapsed/lazy_llm_toggle_collapsed"
 else
-    print_fail "toggle action does not set _collapsed"
+    print_fail "fold-state read/toggle helpers not found in lazy-llm-lib.sh"
+fi
+if command grep -q '@lazy_llm_collapsed' "$LIB"; then
+    print_pass "fold state stored as @lazy_llm_collapsed (session-scoped, parallel to @lazy_llm)"
+else
+    print_fail "@lazy_llm_collapsed tmux option not found in lazy-llm-lib.sh"
+fi
+
+echo ""
+echo "Test 11: 'z' is bound to execute-silent+reload, not print+accept..."
+if command grep -qE "z:execute-silent\([^)]*--toggle-fold[^)]*\)\+reload\([^)]*--emit-rows" "$DASHBOARD"; then
+    print_pass "'z' binds execute-silent(...--toggle-fold...)+reload(...--emit-rows...) — never exits fzf"
+else
+    print_fail "'z' is not wired to execute-silent(...)+reload(...)"
+fi
+if command grep -q "bind='z:print(z)+accept'" "$DASHBOARD"; then
+    print_fail "old 'z' print(z)+accept binding (exit+relaunch) still present"
+else
+    print_pass "old 'z' print+accept binding removed"
+fi
+if command grep -qE '^\s*z\)\s' "$DASHBOARD"; then
+    print_fail "dead 'z' case arm still present in the key-dispatch case (z never reaches accept/selection now)"
+else
+    print_pass "dead 'z' case arm removed from key dispatch"
+fi
+
+echo ""
+echo "Test 12: --track --id-nth=1 on the Workspaces fzf call (keeps the cursor on the same row across reload, by hidden id, despite --with-nth changing the displayed fold glyph)..."
+if command grep -q -- '--track' "$DASHBOARD" && command grep -q -- '--id-nth=1' "$DASHBOARD"; then
+    print_pass "--track --id-nth=1 present"
+else
+    print_fail "--track --id-nth=1 not found — a reload() would reset the cursor to the top"
+fi
+
+echo ""
+echo "Test 13: --emit-rows / --toggle-fold CLI modes exist (reload()'s and execute-silent()'s out-of-process targets) and row-building is shared, not duplicated..."
+if command grep -q -- '--emit-rows)' "$DASHBOARD" && command grep -q -- '--toggle-fold)' "$DASHBOARD"; then
+    print_pass "--emit-rows and --toggle-fold CLI flags present"
+else
+    print_fail "--emit-rows/--toggle-fold CLI flags missing"
+fi
+if command grep -q '_dashboard_build_rows' "$DASHBOARD"; then
+    print_pass "row-building factored into _dashboard_build_rows (used by both render_sessions_tab and --emit-rows)"
+else
+    print_fail "_dashboard_build_rows not found — row emission isn't factored out for --emit-rows to reuse"
+fi
+
+echo ""
+echo "Test 14: action:toggle fully retired (fold no longer round-trips through dispatch_action/the main loop)..."
+if command grep -q 'action:toggle' "$DASHBOARD"; then
+    print_fail "action:toggle still referenced somewhere"
+else
+    print_pass "action:toggle retired"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -167,7 +226,7 @@ fi
 #    (see dashboard-help-tab), not a leftover Panes reference.
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
-echo "Test 11: help text documents the workspace tree, not a separate Panes tab..."
+echo "Test 15: help text documents the workspace tree, not a separate Panes tab..."
 help_out=$("$DASHBOARD" --help 2>&1)
 assert_contains "$help_out" "fold" "help mentions fold/unfold (z key)"
 assert_contains "$help_out" "CURRENT workspace" "help clarifies a/]/[  scope to the current workspace"
