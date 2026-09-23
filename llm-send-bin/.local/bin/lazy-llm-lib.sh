@@ -554,6 +554,195 @@ lazy_llm_toggle_collapsed() {
   fi
 }
 
+# ──────────────────────────────────────────────────────────────────────────
+# Manual list reordering (dashboard-manual-list-reordering)
+# ──────────────────────────────────────────────────────────────────────────
+
+# Persisted custom order of workspace (session) names for the dashboard's
+# Workspaces tree — a server-scoped tmux option (`-s`, no `-t target`
+# needed; confirmed live that `-s` works for a `@`-prefixed user option and
+# is genuinely server-wide, NOT readable via a session target), unlike fold
+# state (@lazy_llm_collapsed, session-scoped): fold is a property of ONE
+# workspace, but relative order is a relationship across every workspace,
+# so it needs a scope broader than any single session. Value is a
+# space-separated list of names — same convention @AI_PANES/@AI_TOOLS
+# already use for parallel arrays; lazy-llm session names are
+# directory-derived and don't contain spaces.
+#
+# Stdout: the raw order list (space-separated), "" if never set. Returns 0
+# always (mirrors lazy_llm_read_collapsed's never-fail contract).
+lazy_llm_read_ws_order() {
+  tmux show-option -s -v @lazy_llm_ws_order 2>/dev/null || true
+}
+
+# Apply the persisted custom order to lazy_llm_gather_sessions's raw
+# tab-separated data. Workspaces present in the order list are emitted in
+# that order; any workspace NOT yet in the list (new, never explicitly
+# moved) is appended afterward in gather_sessions's own natural order —
+# never silently dropped. A stale order entry for a workspace that no
+# longer exists is simply skipped (not emitted); lazy_llm_move_ws_order
+# drops such entries from the persisted list itself the next time it
+# writes, so they don't accumulate forever.
+# Args:   $1 raw gather_sessions data (tab-separated lines, may be empty)
+# Stdout: the same data, reordered (same tab-separated shape)
+lazy_llm_apply_ws_order() {
+  local data="$1"
+  [[ -z "$data" ]] && return 0
+
+  local order
+  order=$(lazy_llm_read_ws_order)
+  if [[ -z "$order" ]]; then
+    printf '%s\n' "$data"
+    return 0
+  fi
+
+  local -a order_arr
+  read -ra order_arr <<< "$order"
+
+  local out="" seen=" "
+  local o line
+  for o in "${order_arr[@]}"; do
+    line=$(printf '%s\n' "$data" | awk -F'\t' -v n="$o" '$1==n{print; exit}')
+    [[ -z "$line" ]] && continue
+    out+="$line"$'\n'
+    seen+="$o "
+  done
+  local name rest
+  while IFS=$'\t' read -r name rest; do
+    [[ -z "$name" ]] && continue
+    [[ "$seen" == *" $name "* ]] && continue
+    out+="$name"$'\t'"$rest"$'\n'
+  done <<< "$data"
+
+  out="${out%$'\n'}"
+  printf '%s\n' "$out"
+}
+
+# Move a workspace up or down among its OWN sibling workspace rows and
+# persist the result. Seeds the order list from the CURRENT natural
+# workspace order (lazy_llm_gather_sessions) the first time it's called
+# for a workspace not yet in the persisted list, so a swap always has a
+# well-defined neighbor regardless of whether any prior reorder ever
+# touched this workspace. Also drops persisted entries for workspaces that
+# no longer exist (see lazy_llm_apply_ws_order's comment).
+# Bounds: a no-op (not an error) at either end of the sibling list.
+# Args: $1 workspace/session name, $2 direction ("up" or "down")
+# Returns 0 always.
+lazy_llm_move_ws_order() {
+  local name="$1" dir="$2"
+
+  local data
+  data=$(lazy_llm_gather_sessions)
+  [[ -z "$data" ]] && return 0
+
+  local -a natural_arr=()
+  local n
+  while IFS=$'\t' read -r n _; do
+    [[ -n "$n" ]] && natural_arr+=("$n")
+  done <<< "$data"
+
+  # Overlay: persisted order first (dropping any stale/dead names), then
+  # append anything in natural order not already covered — same precedence
+  # lazy_llm_apply_ws_order applies for display.
+  local persisted
+  persisted=$(lazy_llm_read_ws_order)
+  local -a order_arr=()
+  if [[ -n "$persisted" ]]; then
+    local -a p_arr=()
+    read -ra p_arr <<< "$persisted"
+    local p seen=" " found
+    for p in "${p_arr[@]}"; do
+      found=""
+      for n in "${natural_arr[@]}"; do
+        [[ "$n" == "$p" ]] && { found=1; break; }
+      done
+      [[ -n "$found" ]] && { order_arr+=("$p"); seen+="$p "; }
+    done
+    for n in "${natural_arr[@]}"; do
+      [[ "$seen" == *" $n "* ]] || order_arr+=("$n")
+    done
+  else
+    order_arr=("${natural_arr[@]}")
+  fi
+
+  local idx=-1 i
+  for i in "${!order_arr[@]}"; do
+    [[ "${order_arr[$i]}" == "$name" ]] && { idx=$i; break; }
+  done
+  [[ $idx -lt 0 ]] && return 0
+
+  local target=$idx
+  [[ "$dir" == "up" ]] && target=$((idx - 1))
+  [[ "$dir" == "down" ]] && target=$((idx + 1))
+
+  if [[ $target -ge 0 && $target -lt ${#order_arr[@]} ]]; then
+    local tmp="${order_arr[$idx]}"
+    order_arr[$idx]="${order_arr[$target]}"
+    order_arr[$target]="$tmp"
+  fi
+
+  tmux set-option -s @lazy_llm_ws_order "${order_arr[*]}" 2>/dev/null || true
+}
+
+# Swap a pane with its adjacent sibling (up = earlier index, down = later)
+# within its OWN workspace's pane arrays and persist the result — the pane
+# analog of lazy_llm_move_ws_order, but needs no separate order option: a
+# workspace's pane order already IS its @AI_PANES/@AI_TOOLS/@AI_PANE_NAMES
+# arrays (see lazy_llm_read_multi_state_for), so reordering a pane means
+# swapping two adjacent entries across all three parallel arrays and
+# re-setting them — same read/mutate/set pattern the dashboard's
+# action:rename-pane (llm-dashboard's dispatch_action) already uses.
+# Args: $1 session, $2 window, $3 pane index (0-based), $4 direction ("up"/"down")
+# Bounds: a no-op (not an error) at either end of the pane list, or if idx
+# is malformed/out of range.
+# Returns 0 always.
+lazy_llm_move_pane_order() {
+  local session="$1" window="$2" idx="$3" dir="$4"
+
+  [[ "$idx" =~ ^[0-9]+$ ]] || return 0
+
+  lazy_llm_read_multi_state_for "$session" "$window"
+  local -a pane_arr=() tool_arr=() name_arr=()
+  [[ -n "$REPLY_PANES" ]] && read -ra pane_arr <<< "$REPLY_PANES"
+  [[ -n "$REPLY_TOOLS" ]] && read -ra tool_arr <<< "$REPLY_TOOLS"
+  [[ -n "$REPLY_PANE_NAMES" ]] && read -ra name_arr <<< "$REPLY_PANE_NAMES"
+
+  [[ $idx -ge ${#pane_arr[@]} ]] && return 0
+
+  # Pad name_arr out to pane_arr's length with "_" (no-override)
+  # placeholders — same convention action:rename-pane uses — so the swap
+  # below can't drop an unrelated pane's display-label override.
+  local j
+  for ((j = ${#name_arr[@]}; j < ${#pane_arr[@]}; j++)); do
+    name_arr+=("_")
+  done
+
+  local target=$idx
+  [[ "$dir" == "up" ]] && target=$((idx - 1))
+  [[ "$dir" == "down" ]] && target=$((idx + 1))
+  [[ $target -lt 0 || $target -ge ${#pane_arr[@]} ]] && return 0
+
+  local tmp
+  tmp="${pane_arr[$idx]}"; pane_arr[$idx]="${pane_arr[$target]}"; pane_arr[$target]="$tmp"
+  tmp="${tool_arr[$idx]}"; tool_arr[$idx]="${tool_arr[$target]}"; tool_arr[$target]="$tmp"
+  tmp="${name_arr[$idx]}"; name_arr[$idx]="${name_arr[$target]}"; name_arr[$target]="$tmp"
+
+  tmux set-option -w -t "$session:$window" @AI_PANES "${pane_arr[*]}" 2>/dev/null || true
+  tmux set-option -w -t "$session:$window" @AI_TOOLS "${tool_arr[*]}" 2>/dev/null || true
+  tmux set-option -w -t "$session:$window" @AI_PANE_NAMES "${name_arr[*]}" 2>/dev/null || true
+
+  # Keep @AI_PANE_IDX (the fallback active-pane pointer other tools like
+  # llm-cycle read) pointing at the SAME physical pane after the swap, not
+  # whichever pane now occupies the old index.
+  local cur_idx
+  cur_idx=$(tmux show-option -wv -t "$session:$window" @AI_PANE_IDX 2>/dev/null) || cur_idx=""
+  if [[ "$cur_idx" == "$idx" ]]; then
+    tmux set-option -w -t "$session:$window" @AI_PANE_IDX "$target" 2>/dev/null || true
+  elif [[ "$cur_idx" == "$target" ]]; then
+    tmux set-option -w -t "$session:$window" @AI_PANE_IDX "$idx" 2>/dev/null || true
+  fi
+}
+
 # Swap the visible AI pane in <session:window> to the pane at <target_idx> in its
 # @AI_PANES list. This is llm-cycle's core swap-pane logic, factored out so it can
 # be driven with an EXPLICIT target instead of llm-cycle's ambient "current pane"
