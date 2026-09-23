@@ -2,14 +2,13 @@
 slug: dashboard-manual-list-reordering
 title: Manual reordering of dashboard tree rows (Ctrl+Up/Down), scoped per tree level
 priority: P2
-status: in-progress
+status: done
 created: 2026-09-23_04:20
-updated: 2026-09-23_13:34
+updated: 2026-09-23_13:37
 depends-on: []
 tags: [enhancement, dashboard, ux]
-commits: [eeaf8d7, 3125c32, 110a424]
+commits: [eeaf8d7, 3125c32, 110a424, 8d4f55f]
 model: opus
-owner: homelab-zrh-dev-2339310
 human-validation: pending
 ---
 
@@ -199,19 +198,65 @@ Direct request: Ctrl+Arrow is unreliable over some SSH/tunneled terminals
 the popup), so a modifier-free fallback was needed alongside Ctrl-Up/Ctrl-Down,
 not instead of it.
 
-- [ ] `k`/`j` bound as plain alternates for reorder-up/reorder-down,
+- [x] `k`/`j` bound as plain alternates for reorder-up/reorder-down,
       identical behavior to Ctrl-Up/Ctrl-Down (same `--reorder-transform`
       handler, same direction mapping)
-- [ ] `k`/`j` included in the `/`-search unbind/rebind lists (same pattern
+- [x] `k`/`j` included in the `/`-search unbind/rebind lists (same pattern
       as every other single-letter action key) — remain typable in a search
       query, don't leak into fuzzy matching
-- [ ] No regression to Ctrl-Up/Ctrl-Down (both key sets must keep working)
-- [ ] Verified live on a disposable isolated tmux server — same rigor as
+- [x] No regression to Ctrl-Up/Ctrl-Down (both key sets must keep working)
+- [x] Verified live on a disposable isolated tmux server — same rigor as
       the original round (ANSI-aware `capture-pane -e`, fzf PID check,
       persisted-order check via `tmux show-option`)
-- [ ] Existing test suite (`tests/scenarios/16-dashboard-manual-reorder-unit.sh`
+- [x] Existing test suite (`tests/scenarios/16-dashboard-manual-reorder-unit.sh`
       + full `tests/test-runner.sh`) still passes; no new failures beyond
       the pre-existing `01`-`08` environment-dependent baseline
+
+**Work done inline by the orchestrator** (small, well-scoped addition
+directly extending an already-verified mechanism; no separate dispatch):
+
+- Added `--bind="k:transform($_dashboard_self --reorder-transform up {1})"`
+  and `--bind="j:transform($_dashboard_self --reorder-transform down {1})"`
+  to `render_sessions_tab`'s fzf call, reusing the exact same
+  `--reorder-transform` handler Ctrl-Up/Ctrl-Down already call (no new CLI
+  mode, no new lib helpers — the direction argument is identical). Added
+  `j,k` to both the `/`-search unbind list and the `tab` rebind list,
+  alongside the existing `ctrl-up,ctrl-down`.
+- Updated the top-of-file header comment, `usage()`, and the Help tab's
+  two-column reference to document the alternates.
+- Added `tests/scenarios/16-dashboard-manual-reorder-unit.sh` Tests 14-16:
+  `k`/`j` bind to the correct direction, are present in both unbind/rebind
+  lists, and don't collide with any `print(KEY)+accept`-style bind
+  elsewhere in the file (18/18 passing).
+- **Found and fixed a real regression during verification**: adding `j,k`
+  to the Workspaces tab's unbind(...) list broke
+  `tests/scenarios/15-dashboard-help-tab-unit.sh` Test 4, which hardcoded
+  the ENTIRE unbind(...) call as a literal string
+  (`unbind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down)`) instead of checking
+  structurally — the exact class of brittleness a prior round already hit
+  and fixed once (see that test file's own comment before this edit).
+  Rewrote the assertion to grep the `unbind(...)` call structurally (find
+  the one containing `ctrl-up`, assert it also contains `1,2,K`) rather
+  than pinning its exact contents, so a future key addition to this list
+  won't require touching this test again. Full suite is back to the
+  pre-existing 8-passed/8-failed `01`-`08` TTY-environment baseline (both
+  15 and 16 now pass).
+- **Live verification** on an isolated `tmux -L verify-jk-reorder` server
+  (2 fresh `@lazy_llm`-marked sessions, one with 2 real split panes tagged
+  `@AI_PANES`/`@AI_TOOLS`): `k` on a pane row swapped `@AI_PANES` and moved
+  the ANSI cursor highlight (`capture-pane -p -e`, `bg=236` marker) onto
+  the moved row; `j` reverted it; `k` on a workspace row reordered
+  `@lazy_llm_ws_order` (confirmed genuinely server-scoped) and the cursor
+  followed; a boundary `k` at the top of the list was a clean no-op (same
+  fzf PID/`ps -o lstart` throughout — no relaunch); `/` then typing `j`/`k`
+  correctly landed in the search query, not intercepted as actions; `Tab`
+  correctly restored the bindings; `z` (fold) still worked afterward.
+  Isolated server torn down; real tmux server (`dev-env`,
+  `ai-dev-workflow`, `microdots_digital`) confirmed untouched before and
+  after. Test-suite-run debris on the real server (the known pre-existing
+  `01`-`08` TTY-failure leak) was found and cleaned up twice.
+
+Commits: `8d4f55f` (code + tests).
 
 ## Work Report
 
