@@ -4,10 +4,10 @@ title: Dashboard layout + status bar redesign in response to user feedback
 priority: P1
 status: done
 created: 2026-09-22_15:06
-updated: 2026-09-23_01:45
+updated: 2026-09-23_03:00
 depends-on: []
 tags: [ux, dashboard, statusbar, design]
-commits: [1b9b401, 24de3f1, 27ac16d, d9c4252, 7d661b2, 6f0524a, 948d2c6, 2425da2, 4d36241, fa7cbac, af5c805, 2df5daa, 4921bb0, 91c748b, 1cc5c84, 2a7e206, f7f0b3d]
+commits: [1b9b401, 24de3f1, 27ac16d, d9c4252, 7d661b2, 6f0524a, 948d2c6, 2425da2, 4d36241, fa7cbac, af5c805, 2df5daa, 4921bb0, 91c748b, 1cc5c84, 2a7e206, f7f0b3d, a9438b4, ec23025, 7af2f87, bedfc60]
 model: inline
 ---
 
@@ -289,3 +289,71 @@ on both:
 without the user's own eyes is shipped and verified above. The two items
 left are handed back directly rather than kept open here — no further
 engineering to do until there's a fresh repro/screenshot for either.
+
+## Work Report (Round 3)
+
+**Date:** 2026-09-23_03:00
+
+Reopened for a third feedback round, this time WITH screenshots — which
+resolved both Round 2 "handed back" items (title bar visibility confirmed
+working in the screenshot itself; vertical space got a real screenshot to
+diagnose against, below) plus 7 new items.
+
+### What was done
+1. **Vertical space — root cause finally found.** The user's shell exports
+   `FZF_DEFAULT_OPTS="--height 40% ..."`, silently inherited by every fzf
+   call in `llm-dashboard`. Confirmed live (a bare fzf call in the same
+   popup used ~40% of a 55-row pane; `--height=100%` filled it). Added to
+   all 11 fzf invocations in the file.
+2. **Active-pane-on-open still not working** — switched from the
+   app's own `@AI_PANE_IDX` (only updated by `llm-cycle`, stale the moment
+   focus moves any other way) to tmux's native per-window `pane_active`
+   flag, in both the dashboard tree and `llm-status`'s tile bolding.
+3. **Dashboard status glyphs uncolored** — added `glyph_color_for`/
+   `_ansi_fg`/`glyph_for_colored` (truecolor ANSI, since tree rows render
+   via fzf `--ansi`, not tmux `#[...]`).
+4. **Pane renames now show everywhere**: `llm-pane-border`'s title,
+   `llm-status`'s tile (clamped to 15 chars + ellipsis, per explicit
+   request), and the dashboard tree (refactored to the same shared
+   `lazy_llm_pane_display_label` helper). New shared helpers in
+   `lazy-llm-lib.sh`.
+5. **Status bar visual bugs, both root-caused from the screenshot**:
+   active tile's color "not filling between the │ separators" → switched
+   from background-fill to bold+accent-color (user-sanctioned fallback);
+   end-cap's "black break" → the `▐` half-block glyph's left half renders
+   in `bg=default`, creating a hard seam against the solid-blue space
+   before it, not a fade — replaced with a plain solid-blue cap + one hard
+   `#[default]` cut.
+6. **Title bar decluttered** — dropped redundant `3:help` (kept `?:help`).
+7. **`idle_prompt` hook mapping fixed** (dev-env repo, not this submodule):
+   was wired to write "waiting", overwriting `Stop`'s correct "idle" some
+   time after a response completed and firing a misleading "needs your
+   input" notification for a session that wasn't blocked on anything.
+   Explains "sessions that finished generating often stay on waiting."
+8. **Backlog task confirmed, not duplicated**: the branch/repo
+   sanitization ask already had a full existing task
+   (`branch-per-setup-and-shared-core-sync`, dev-env repo) — moved
+   `pending` → `backlog` per the user's explicit request instead of
+   filing a duplicate.
+
+### How it was done
+- Every fix in this round was root-caused from a live measurement or a
+  direct screenshot, not guessed — `FZF_DEFAULT_OPTS` found via `env |
+  grep -i fzf`; the `▐` seam explained by the codepoint's own
+  left-half/right-half color split; `pane_active` verified live via
+  `tmux select-pane` + `list-panes -f`.
+- All changes verified live against disposable sessions (multi-pane,
+  renamed panes, deliberately-focused-via-tmux-not-llm-cycle) before
+  committing; full 10–15 unit-test sweep run clean after each batch.
+
+### Commits
+- `a9438b4` — dashboard: fix vertical-space bug, active-pane heuristic, colored glyphs
+- `ec23025` — status: fix active-tile flicker, endcap seam, tile fill; show pane renames
+- `7af2f87` — pane-border: show the pane's dashboard rename, not just its tool name
+- `bedfc60` — dashboard-open: drop redundant '3:help' from the title bar
+- (dev-env repo) `cf2e807` — claude hooks: idle_prompt maps to 'idle', not 'waiting'
+- (dev-env repo) `3dbb919` — [todo] Move branch-per-setup-and-shared-core-sync to backlog
+
+### Follow-up
+None outstanding from this round — every item had enough evidence
+(screenshot or live measurement) to root-cause and fix directly.
