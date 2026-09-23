@@ -254,6 +254,32 @@ create_workspace_window() {
   tmux set-option -t "$session" @lazy_llm 1
   tmux set-option -t "$session" mouse on
 
+  # Global hook: keep @AI_PANE_IDX pointing at the AI pane last given real
+  # focus, even after focus later moves to the editor/prompt pane — see
+  # llm-pane-focus-track's own header comment for why tmux's own
+  # #{pane_active} alone isn't enough here. Set globally (fires for every
+  # pane-focus change in every window) rather than per-window, since a
+  # per-window hook would need re-registering on every new lazy-llm
+  # workspace; the script itself no-ops instantly for any non-lazy-llm
+  # window (one cheap show-option call). Idempotent — safe to set on every
+  # `lazy-llm` invocation, not just the first.
+  #
+  # after-select-pane, NOT pane-focus-in: the tmux manual documents
+  # pane-focus-in/pane-focus-out, but they don't actually exist as
+  # registerable hooks in tmux 3.7c (`tmux set-hook -g pane-focus-in ...`
+  # exits 0 and silently never fires — confirmed live; `show-hooks -g`'s
+  # own reference list doesn't include them, only client-focus-in/out,
+  # which are client-level, not per-pane). after-select-pane is the real,
+  # firing hook for "the active pane in a window changed" — confirmed live
+  # across mouse-click-equivalent and prefix-arrow-equivalent transitions.
+  # No -b (backgrounding run-shell): tried first, but produced a real
+  # non-deterministic race — sometimes the update lagged behind the very
+  # next select-pane and got missed. This script is a couple of cheap
+  # show-option/set-option calls; foreground is fast enough not to matter
+  # and removes the race entirely (also confirmed live, repeatedly).
+  tmux set-hook -g after-select-pane \
+    "run-shell '$HOME/.local/bin/llm-pane-focus-track #{pane_id} #{session_name} #{window_index}'"
+
   # Register keybindings — scoped to lazy-llm windows via if-shell check.
   # In non-lazy-llm windows, C-n/C-p fall back to next/previous-window;
   # other bindings are no-ops.

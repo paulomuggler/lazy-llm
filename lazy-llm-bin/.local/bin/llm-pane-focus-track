@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# llm-pane-focus-track - keep @AI_PANE_IDX pointing at the AI pane the user
+# last actually gave focus to, even after focus later moves elsewhere.
+#
+# Wired as a GLOBAL after-select-pane hook (see lazy-llm's window-setup
+# function) so it fires whenever the active pane in ANY window changes, not
+# just lazy-llm ones — cheap no-op for anything else (one tmux show-option
+# call). NOT pane-focus-in, despite that name appearing in the tmux manual —
+# confirmed live that it doesn't actually exist as a registerable hook in
+# tmux 3.7c; see lazy-llm's own comment on the set-hook line for the story.
+#
+# Why this exists: the dashboard's "highlight the active pane on open" tried
+# tmux's own #{pane_active} flag directly (the window's single last-focused
+# pane) and was reported as still not working. Root cause, confirmed live:
+# a lazy-llm workspace has THREE panes (AI, editor, prompt) but only ONE of
+# them is ever tracked by #{pane_active} at a time — the moment focus moves
+# to the editor or prompt pane (which, per this project's own documented
+# workflow, is where you spend a lot of time typing), #{pane_active} no
+# longer points at any AI pane at all, and there was no fallback signal for
+# "which AI pane did I last actually use" once that happens. tmux has no
+# built-in memory for that; this hook is what supplies it, by updating
+# @AI_PANE_IDX (already the option the dashboard/status bar/pane cycling all
+# read) every time focus lands ON an AI pane specifically, so it stays
+# correct even after focus later moves to the editor or prompt pane.
+#
+# Usage: llm-pane-focus-track <pane_id> <session_name> <window_index>
+# (invoked via #{pane_id}/#{session_name}/#{window_index} format expansion
+# in the hook command itself — see lazy-llm's set-hook -g after-select-pane)
+
+set -euo pipefail
+
+pane_id="${1:-}"
+session="${2:-}"
+window="${3:-}"
+[ -z "$pane_id" ] || [ -z "$session" ] || [ -z "$window" ] && exit 0
+
+ai_panes=$(tmux show-option -wv -t "$session:$window" @AI_PANES 2>/dev/null) || exit 0
+[ -z "$ai_panes" ] && exit 0
+
+idx=0
+for p in $ai_panes; do
+  if [ "$p" = "$pane_id" ]; then
+    tmux set-option -w -t "$session:$window" @AI_PANE_IDX "$idx" 2>/dev/null || true
+    exit 0
+  fi
+  idx=$((idx + 1))
+done
