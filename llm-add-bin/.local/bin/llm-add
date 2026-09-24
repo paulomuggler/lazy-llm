@@ -71,7 +71,10 @@ fi
 new_pane_id=$(tmux split-window -d -t "$AI_HOLD_WIN" -c "$target_dir" -P -F '#{pane_id}')
 
 # Launch AI tool in the new pane
-tmux send-keys -t "$new_pane_id" "$NEW_AI_TOOL" C-m
+case "$NEW_AI_TOOL" in
+  jetski|jetski-cli) tmux send-keys -t "$new_pane_id" "jetski-cli" C-m ;;
+  *)                 tmux send-keys -t "$new_pane_id" "$NEW_AI_TOOL" C-m ;;
+esac
 
 # Set pane title (select-pane -T also selects, so restore focus after)
 tmux select-pane -t "$new_pane_id" -T "AI: $NEW_AI_TOOL"
