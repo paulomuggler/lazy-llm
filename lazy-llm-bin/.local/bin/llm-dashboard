@@ -38,6 +38,14 @@
 
 set -euo pipefail
 
+# On macOS, /bin/bash is 3.2 (which mangles ${var/#$HOME/\~} and lacks Bash 4+
+# features). Re-exec under Homebrew Bash 4+ if invoked via /bin/bash.
+if [[ "${BASH_VERSINFO[0]:-0}" -lt 4 ]]; then
+  for _b in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [[ -x "$_b" ]] && exec "$_b" "$0" "$@"
+  done
+fi
+
 # Resolve lib path: try sibling first (post-install via stow), else dev location
 _lib_sibling="$(dirname "$0")/lazy-llm-lib.sh"
 if [[ -f "$_lib_sibling" ]]; then
@@ -485,6 +493,21 @@ render_sessions_tab() {
   # remove every single-letter action key (this pair included) the instant
   # '/' is pressed — 'j'/'k' remain fully typable in a search query, same
   # as any other action letter already is.
+  local -a _reorder_binds=(
+    --bind="ctrl-up:transform($_dashboard_self --reorder-transform up {1})"
+    --bind="ctrl-down:transform($_dashboard_self --reorder-transform down {1})"
+    --bind='/:unbind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down,j,k)+show-input+enable-search'
+    --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down,j,k)'
+  )
+  if ! fzf --bind='ctrl-up:abort' --filter='' </dev/null >/dev/null 2>&1; then
+    _reorder_binds=(
+      --bind="alt-up:transform($_dashboard_self --reorder-transform up {1})"
+      --bind="alt-down:transform($_dashboard_self --reorder-transform down {1})"
+      --bind='/:unbind(1,2,K,r,R,z,a,],[,?,alt-up,alt-down,j,k)+show-input+enable-search'
+      --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?,alt-up,alt-down,j,k)'
+    )
+  fi
+
   local selection key
   selection=$(printf '%s\n' "$lines" | fzf \
     --height=100% \
@@ -504,12 +527,9 @@ render_sessions_tab() {
     --bind="z:transform($_dashboard_self --fold-transform {1})" \
     --bind='a:print(a)+accept' \
     --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
-    --bind="ctrl-up:transform($_dashboard_self --reorder-transform up {1})" \
-    --bind="ctrl-down:transform($_dashboard_self --reorder-transform down {1})" \
     --bind="k:transform($_dashboard_self --reorder-transform up {1})" \
     --bind="j:transform($_dashboard_self --reorder-transform down {1})" \
-    --bind='/:unbind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down,j,k)+show-input+enable-search' \
-    --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down,j,k)' \
+    "${_reorder_binds[@]}" \
     --bind='q:abort' \
     --bind="load:pos(${_start_pos})+unbind(load)" \
   ) || { echo "quit"; return 0; }

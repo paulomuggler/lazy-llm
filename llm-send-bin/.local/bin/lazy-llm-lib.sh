@@ -6,6 +6,13 @@
 [[ -n "${_LAZY_LLM_LIB_LOADED:-}" ]] && return 0
 _LAZY_LLM_LIB_LOADED=1
 
+# On macOS, tmux run-shell / display-popup or non-login subshells may have a
+# minimal PATH where system tools precede Homebrew.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  [[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && [[ -d /opt/homebrew/bin ]] && export PATH="/opt/homebrew/bin:$PATH"
+  [[ ":$PATH:" != *":/usr/local/bin:"* ]] && [[ -d /usr/local/bin ]] && export PATH="/usr/local/bin:$PATH"
+fi
+
 # Resolve current pane ID.
 # TMUX_PANE is set in interactive shells but NOT in tmux run-shell context.
 # Fallback to tmux display-message -p which works in both contexts.

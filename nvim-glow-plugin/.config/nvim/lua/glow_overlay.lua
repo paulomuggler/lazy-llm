@@ -69,7 +69,11 @@ function M.open(src)
   local glow_cmd = string.format("glow -w %d %s", width, vim.fn.shellescape(tmp))
   local cmd
   if vim.fn.executable("script") == 1 then
-    cmd = { "script", "-qfec", glow_cmd, "/dev/null" }
+    if vim.fn.has("mac") == 1 then
+      cmd = { "script", "-q", "/dev/null", "glow", "-w", tostring(width), tmp }
+    else
+      cmd = { "script", "-qfec", glow_cmd, "/dev/null" }
+    end
   else
     cmd = { "glow", "-w", tostring(width), tmp } -- no pty: plain text fallback
   end
@@ -79,7 +83,7 @@ function M.open(src)
       if not is_open() then
         return
       end
-      local out = res.stdout or ""
+      local out = (res.stdout or ""):gsub("^\4\8\8", ""):gsub("^%^D[\8\r\n]*", "")
       if (out == nil or out == "") and res.code ~= 0 then
         out = res.stderr or "glow failed"
       end
