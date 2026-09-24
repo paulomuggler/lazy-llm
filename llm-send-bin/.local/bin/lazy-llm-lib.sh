@@ -103,7 +103,33 @@ lazy_llm_detect_status_from_content() {
   local waiting_pat='\[[yY]/[yYnN]\]|^[[:space:]]*[1-9][.)][[:space:]]'
   local prompt_pat='❯'
 
+  local tail_content
+  tail_content=$(tail -n 12 <<< "$content")
+
   case "$tool" in
+    jetski|jetski-cli)
+      # Jetski CLI prints "▸ Thought for 1m 26s, 89 tokens" in permanent scrollback,
+      # so matching "\([0-9]+m [0-9]+s" across -S -200 would falsely classify finished
+      # sessions as "working" forever. Instead, inspect the live bottom area (tail_content)
+      # for the active braille spinner or the "esc to cancel" footer (when no background
+      # task is keeping the footer visible), and match Jetski's "> " prompt box for idle.
+      if grep -qE '^[[:space:]]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷][[:space:]]+' <<< "$tail_content"; then
+        echo working
+        return 0
+      elif grep -qE '^esc to cancel' <<< "$tail_content" && ! grep -qE 'task\(s\) · /tasks' <<< "$tail_content"; then
+        echo working
+        return 0
+      elif grep -qE '\[[yY]/[yYnN]\]|Allow|Always Allow' <<< "$tail_content"; then
+        echo waiting
+        return 0
+      elif grep -qE '^>([[:space:]]|$)|^───' <<< "$tail_content"; then
+        echo idle
+        return 0
+      else
+        echo unknown
+        return 0
+      fi
+      ;;
     claude|*)
       : # use defaults above
       ;;
@@ -124,12 +150,12 @@ lazy_llm_detect_status_from_content() {
   # from a finished response doesn't — tuned against the exact
   # false-positive content above: a tail of 15 still caught 2 of its 3 list
   # lines, 12 and 10 caught none.
-  local tail_content
-  tail_content=$(tail -n 10 <<< "$content")
+  local claude_tail
+  claude_tail=$(tail -n 10 <<< "$content")
 
   if grep -qE "$interrupt_pat" <<< "$content"; then
     echo working
-  elif grep -qE "$waiting_pat" <<< "$tail_content"; then
+  elif grep -qE "$waiting_pat" <<< "$claude_tail"; then
     echo waiting
   elif grep -qF "$prompt_pat" <<< "$content"; then
     echo idle
@@ -145,20 +171,11 @@ lazy_llm_detect_status_from_content() {
 # lazy_llm_detect_pane_status below.
 _LAZY_LLM_HOOK_STATUS_MAX_AGE=30
 
-# Read a Claude Code hook-written status for a pane, if fresh.
-# Written by dev-env's ~/.claude/hooks/lazy-llm-status-notify.sh on the
-# Notification:permission_prompt (-> waiting — genuinely blocked on a
-# decision) and Notification:idle_prompt / Stop (-> idle) hook events.
-# idle_prompt deliberately maps to "idle", not "waiting" — it's Claude
-# Code's own delayed idle nudge, not a new blocking state; mapping it to
-# "waiting" was overwriting Stop's correct "idle" and is why finished
-# sessions used to get stuck showing waiting (see the hook script's own
-# comment for the full story). The hook never writes "working" — a pane
-# that's actively generating has no fresh file (or an aged-out one), and
-# falls through to the content-scrape path, which detects "working" fine
-# via the interrupt-hint pattern.
+# Read a Claude Code / Jetski CLI hook-written status for a pane, if fresh.
+# Written by dev-env's ~/.claude/hooks/lazy-llm-status-notify.sh (and
+# ~/.gemini/config/hooks/lazy-llm-jetski-hook.sh for Jetski CLI).
 # Args:   $1 pane_id
-# Stdout: waiting | idle   (only if a fresh file says so)
+# Stdout: working | waiting | idle   (only if a fresh file says so)
 # Returns 1 (nothing echoed) if no usable hook file exists.
 _lazy_llm_read_hook_status() {
   local pane_id="$1"
@@ -167,7 +184,7 @@ _lazy_llm_read_hook_status() {
 
   local hook_state hook_ts
   read -r hook_state hook_ts < "$status_file" 2>/dev/null || return 1
-  [[ "$hook_state" == "waiting" || "$hook_state" == "idle" ]] || return 1
+  [[ "$hook_state" == "working" || "$hook_state" == "waiting" || "$hook_state" == "idle" ]] || return 1
   [[ "$hook_ts" =~ ^[0-9]+$ ]] || return 1
 
   local now age
@@ -185,10 +202,10 @@ _lazy_llm_read_hook_status() {
 # Stdout: working | waiting | unread | idle | unknown
 # Returns 0 always; emits "unknown" if capture fails.
 #
-# For tool=claude, prefers a fresh hook-written status (see
+# For tool=claude|jetski|jetski-cli, prefers a fresh hook-written status (see
 # _lazy_llm_read_hook_status) over the content scrape below — hooks are
 # event-driven and don't suffer the scrape's timing/UI-text fragility.
-# Every other tool (gemini/codex/grok/aider) always uses the scrape path.
+# Every other tool (gemini/opencode/codex/grok/aider) always uses the scrape path.
 #
 # "unread" is layered on top of an "idle" result — see the unread-marker
 # section below for what sets and clears it.
@@ -197,7 +214,7 @@ lazy_llm_detect_pane_status() {
   local tool="${2:-claude}"
   local base
 
-  if [[ "$tool" == "claude" ]] && base=$(_lazy_llm_read_hook_status "$pane_id"); then
+  if [[ "$tool" == "claude" || "$tool" == "jetski" || "$tool" == "jetski-cli" ]] && base=$(_lazy_llm_read_hook_status "$pane_id"); then
     # `if cmd=$(...); then` (not `cmd=$(...) && ...`) — a bare `&&` here would
     # trip callers' `set -e` on the common case of no hook file existing yet.
     :

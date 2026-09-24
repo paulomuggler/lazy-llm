@@ -827,7 +827,7 @@ dispatch_action() {
       # sub-prompt. Same class of bug as the one already fixed in
       # lazy_llm_detect_pane_status — found live: pressing 'a' then Esc closed
       # the entire popup instead of returning to the tree.
-      tool=$(printf 'claude\ngemini\ncodex\ngrok\naider' | fzf \
+      tool=$(printf 'claude\njetski-cli\ngemini\nopencode\ncodex\ngrok\naider' | fzf \
         --height=100% --reverse --border=rounded --prompt="tool> " \
         --header="Pick an AI tool to add (esc to cancel):" \
         --no-info || true)

@@ -105,18 +105,20 @@ case "$AI_TOOL" in
     # 4. Send Enter to submit the prompt now in the Gemini CLI input
     tmux send-keys -t "$TARGET" Enter
     ;;
-  *)
-    # Default strategy: Paste from buffer (for Claude, etc.)
-    # Load the complete message into tmux buffer
+  jetski|jetski-cli|*)
+    # Bracketed paste strategy (-p): ensures multiline prompts with ### PROMPT
+    # headers are pasted into Ink/TUI inputs (Jetski, Claude, OpenCode, etc.)
+    # as a single multiline paste rather than raw newline keypresses.
     echo "$COMPLETE_MESSAGE" | tmux load-buffer -
 
-    # Paste the complete message (all newlines are part of the paste, not keypresses)
-    tmux paste-buffer -t "$TARGET"
+    tmux paste-buffer -p -t "$TARGET"
 
-    # For large pastes, add a delay before sending Enter
+    # Allow Ink/TUI event loop to commit the bracketed paste before sending Enter
     BUFFER_SIZE=$(tmux show-buffer | wc -c)
     if [ "$BUFFER_SIZE" -gt 1000 ]; then
       sleep 0.5
+    else
+      sleep 0.15
     fi
 
     # Send single Enter to submit the prompt

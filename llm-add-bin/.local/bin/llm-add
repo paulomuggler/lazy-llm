@@ -22,7 +22,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  -t, --tool    AI tool to launch (default: claude)"
-      echo "                Supported: claude, gemini, codex, grok, aider"
+      echo "                Supported: claude, jetski-cli, gemini, opencode, codex, grok, aider"
       exit 0
       ;;
     *)

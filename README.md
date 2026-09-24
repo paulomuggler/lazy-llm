@@ -75,7 +75,9 @@ The installer will:
 lazy-llm
 
 # Specify a different tool
+lazy-llm -t jetski-cli
 lazy-llm -t gemini
+lazy-llm -t opencode
 lazy-llm -t codex
 lazy-llm -t grok
 
@@ -86,7 +88,7 @@ lazy-llm -s my-project -d ~/projects/foo -t claude
 Options:
 - `-s session_name` - Custom workspace (tmux session) name (auto-generated if not provided)
 - `-d directory` - Working directory (defaults to current)
-- `-t ai_tool` - AI tool to launch (claude, gemini, codex, grok, aider, etc.)
+- `-t ai_tool` - AI tool to launch (claude, jetski-cli, gemini, opencode, codex, grok, aider, etc.)
 - `-w` - Force new window mode (otherwise auto-detected when in tmux)
 
 **Smart Behavior:**

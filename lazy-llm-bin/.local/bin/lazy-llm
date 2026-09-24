@@ -84,7 +84,7 @@ while getopts "s:d:t:wW:h" opt; do
     echo "Options:"
     echo "  -s  Session name (auto-generated if not provided)"
     echo "  -d  Working directory (default: current directory)"
-    echo "  -t  AI tool to launch (claude, gemini, codex, grok, etc.)"
+    echo "  -t  AI tool to launch (claude, jetski-cli, gemini, opencode, codex, grok, etc.)"
     echo "  -w  Force new window mode (otherwise auto-detected when in tmux)"
     echo "  -W  Spawn a session bound to a git worktree for <branch>"
     echo "       Creates branch (from HEAD) and worktree (under .worktrees/<branch>)"
@@ -186,8 +186,14 @@ create_workspace_window() {
   claude)
     tmux send-keys -t "$session:$win_idx.$ai_pane" "claude" C-m
     ;;
+  jetski|jetski-cli)
+    tmux send-keys -t "$session:$win_idx.$ai_pane" "jetski-cli" C-m
+    ;;
   gemini)
     tmux send-keys -t "$session:$win_idx.$ai_pane" "gemini" C-m
+    ;;
+  opencode)
+    tmux send-keys -t "$session:$win_idx.$ai_pane" "opencode" C-m
     ;;
   codex)
     tmux send-keys -t "$session:$win_idx.$ai_pane" "codex" C-m
@@ -297,11 +303,13 @@ create_workspace_window() {
   tmux bind-key -T prefix A if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "display-menu -T 'Add AI Pane' \
-      claude '' \"run-shell '$HOME/.local/bin/llm-add -t claude'\" \
-      gemini '' \"run-shell '$HOME/.local/bin/llm-add -t gemini'\" \
-      codex  '' \"run-shell '$HOME/.local/bin/llm-add -t codex'\" \
-      grok   '' \"run-shell '$HOME/.local/bin/llm-add -t grok'\" \
-      aider  '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
+      claude     '' \"run-shell '$HOME/.local/bin/llm-add -t claude'\" \
+      jetski-cli '' \"run-shell '$HOME/.local/bin/llm-add -t jetski-cli'\" \
+      gemini     '' \"run-shell '$HOME/.local/bin/llm-add -t gemini'\" \
+      opencode   '' \"run-shell '$HOME/.local/bin/llm-add -t opencode'\" \
+      codex      '' \"run-shell '$HOME/.local/bin/llm-add -t codex'\" \
+      grok       '' \"run-shell '$HOME/.local/bin/llm-add -t grok'\" \
+      aider      '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
   tmux bind-key -T prefix S if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "run-shell '$HOME/.local/bin/llm-dashboard-open'"

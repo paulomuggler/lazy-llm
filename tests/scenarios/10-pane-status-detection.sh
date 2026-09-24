@@ -82,6 +82,20 @@ actual=$(printf '%s' "$mixed" | lazy_llm_detect_status_from_content claude)
 assert_equals "$actual" "waiting" "choice prompt should take precedence over bare ❯"
 
 echo ""
+echo "Testing jetski-cli status detection..."
+jetski_working=$'▸ Thought for 1m 26s, 89 tokens\n● Bash(git status)\n⣯  Running command...\n─────────────────────────────────────────\n>\n─────────────────────────────────────────\nesc to cancel                                                                                 Gemini Next'
+actual=$(printf '%s' "$jetski_working" | lazy_llm_detect_status_from_content jetski-cli)
+assert_equals "$actual" "working" "jetski-cli active spinner + esc to cancel should detect 'working'"
+
+jetski_idle_with_old_thought=$'▸ Thought for 1m 26s, 89 tokens\n  Done!\n─────────────────────────────────────────\n>\n─────────────────────────────────────────\n                                                                                              Gemini Next'
+actual=$(printf '%s' "$jetski_idle_with_old_thought" | lazy_llm_detect_status_from_content jetski-cli)
+assert_equals "$actual" "idle" "jetski-cli idle prompt should detect 'idle' even with old '1m 26s' thought in scrollback"
+
+jetski_idle_bg_task=$'▸ Thought for 1m 26s, 89 tokens\n  Done!\n─────────────────────────────────────────\n>\n─────────────────────────────────────────\n  ● [13:20:10] python3 server.py running\n─────────────────────────────────────────\nesc to cancel                                                            Gemini Next · 1 task(s) · /tasks'
+actual=$(printf '%s' "$jetski_idle_bg_task" | lazy_llm_detect_status_from_content jetski-cli)
+assert_equals "$actual" "idle" "jetski-cli idle prompt with background task footer should detect 'idle'"
+
+echo ""
 echo "Testing lazy_llm_detect_pane_status with a nonexistent pane..."
 actual=$(lazy_llm_detect_pane_status "%99999" claude 2>/dev/null)
 assert_equals "$actual" "unknown" "missing pane id should return 'unknown' without erroring"

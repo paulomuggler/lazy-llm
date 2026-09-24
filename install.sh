@@ -77,8 +77,20 @@ fi
 
 # --- 3. Run Stow ---
 echo "--> Running stow to create symlinks..."
+NVIM_STOW_TARGET="$HOME"
+if [ -L "$NVIM_CONFIG_DIR" ]; then
+  NVIM_STOW_TARGET="$(cd -P "$NVIM_CONFIG_DIR/../.." && pwd)"
+fi
+
 for package in "${STOW_PACKAGES[@]}"; do
-  stow --restow --target="$HOME" "$package"
+  case "$package" in
+    nvim-*-plugin)
+      stow --restow --target="$NVIM_STOW_TARGET" "$package"
+      ;;
+    *)
+      stow --restow --target="$HOME" "$package"
+      ;;
+  esac
 done
 echo "    Symlinks created."
 
