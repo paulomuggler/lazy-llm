@@ -1,8 +1,9 @@
 # TODO Index
 > Auto-generated. Run `/todo lint` to regenerate.
 
-## Done (5)
+## Done (6)
 
+- [x] [pane-border-identity-suffixes](done/pane-border-identity-suffixes.md) - AI pane border shows workspace - pane name - harness - model; Claude hooks moved into lazy-llm's own plugin
 - [x] [dashboard-escape-abort-killswitch](done/dashboard-escape-abort-killswitch.md) - Fix Esc-during-subprompt silently killing the whole dashboard
 - [x] [dashboard-layout-status-redesign](done/dashboard-layout-status-redesign.md) - Dashboard layout + status bar redesign in response to user feedback
 - [x] [dashboard-manual-list-reordering](done/dashboard-manual-list-reordering.md) - Manual reordering of dashboard tree rows (Ctrl+Up/Down), scoped per tree level
