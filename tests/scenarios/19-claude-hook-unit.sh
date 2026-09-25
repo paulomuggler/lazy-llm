@@ -41,6 +41,8 @@ hook idle '{"hook_event_name":"Notification","notification_type":"idle_prompt"}'
 echo "idle_prompt: state=\$(state) unread=\$(unread)"
 
 hook "" '{"hook_event_name":"Stop","transcript_path":"$sandbox/transcript.jsonl"}'
+# The transcript fallback runs detached (with retries), so wait for it.
+for _ in \$(seq 1 30); do [ -n "\$(lazy_llm_pane_model \$P)" ] && break; sleep 0.1; done
 echo "stop: state=\$(state) unread=\$(unread) model=<\$(lazy_llm_pane_model \$P)>"
 
 lazy_llm_clear_unread "\$P"

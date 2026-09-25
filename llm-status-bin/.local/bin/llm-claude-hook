@@ -50,6 +50,10 @@ source "$(dirname "$0")/lazy-llm-lib.sh" 2>/dev/null || exit 0
 
 HOOK_INPUT=$(cat 2>/dev/null)
 
+# Debugging aid: LAZY_LLM_HOOK_LOG=<file> in the environment `claude` is
+# launched from appends every payload received, one JSON object per line.
+[ -n "${LAZY_LLM_HOOK_LOG:-}" ] && printf '%s\n' "$HOOK_INPUT" >> "$LAZY_LLM_HOOK_LOG" 2>/dev/null
+
 # First "<name>": "<string>" value in the payload.
 field() {
   printf '%s' "$HOOK_INPUT" \
@@ -68,6 +72,28 @@ notify() {
   elif command -v osascript >/dev/null 2>&1; then
     osascript -e "display notification \"$body\" with title \"$title\"" >/dev/null 2>&1 &
   fi
+}
+
+# Record the last response's model from the transcript. Retries for a few
+# seconds: confirmed live that at Stop time the transcript may not have the
+# turn's assistant message flushed yet (a real `claude -p` run found none there
+# during the hook, and the model in the file moments later).
+model_from_transcript() {
+  local transcript="$1" model attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if [ -f "$transcript" ]; then
+      # "<synthetic>" entries (local error messages) aren't a real model.
+      model=$(reverse_lines "$transcript" 2>/dev/null \
+        | grep -m1 -oE '"model":"[^"<][^"]*"' \
+        | sed -E 's/"model":"([^"]*)"/\1/')
+      if [ -n "$model" ]; then
+        lazy_llm_set_pane_model "$PANE_ID" "$model"
+        [ -n "${LAZY_LLM_HOOK_LOG:-}" ] && printf '# model from transcript on attempt %s: %s\n' "$attempt" "$model" >> "$LAZY_LLM_HOOK_LOG"
+        return 0
+      fi
+    fi
+    sleep 0.5
+  done
 }
 
 STATUS_DIR="$HOME/.cache/lazy-llm/status"
@@ -95,14 +121,8 @@ case "$(field hook_event_name)" in
     write_status idle
     lazy_llm_mark_unread "$PANE_ID"
     if [ -z "$(lazy_llm_pane_model "$PANE_ID")" ]; then
-      transcript=$(field transcript_path)
-      if [ -f "$transcript" ]; then
-        # "<synthetic>" entries (local error messages) aren't a real model.
-        model=$(reverse_lines "$transcript" 2>/dev/null \
-          | grep -m1 -oE '"model":"[^"<][^"]*"' \
-          | sed -E 's/"model":"([^"]*)"/\1/')
-        lazy_llm_set_pane_model "$PANE_ID" "$model"
-      fi
+      # Detached, fds closed, so Claude doesn't wait on the retries.
+      model_from_transcript "$(field transcript_path)" </dev/null >/dev/null 2>&1 &
     fi
     ;;
   SessionStart)
