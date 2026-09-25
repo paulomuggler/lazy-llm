@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# llm-claude-hook - Claude Code hook handler feeding lazy-llm's pane status
+#
+# Wired by lazy-llm's own Claude Code plugin (claude-plugin/hooks/hooks.json,
+# registered by install.sh) — not by hand-edited settings.json. The plugin's
+# hooks.json only points at a shim that execs this script, so the logic lives
+# here, stowed into ~/.local/bin like every other lazy-llm command, and edits
+# take effect immediately instead of waiting on a plugin-cache refresh.
+#
+# Usage: llm-claude-hook [<state>]   (hook payload JSON on stdin)
+#
+# What each event does, dispatched on the payload's hook_event_name:
+#   Notification  <state> is "waiting" (matcher permission_prompt — a tool call
+#                 is genuinely blocked on your decision) or "idle" (matcher
+#                 idle_prompt). Writes the fresh-status file read by
+#                 _lazy_llm_read_hook_status; a transition INTO waiting also
+#                 fires a desktop notification.
+#   Stop          status "idle"; marks the pane unread (◉ — finished, not looked
+#                 at yet; lazy_llm_mark_unread skips a pane you're focused on);
+#                 records the model from the transcript if none is recorded yet.
+#   SessionStart  records the payload's `model` (documented as not always
+#                 present — hence the Stop fallback).
+#   PostModelSwitch  records `to_model` — /model switches show up right away.
+#
+# idle_prompt maps to "idle", NOT "waiting": it's Claude Code's own idle nudge,
+# firing some time AFTER a response already completed. Mapping it to "waiting"
+# once overwrote Stop's correct "idle" and fired a misleading "needs your input"
+# notification — reserve "waiting" (◐) for permission_prompt. Likewise only Stop
+# marks unread: idle_prompt fires ~a minute later and would re-mark a pane you'd
+# already looked at.
+#
+# The Stop model fallback never overwrites: the transcript's id can lack a
+# suffix the other two carry (e.g. "[1m]"), and a border flipping between the
+# two forms every turn would be noise.
+#
+# Portable (Linux + macOS): payload fields are pulled with grep/sed, not jq;
+# no tac (GNU-only — tail -r on BSD); desktop notification via notify-send or
+# osascript, whichever exists.
+#
+# Silent no-op outside tmux (TMUX_PANE unset — it's inherited from the shell the
+# `claude` process was launched in, not part of the payload). Always exits 0:
+# this hook must never fail Claude's own flow.
+
+STATE="${1:-}"
+PANE_ID="${TMUX_PANE:-}"
+[ -z "$PANE_ID" ] && exit 0
+
+# shellcheck source=/dev/null
+source "$(dirname "$0")/lazy-llm-lib.sh" 2>/dev/null || exit 0
+
+HOOK_INPUT=$(cat 2>/dev/null)
+
+# First "<name>": "<string>" value in the payload.
+field() {
+  printf '%s' "$HOOK_INPUT" \
+    | grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 \
+    | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/'
+}
+
+reverse_lines() {
+  if command -v tac >/dev/null 2>&1; then tac "$1"; else tail -r "$1"; fi
+}
+
+notify() {
+  local title="$1" body="$2"
+  if command -v notify-send >/dev/null 2>&1; then
+    timeout 2s notify-send -u normal "$title" "$body" -t 8000 2>/dev/null &
+  elif command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"$body\" with title \"$title\"" >/dev/null 2>&1 &
+  fi
+}
+
+STATUS_DIR="$HOME/.cache/lazy-llm/status"
+
+write_status() {
+  local state="$1" status_file="$STATUS_DIR/$PANE_ID" prev=""
+  mkdir -p "$STATUS_DIR" 2>/dev/null || return 0
+  [ -f "$status_file" ] && prev=$(cut -d' ' -f1 "$status_file" 2>/dev/null)
+  printf '%s %s\n' "$state" "$(date +%s)" > "$status_file" 2>/dev/null
+  # Debounce: only notify on a transition INTO waiting, not on every nudge.
+  if [ "$state" = "waiting" ] && [ "$prev" != "waiting" ]; then
+    local label
+    label=$(tmux display-message -t "$PANE_ID" -p '#S:#I' 2>/dev/null)
+    notify "lazy-llm: ${label:-$PANE_ID}" "Claude needs your input"
+  fi
+  # Opportunistic cleanup: status files for panes not touched in a day.
+  find "$STATUS_DIR" -type f -mtime +1 -delete 2>/dev/null
+}
+
+case "$(field hook_event_name)" in
+  Notification)
+    [ -n "$STATE" ] && write_status "$STATE"
+    ;;
+  Stop)
+    write_status idle
+    lazy_llm_mark_unread "$PANE_ID"
+    if [ -z "$(lazy_llm_pane_model "$PANE_ID")" ]; then
+      transcript=$(field transcript_path)
+      if [ -f "$transcript" ]; then
+        # "<synthetic>" entries (local error messages) aren't a real model.
+        model=$(reverse_lines "$transcript" 2>/dev/null \
+          | grep -m1 -oE '"model":"[^"<][^"]*"' \
+          | sed -E 's/"model":"([^"]*)"/\1/')
+        lazy_llm_set_pane_model "$PANE_ID" "$model"
+      fi
+    fi
+    ;;
+  SessionStart)
+    model=$(field model)
+    # Tolerate an object-shaped `model` ({"id": "...", ...}) too.
+    if [ -z "$model" ]; then
+      model=$(printf '%s' "$HOOK_INPUT" \
+        | grep -oE '"model"[[:space:]]*:[[:space:]]*\{[^}]*"id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+        | sed -E 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]*)"$/\1/')
+    fi
+    lazy_llm_set_pane_model "$PANE_ID" "$model"
+    ;;
+  PostModelSwitch)
+    lazy_llm_set_pane_model "$PANE_ID" "$(field to_model)"
+    ;;
+esac
+
+exit 0

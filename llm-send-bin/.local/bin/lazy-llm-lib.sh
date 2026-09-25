@@ -146,7 +146,7 @@ lazy_llm_detect_status_from_content() {
 _LAZY_LLM_HOOK_STATUS_MAX_AGE=30
 
 # Read a Claude Code hook-written status for a pane, if fresh.
-# Written by dev-env's ~/.claude/hooks/lazy-llm-status-notify.sh on the
+# Written by llm-claude-hook (via lazy-llm's Claude Code plugin) on the
 # Notification:permission_prompt (-> waiting — genuinely blocked on a
 # decision) and Notification:idle_prompt / Stop (-> idle) hook events.
 # idle_prompt deliberately maps to "idle", not "waiting" — it's Claude
@@ -223,7 +223,7 @@ lazy_llm_detect_pane_status() {
 # age-out: a turn that finished overnight is still unread in the morning.
 #
 # Set by:
-#   - Claude's Stop hook (dev-env's lazy-llm-status-notify.sh, via
+#   - Claude's Stop hook (llm-claude-hook, via
 #     lazy_llm_mark_unread) — event-driven, catches even sub-second turns.
 #   - Every other tool: a working -> idle transition seen by the scrape (a
 #     "busy" marker left by an earlier "working" observation). Only as fast
@@ -1087,7 +1087,7 @@ lazy_llm_clamp_label() {
 # ──────────────────────────────────────────────────────────────────────────
 # Per-pane model — which model an agent pane is running right now, for the
 # AI pane's border (llm-pane-border). Fed by the harness itself, never
-# scraped: for claude, dev-env's lazy-llm-model-track.sh hook writes it on
+# scraped: for claude, llm-claude-hook (lazy-llm's Claude Code plugin) writes it on
 # SessionStart (payload's `model`), PostModelSwitch (`to_model` — fires on a
 # /model switch), and Stop (last response's model in the transcript, for
 # sessions whose SessionStart payload carried none). Other harnesses have no

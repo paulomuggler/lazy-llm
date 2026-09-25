@@ -348,29 +348,40 @@ While the AI makes edits, use the editor pane to review diffs, stage changes, an
 
 | Glyph | State | Meaning |
 |-------|-------|---------|
+| `◐` | waiting | Blocked on your decision (permission prompt, `[y/n]`, numbered choice) |
+| `◉` | unread | Finished a turn you haven't looked at yet — your turn |
 | `●` | working | AI is generating (interrupt hint visible in pane) |
-| `○` | idle | Prompt visible, waiting for input |
-| `◐` | waiting | Permission prompt (`[y/n]`) or numbered choice |
+| `○` | idle | Finished, and you've already seen it |
 | `?` | unknown | Pane capture failed or content unrecognized |
+
+A pane becomes **unread** when its turn ends while you're not focused on it, and goes
+back to idle when you focus it, cycle it into view, send it a prompt (`llm-send`), or
+pick it in the dashboard. Markers live in `~/.cache/lazy-llm/unread/`.
+
+The summary at the start of `llm-status` (and of the AI pane's border) counts AI panes
+per status across every workspace — e.g. `3ws 1◐ 2◉ 1● 3○`, zero counts omitted. The AI
+pane's border also names the pane: `workspace - pane name - harness - model`.
 
 Detection runs against the AI pane's content via `tmux capture-pane`. Patterns live in `lazy_llm_detect_status_from_content` in `lazy-llm-lib.sh` and default to Claude-tuned regexes; other tools (gemini, codex, grok, aider) fall through to the same defaults as best-effort.
 
-**Claude panes get a more reliable signal.** A hook script
-(`dev-env`'s `dotfiles/claude/dot-claude/hooks/lazy-llm-status-notify.sh`, wired to
-Claude Code's `Notification` and `Stop` events in `~/.claude/settings.json`) writes
-`waiting`/`idle` to `~/.cache/lazy-llm/status/<pane_id>` as those events fire, and also
-fires a desktop notification (`notify-send`) naming the workspace when a pane
-transitions into `waiting` — so you find out Claude needs input without having to be
-looking at that pane. `lazy_llm_detect_pane_status` prefers this event-driven status
-(when fresh, ≤30s old) over the content scrape for `tool=claude`; every other tool
-always uses the scrape.
+**Claude panes get a more reliable signal**, from lazy-llm's own Claude Code plugin
+(`claude-plugin/`, registered by `install.sh` via `claude plugin marketplace add` +
+`claude plugin install lazy-llm@lazy-llm`). Its hooks run `llm-claude-hook`, which:
+- writes `waiting`/`idle` to `~/.cache/lazy-llm/status/<pane_id>` on `Notification` and
+  `Stop`, and fires a desktop notification (`notify-send` on Linux, `osascript` on
+  macOS) when a pane transitions into `waiting`;
+- marks the pane unread on `Stop`;
+- records the pane's model on `SessionStart`, `PostModelSwitch` (so `/model` switches
+  show up immediately), and `Stop` (fallback, from the transcript).
 
-**Dashboard reminder.** `llm-status`'s output always ends with `S:dash` — a static
-reminder of `Prefix+S` (opens the dashboard), since lazy-llm has no LazyVim-style
-always-on keymap display. It's wired into `status-right` via
-`dotfiles/tmux/.config/tmux/tmux.conf.local`'s `tmux_conf_theme_status_right`
-(`dev-env` repo) — `llm-status` prints nothing outside a lazy-llm workspace window,
-so it's safe there unconditionally.
+`lazy_llm_detect_pane_status` prefers the hook status (when fresh, ≤30s old) over the
+content scrape for `tool=claude`; every other tool always uses the scrape, and marks
+unread from an observed working → idle transition instead.
+
+**Dashboard reminder.** `llm-status`'s output always ends with `Dash ^B+S` — a
+reminder of `Prefix+S` (opens the dashboard), derived from your actual prefix key.
+Add `#(llm-status)` to your tmux `status-right` to show it — `llm-status` prints
+nothing outside a lazy-llm workspace window, so it's safe there unconditionally.
 
 ### Neovim Plugins
 

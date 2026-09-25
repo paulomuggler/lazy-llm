@@ -1,0 +1,9 @@
+{
+  "name": "lazy-llm",
+  "description": "Feeds lazy-llm's tmux pane status (waiting / unread / idle) and model display from Claude Code hooks.",
+  "version": "0.1.0",
+  "author": {
+    "name": "paulomuggler"
+  },
+  "homepage": "https://github.com/paulomuggler/lazy-llm"
+}

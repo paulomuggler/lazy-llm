@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" waiting" }]
+      },
+      {
+        "matcher": "idle_prompt",
+        "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" idle" }]
+      }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\"" }] }
+    ],
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\"" }] }
+    ],
+    "PostModelSwitch": [
+      { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\"" }] }
+    ]
+  }
+}

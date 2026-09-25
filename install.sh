@@ -82,6 +82,45 @@ for package in "${STOW_PACKAGES[@]}"; do
 done
 echo "    Symlinks created."
 
+# --- 4. Claude Code plugin ---
+# Registers this repo as a Claude Code marketplace and installs its plugin
+# (claude-plugin/), whose hooks feed pane status (waiting / unread / idle) and
+# the model shown on the AI pane border. Optional: without it, Claude panes
+# fall back to screen-scraped status and show no model.
+#
+# The marketplace source is this checkout's GitHub remote when it has one, not
+# its local path: Claude Code records the source in ~/.claude/settings.json,
+# which is often a dotfiles-managed file shared across machines, and a
+# home-directory path baked in there breaks on the next machine. The plugin
+# itself is only a shim over the stowed llm-claude-hook, so pulling it from
+# GitHub instead of the local checkout costs nothing in freshness.
+echo "--> Setting up the Claude Code plugin..."
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MARKETPLACE_SOURCE="$REPO_DIR"
+origin_url=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)
+if [[ "$origin_url" =~ github\.com[:/]([^/]+/[^/]+)$ ]]; then
+  MARKETPLACE_SOURCE="${BASH_REMATCH[1]%.git}"
+fi
+if ! command -v claude &>/dev/null; then
+  echo -e "    ${YELLOW}claude not found; skipped. Re-run this script after installing Claude Code.${NC}"
+else
+  if claude plugin marketplace list 2>/dev/null | grep -qE '❯ lazy-llm$'; then
+    claude plugin marketplace update lazy-llm >/dev/null 2>&1 \
+      || echo -e "    ${YELLOW}Warning: could not update the lazy-llm marketplace.${NC}"
+  else
+    claude plugin marketplace add "$MARKETPLACE_SOURCE" >/dev/null 2>&1 \
+      || echo -e "    ${YELLOW}Warning: could not add $MARKETPLACE_SOURCE as a marketplace.${NC}"
+  fi
+  if claude plugin list 2>/dev/null | grep -q '❯ lazy-llm@lazy-llm'; then
+    claude plugin update lazy-llm@lazy-llm >/dev/null 2>&1 \
+      || echo -e "    ${YELLOW}Warning: could not update the lazy-llm plugin.${NC}"
+  else
+    claude plugin install lazy-llm@lazy-llm >/dev/null 2>&1 \
+      || echo -e "    ${YELLOW}Warning: could not install the lazy-llm plugin.${NC}"
+  fi
+  echo "    Plugin lazy-llm@lazy-llm installed (takes effect in new Claude sessions)."
+fi
+
 # --- 5. Final Instructions ---
 BIN_DIR="$HOME/.local/bin"
 echo "--> Checking user PATH for $BIN_DIR..."

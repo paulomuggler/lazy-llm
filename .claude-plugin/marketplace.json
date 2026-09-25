@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "lazy-llm",
+  "description": "lazy-llm's Claude Code integration",
+  "owner": {
+    "name": "paulomuggler"
+  },
+  "plugins": [
+    {
+      "name": "lazy-llm",
+      "description": "Feeds lazy-llm's tmux pane status (waiting / unread / idle) and model display from Claude Code hooks.",
+      "version": "0.1.0",
+      "author": {
+        "name": "paulomuggler"
+      },
+      "source": "./claude-plugin",
+      "category": "productivity",
+      "homepage": "https://github.com/paulomuggler/lazy-llm"
+    }
+  ]
+}
