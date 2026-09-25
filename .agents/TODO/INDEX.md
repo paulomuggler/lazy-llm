@@ -1,6 +1,11 @@
 # TODO Index
 > Auto-generated. Run `/todo lint` to regenerate.
 
+## Pending (1)
+
+### P1 - High
+- [ ] [workspace-save-restore](workspace-save-restore.md) - Save lazy-llm workspaces to a manifest and rebuild them after the tmux server dies (lazy-llm restore)
+
 ## Done (6)
 
 - [x] [pane-border-identity-suffixes](done/pane-border-identity-suffixes.md) - AI pane border shows workspace - pane name - harness - model; Claude hooks moved into lazy-llm's own plugin
