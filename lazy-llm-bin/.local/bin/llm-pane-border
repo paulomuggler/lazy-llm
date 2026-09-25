@@ -4,10 +4,15 @@
 #
 # Deliberately separate from llm-status: a pane border is much narrower than
 # the status-right segment (often just that one pane's own width — tens of
-# columns, not the whole terminal), so this renders "Nws <per-status
-# counts> │ tool glyph" — the SAME cross-workspace summary llm-status shows (per user
-# request — "add the same workspace status as the bottom status bar"), plus
-# this specific pane's own tool+status. Only meaningful for the AI pane; the
+# columns, not the whole terminal), so this renders
+#   "Nws <per-status counts> │ workspace - pane name - harness - model glyph"
+# — the SAME cross-workspace summary llm-status shows (per user request —
+# "add the same workspace status as the bottom status bar"), plus this
+# specific pane's own identity + status. The identity suffixes are border-
+# only (per user request): llm-status's tiles stay just "name glyph".
+# "pane name" is dropped when the pane has no custom name (it would only
+# repeat the harness), "model" when the harness hasn't reported one (see
+# lazy_llm_pane_model). Only meaningful for the AI pane; the
 # editor and prompt panes' borders show their own text directly via the
 # pane-border-format expression, this script isn't invoked for those.
 
@@ -32,6 +37,7 @@ glyph=$(lazy_llm_status_glyph "$status")
 # Resolve session:window FROM pane_id -- this script only ever receives the
 # target pane's own id/tool, not its window context.
 display_label="$tool"
+workspace=$(tmux display-message -t "$pane_id" -p '#S' 2>/dev/null) || workspace=""
 sw=$(tmux display-message -t "$pane_id" -p '#S:#I' 2>/dev/null) || sw=""
 if [ -n "$sw" ]; then
   ai_panes=$(tmux show-option -wv -t "$sw" @AI_PANES 2>/dev/null) || ai_panes=""
@@ -48,6 +54,20 @@ if [ -n "$sw" ]; then
   fi
 fi
 
+# Identity: workspace - pane name - harness - model, empty parts dropped,
+# joined by a dim " - " (restoring C_TEXT after each separator).
+identity_parts=()
+[ -n "$workspace" ] && identity_parts+=("$workspace")
+[ "$display_label" != "$tool" ] && identity_parts+=("$display_label")
+identity_parts+=("$tool")
+model=$(lazy_llm_pane_model "$pane_id")
+[ -n "$model" ] && identity_parts+=("$model")
+identity=""
+for part in "${identity_parts[@]}"; do
+  [ -n "$identity" ] && identity+="#[fg=${C_DIM}] - #[fg=${C_TEXT}]"
+  identity+="$part"
+done
+
 read -r -a summary_counts < <(lazy_llm_compute_summary)
 summary=$(lazy_llm_render_summary "$C_DIM" "${summary_counts[@]}")
 
@@ -59,4 +79,4 @@ summary=$(lazy_llm_render_summary "$C_DIM" "${summary_counts[@]}")
 # bug) — everything here now has an explicit color that doesn't fade with
 # focus, matching the status-right segment's own tiles.
 printf ' #[fg=%s]%s#[default] │ #[fg=%s]%s #[fg=%s]%s#[default] ' \
-  "$C_DIM" "$summary" "$C_TEXT" "$display_label" "$color" "$glyph"
+  "$C_DIM" "$summary" "$C_TEXT" "$identity" "$color" "$glyph"

@@ -1083,3 +1083,65 @@ lazy_llm_clamp_label() {
   [[ "$max" -le 1 ]] && { printf '%s' "${label:0:$max}"; return; }
   printf '%s…' "${label:0:$((max - 1))}"
 }
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-pane model — which model an agent pane is running right now, for the
+# AI pane's border (llm-pane-border). Fed by the harness itself, never
+# scraped: for claude, dev-env's lazy-llm-model-track.sh hook writes it on
+# SessionStart (payload's `model`), PostModelSwitch (`to_model` — fires on a
+# /model switch), and Stop (last response's model in the transcript, for
+# sessions whose SessionStart payload carried none). Other harnesses have no
+# such feed yet, so they simply have no model.
+#
+# ~/.cache/lazy-llm/model/<pane_id> holds "<pane_pid> <model id>" — same
+# pid guard as the unread markers, same reason (%N reuse after a restart).
+# ──────────────────────────────────────────────────────────────────────────
+_LAZY_LLM_MODEL_DIR="$HOME/.cache/lazy-llm/model"
+
+# Args: $1 pane_id  $2 model id (as the harness reports it). Always returns 0.
+lazy_llm_set_pane_model() {
+  local pane_id="${1:-}" model="${2:-}" pid
+  [[ -n "$pane_id" && -n "$model" ]] || return 0
+  pid=$(_lazy_llm_pane_pid "$pane_id") || return 0
+  [[ -n "$pid" ]] || return 0
+  mkdir -p "$_LAZY_LLM_MODEL_DIR" 2>/dev/null || return 0
+  printf '%s %s\n' "$pid" "$model" > "$_LAZY_LLM_MODEL_DIR/$pane_id" 2>/dev/null || true
+  return 0
+}
+
+# Stdout: the pane's model, shortened (lazy_llm_short_model), or nothing if
+# unknown. Always returns 0.
+lazy_llm_pane_model() {
+  local pane_id="${1:-}" f saved="" model="" pid
+  f="$_LAZY_LLM_MODEL_DIR/$pane_id"
+  [[ -n "$pane_id" && -f "$f" ]] || return 0
+  read -r saved model < "$f" 2>/dev/null || true
+  pid=$(_lazy_llm_pane_pid "$pane_id") || pid=""
+  if [[ -z "$pid" || "$saved" != "$pid" ]]; then
+    rm -f "$f" 2>/dev/null || true
+    return 0
+  fi
+  lazy_llm_short_model "$model"
+  return 0
+}
+
+# Shorten a model id for a narrow border:
+#   claude-sonnet-5            -> sonnet5
+#   claude-opus-5-5[1m]        -> opus5.5[1m]
+#   claude-haiku-4-5-20251001  -> haiku4.5
+# Anything not shaped like <family>-<version parts> passes through as-is
+# (minus a "claude-" prefix), so an unfamiliar id still shows up.
+lazy_llm_short_model() {
+  local m="${1:-}" suffix=""
+  [[ -n "$m" ]] || return 0
+  if [[ "$m" =~ ^(.*)(\[[^]]*\])$ ]]; then
+    m="${BASH_REMATCH[1]}"; suffix="${BASH_REMATCH[2]}"
+  fi
+  m="${m#claude-}"
+  [[ "$m" =~ ^(.*)-[0-9]{8}$ ]] && m="${BASH_REMATCH[1]}"
+  if [[ "$m" =~ ^([a-z]+)-([0-9]+(-[0-9]+)*)$ ]]; then
+    local ver="${BASH_REMATCH[2]}"
+    m="${BASH_REMATCH[1]}${ver//-/.}"
+  fi
+  printf '%s%s' "$m" "$suffix"
+}
