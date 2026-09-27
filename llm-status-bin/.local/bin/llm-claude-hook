@@ -56,6 +56,33 @@ HOOK_INPUT=$(cat 2>/dev/null)
 # launched from appends every payload received, one JSON object per line.
 [ -n "${LAZY_LLM_HOOK_LOG:-}" ] && printf '%s\n' "$HOOK_INPUT" >> "$LAZY_LLM_HOOK_LOG" 2>/dev/null
 
+# Only the pane's own claude speaks for the pane. A claude started from
+# inside it — e.g. `claude -p` run by the agent's own Bash tool — inherits
+# TMUX_PANE and fires these hooks too, with its own session_id; taking those
+# pointed the pane's conversation (and its status, unread mark and model) at
+# the wrong session (found live). So: if the claude that spawned this hook
+# (it runs hooks through a shell, so it's within a few ancestors) isn't a
+# direct child of the pane's shell, ignore the event. No claude that close
+# means the hook was run by hand or by a test: handle it as before.
+spawned_by_nested_claude() {
+  local pane_pid pid="$PPID" ppid comm
+  pane_pid=$(tmux display-message -t "$PANE_ID" -p '#{pane_pid}' 2>/dev/null) || return 1
+  [ -n "$pane_pid" ] || return 1
+  for _ in 1 2 3; do
+    { [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$pid" != "$pane_pid" ]; } || return 1
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null)
+    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ "${comm##*/}" = claude ]; then
+      [ -n "${LAZY_LLM_HOOK_LOG:-}" ] && printf '# spawner claude pid %s, ppid %s, pane_pid %s\n' "$pid" "$ppid" "$pane_pid" >> "$LAZY_LLM_HOOK_LOG"
+      [ "$ppid" != "$pane_pid" ]
+      return
+    fi
+    pid="$ppid"
+  done
+  return 1
+}
+spawned_by_nested_claude && exit 0
+
 # First "<name>": "<string>" value in the payload.
 field() {
   printf '%s' "$HOOK_INPUT" \
