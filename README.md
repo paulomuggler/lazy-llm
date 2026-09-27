@@ -398,9 +398,11 @@ While the AI makes edits, use the editor pane to review diffs, stage changes, an
 | `○` | idle | Finished, and you've already seen it |
 | `?` | unknown | Pane capture failed or content unrecognized |
 
-A pane becomes **unread** when its turn ends while you're not focused on it, and goes
-back to idle when you focus it, cycle it into view, send it a prompt (`llm-send`), or
-pick it in the dashboard. Markers live in `~/.cache/lazy-llm/unread/`.
+A pane becomes **unread** when its turn ends while you're not looking at it (another
+pane, window or session, or the terminal itself in the background), and goes back to
+idle when it's in front of you again: you focus it, switch to its window or session,
+refocus the terminal, cycle it into view, send it a prompt (`llm-send`), or pick it in
+the dashboard. Markers live in `~/.cache/lazy-llm/unread/`.
 
 The summary at the start of `llm-status` (and of the AI pane's border) counts AI panes
 per status across every workspace — e.g. `3ws 1◐ 2◉ 1● 3○`, zero counts omitted. The AI
@@ -411,16 +413,18 @@ Detection runs against the AI pane's content via `tmux capture-pane`. Patterns l
 **Claude panes get a more reliable signal**, from lazy-llm's own Claude Code plugin
 (`claude-plugin/`, registered by `install.sh` via `claude plugin marketplace add` +
 `claude plugin install lazy-llm@lazy-llm`). Its hooks run `llm-claude-hook`, which:
-- writes `waiting`/`idle` to `~/.cache/lazy-llm/status/<pane_id>` on `Notification` and
-  `Stop`, and fires a desktop notification (`notify-send` on Linux, `osascript` on
+- writes `working`/`waiting`/`idle` to `~/.cache/lazy-llm/status/<pane_id>` on
+  `UserPromptSubmit`, `Notification` and `Stop`, and fires a desktop notification (`notify-send` on Linux, `osascript` on
   macOS) when a pane transitions into `waiting`;
-- marks the pane unread on `Stop`;
+- marks the pane unread on `Stop`, and clears the mark on `UserPromptSubmit`;
 - records the pane's model on `SessionStart`, `PostModelSwitch` (so `/model` switches
   show up immediately), and `Stop` (fallback, from the transcript).
 
 `lazy_llm_detect_pane_status` prefers the hook status (when fresh, ≤30s old) over the
 content scrape for `tool=claude`; every other tool always uses the scrape, and marks
-unread from an observed working → idle transition instead.
+unread from an observed working → idle transition instead. The scrape only looks at the
+bottom of the pane (the current spinner, input box and footer): Claude Code's redraws
+leave stale spinner lines in scrollback, which used to read as `working` indefinitely.
 
 **Dashboard reminder.** `llm-status`'s output always ends with `Dash ^B+S` — a
 reminder of `Prefix+S` (opens the dashboard), derived from your actual prefix key.

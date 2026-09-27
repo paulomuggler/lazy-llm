@@ -29,10 +29,24 @@
 # Usage: llm-pane-focus-track <pane_id> <session_name> <window_index>
 # (invoked via #{pane_id}/#{session_name}/#{window_index} format expansion
 # in the hook command itself — see lazy-llm's set-hook -g after-select-pane)
+#
+#        llm-pane-focus-track --if-viewed <pane_id>
+# Clears the pane's unread mark only if it's actually in front of you now
+# (lazy_llm_pane_is_focused). For the hooks where a pane comes into view
+# WITHOUT a select-pane — switching window (session-window-changed) or
+# session (client-session-changed), or the terminal regaining focus
+# (client-focus-in); confirmed live that after-select-pane fires for none of
+# the window switches. Those also fire for scripted window changes in
+# detached sessions, hence the focus check rather than an unconditional clear.
 
 set -euo pipefail
 
 source "$(dirname "$0")/lazy-llm-lib.sh"
+
+if [ "${1:-}" = "--if-viewed" ]; then
+  [ -n "${2:-}" ] && lazy_llm_pane_is_focused "$2" && lazy_llm_clear_unread "$2"
+  exit 0
+fi
 
 pane_id="${1:-}"
 session="${2:-}"

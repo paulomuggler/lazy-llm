@@ -15,6 +15,9 @@
 #                 idle_prompt). Writes the fresh-status file read by
 #                 _lazy_llm_read_hook_status; a transition INTO waiting also
 #                 fires a desktop notification.
+#   UserPromptSubmit  status "working" (<state>), and clears the pane's unread
+#                 mark: you just answered it. Without this, a prompt typed within
+#                 30s of the last Stop read as idle/unread until that aged out.
 #   Stop          status "idle"; marks the pane unread (◉ — finished, not looked
 #                 at yet; lazy_llm_mark_unread skips a pane you're focused on);
 #                 records the model from the transcript if none is recorded yet.
@@ -152,6 +155,10 @@ fi
 case "$(field hook_event_name)" in
   Notification)
     [ -n "$STATE" ] && write_status "$STATE"
+    ;;
+  UserPromptSubmit)
+    write_status working
+    lazy_llm_clear_unread "$PANE_ID"
     ;;
   Stop)
     write_status idle

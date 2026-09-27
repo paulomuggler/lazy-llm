@@ -98,17 +98,27 @@ lazy_llm_validate_pane() {
 # (claude-tuned) patterns are used; gemini/codex/grok/aider fall through
 # because they typically use similar prompt + permission idioms.
 lazy_llm_detect_status_from_content() {
-  local tool="${1:-claude}"
   local content
-  content=$(cat)
+  IFS= read -rd '' content || true
+  _lazy_llm_classify_content "${1:-claude}" "$content"
+  printf '%s\n' "$REPLY"
+}
+
+# The classifier itself. Fork-free (bash regex, no grep/tail): the status
+# bar, pane borders and dashboard run it for every AI pane on every refresh,
+# and each forked grep was a measurable share of the dashboard's open and
+# fold/reorder latency. Sets REPLY instead of echoing.
+# Args: $1 tool_name  $2 pane content
+_lazy_llm_classify_content() {
+  local tool="${1:-claude}" content="$2"
 
   # "ctrl+c to interrupt" was this pattern's original signal but current Claude
   # Code UI versions don't show it — confirmed live against a real busy session:
   # the actual "working" tells are the spinner/duration line ("Boondoggling…
-  # (6m 42s · ↓ 22.4k tokens)") always present while generating, and "esc to
-  # interrupt" specifically while a tool call is running. Match all three so
-  # this survives future UI wording changes better than any single string.
-  local interrupt_pat='ctrl\+c to interrupt|esc to interrupt|\([0-9]+m [0-9]+s'
+  # (6m 42s · ↓ 22.4k tokens)", or "(42s · …" under a minute) always present
+  # while generating, and "esc to interrupt" in the footer. Match all of them
+  # so this survives future UI wording changes better than any single string.
+  local interrupt_pat='ctrl\+c to interrupt|esc to interrupt|\([0-9]+m [0-9]+s|\([0-9]+s ·'
   local waiting_pat='\[[yY]/[yYnN]\]|^[[:space:]]*[1-9][.)][[:space:]]'
   local prompt_pat='❯'
 
@@ -118,32 +128,41 @@ lazy_llm_detect_status_from_content() {
       ;;
   esac
 
-  # waiting_pat's numbered-option alternative (matches Claude Code's actual
-  # permission-prompt UI, e.g. "1. Yes  2. Yes, and don't ask again  3. No")
-  # is indistinguishable from an ordinary markdown numbered list in Claude's
-  # own RESPONSE text — confirmed live against a real idle pane: a
-  # completed response ending in "1. A Variant primitive... 2. ... 3. ..."
-  # was misclassified as "waiting" purely from old scrollback, long after
-  # the turn had actually finished (this is why finished sessions kept
-  # showing waiting — not just the hook mapping bug fixed earlier, THIS
-  # too). A genuine interactive prompt is always near the CURRENT input
-  # line at the bottom of the pane; old scrollback several screens up never
-  # is. Scope this specific check to the last ~10 lines instead of the full
-  # capture, so a real prompt still matches but a numbered list left over
-  # from a finished response doesn't — tuned against the exact
-  # false-positive content above: a tail of 15 still caught 2 of its 3 list
-  # lines, 12 and 10 caught none.
-  local tail_content
-  tail_content=$(tail -n 10 <<< "$content")
+  # Both patterns are scoped to the bottom of the capture — the current
+  # frame (spinner, input box, footer) — never the whole 200-line capture.
+  #
+  # working: Claude Code's redraws (resizes, popups over the pane, a pane
+  # too short for its frame) push stale frames into scrollback, spinner
+  # line included. Matched over the full capture, one such remnant ("*
+  # Perambulating… (9m 43s", 176 lines up in a pane that had finished) read
+  # as "working" until it scrolled out — confirmed live; that's the "stuck
+  # on working, never shows unread" report (unread only layers on idle).
+  # The live spinner and the footer's "esc to interrupt" are always within
+  # the last 15 lines.
+  #
+  # waiting: the numbered-option alternative (Claude Code's permission
+  # prompt, "1. Yes  2. Yes, and don't ask again  3. No") is
+  # indistinguishable from an ordinary markdown numbered list in a finished
+  # response — confirmed live, a response ending in "1. … 2. … 3. …" read as
+  # "waiting". A real prompt is at the bottom; tuned against that exact
+  # false positive: a tail of 15 still caught 2 of its 3 list lines, 12 and
+  # 10 caught none.
+  local -a lines
+  mapfile -t lines <<< "$content"
+  local n=${#lines[@]} i working=false waiting=false
+  for (( i = (n > 15 ? n - 15 : 0); i < n; i++ )); do
+    [[ "${lines[i]}" =~ $interrupt_pat ]] && working=true
+    (( i >= n - 10 )) && [[ "${lines[i]}" =~ $waiting_pat ]] && waiting=true
+  done
 
-  if grep -qE "$interrupt_pat" <<< "$content"; then
-    echo working
-  elif grep -qE "$waiting_pat" <<< "$tail_content"; then
-    echo waiting
-  elif grep -qF "$prompt_pat" <<< "$content"; then
-    echo idle
+  if $working; then
+    REPLY=working
+  elif $waiting; then
+    REPLY=waiting
+  elif [[ "$content" == *"$prompt_pat"* ]]; then
+    REPLY=idle
   else
-    echo unknown
+    REPLY=unknown
   fi
 }
 
@@ -156,18 +175,19 @@ _LAZY_LLM_HOOK_STATUS_MAX_AGE=30
 
 # Read a Claude Code hook-written status for a pane, if fresh.
 # Written by llm-claude-hook (via lazy-llm's Claude Code plugin) on the
-# Notification:permission_prompt (-> waiting — genuinely blocked on a
-# decision) and Notification:idle_prompt / Stop (-> idle) hook events.
+# UserPromptSubmit (-> working), Notification:permission_prompt (-> waiting —
+# genuinely blocked on a decision) and Notification:idle_prompt / Stop
+# (-> idle) hook events.
 # idle_prompt deliberately maps to "idle", not "waiting" — it's Claude
 # Code's own delayed idle nudge, not a new blocking state; mapping it to
 # "waiting" was overwriting Stop's correct "idle" and is why finished
 # sessions used to get stuck showing waiting (see the hook script's own
-# comment for the full story). The hook never writes "working" — a pane
-# that's actively generating has no fresh file (or an aged-out one), and
-# falls through to the content-scrape path, which detects "working" fine
-# via the interrupt-hint pattern.
+# comment for the full story). "working" comes from UserPromptSubmit: without
+# it, a prompt typed within 30s of the last Stop read as idle/unread until
+# the Stop file aged out. Past the freshness window a long turn falls
+# through to the content scrape, which sees the live spinner/footer.
 # Args:   $1 pane_id
-# Stdout: waiting | idle   (only if a fresh file says so)
+# Stdout: working | waiting | idle   (only if a fresh file says so)
 # Returns 1 (nothing echoed) if no usable hook file exists.
 _lazy_llm_read_hook_status() {
   local pane_id="$1"
@@ -176,11 +196,11 @@ _lazy_llm_read_hook_status() {
 
   local hook_state hook_ts
   read -r hook_state hook_ts < "$status_file" 2>/dev/null || return 1
-  [[ "$hook_state" == "waiting" || "$hook_state" == "idle" ]] || return 1
+  [[ "$hook_state" == "working" || "$hook_state" == "waiting" || "$hook_state" == "idle" ]] || return 1
   [[ "$hook_ts" =~ ^[0-9]+$ ]] || return 1
 
   local now age
-  now=$(date +%s)
+  now=${EPOCHSECONDS:-$(date +%s)}
   age=$((now - hook_ts))
   [[ "$age" -ge 0 && "$age" -le "$_LAZY_LLM_HOOK_STATUS_MAX_AGE" ]] || return 1
 
@@ -213,7 +233,8 @@ lazy_llm_detect_pane_status() {
   else
     local content
     content=$(tmux capture-pane -p -t "$pane_id" -S -200 2>/dev/null) || { echo unknown; return 0; }
-    base=$(printf '%s' "$content" | lazy_llm_detect_status_from_content "$tool")
+    _lazy_llm_classify_content "$tool" "$content"
+    base="$REPLY"
   fi
 
   _lazy_llm_apply_unread "$pane_id" "$tool" "$base"
@@ -258,12 +279,20 @@ _lazy_llm_pane_pid() {
 }
 
 # Is this the pane the user is looking at right now: the active pane of the
-# active window of a session with a client attached?
+# active window of a session shown by a client whose terminal has focus?
+# The terminal-focus part is tmux's own "focused" client flag (focus-events
+# on; confirmed live that it drops on the terminal's focus-out and returns on
+# focus-in). Without it, a turn that finished while you were in another app
+# was never marked unread, because its pane was still tmux-active. tmux
+# starts a client out as focused, so a terminal that never reports focus
+# behaves as before.
 # Returns 0 if so, 1 otherwise (including when the pane doesn't exist).
 lazy_llm_pane_is_focused() {
-  local flags
-  flags=$(tmux display-message -t "$1" -p '#{pane_active}#{window_active}#{?session_attached,1,0}' 2>/dev/null) || return 1
-  [[ "$flags" == "111" ]]
+  local flags client_flags
+  flags=$(tmux display-message -t "$1" -p '#{pane_active}#{window_active}#{?session_attached,1,0} #{session_id}' 2>/dev/null) || return 1
+  [[ "${flags%% *}" == "111" ]] || return 1
+  client_flags=$(tmux list-clients -t "${flags#* }" -F ',#{client_flags},' 2>/dev/null) || return 1
+  [[ "$client_flags" == *,focused,* ]]
 }
 
 # Mark a pane unread, unless it's focused right now. Always returns 0 — it's
@@ -1314,6 +1343,18 @@ lazy_llm_register_tmux_integration() {
   # and removes the race entirely (also confirmed live, repeatedly).
   tmux set-hook -g after-select-pane \
     "run-shell '$HOME/.local/bin/llm-pane-focus-track #{pane_id} #{session_name} #{window_index}'"
+
+  # A pane can also come into view with no select-pane at all: switching
+  # window or session, or the terminal window regaining focus. Each clears
+  # the now-visible pane's unread mark if it's really in front of you (see
+  # llm-pane-focus-track --if-viewed). Backgrounded: unlike the @AI_PANE_IDX
+  # update above there's no ordering to protect, and a window switch
+  # shouldn't wait on it.
+  local _viewed_hook
+  for _viewed_hook in session-window-changed client-session-changed client-focus-in; do
+    tmux set-hook -g "$_viewed_hook" \
+      "run-shell -b '$HOME/.local/bin/llm-pane-focus-track --if-viewed #{pane_id}'"
+  done
 
   # Register keybindings — scoped to lazy-llm windows via if-shell check.
   # In non-lazy-llm windows, C-n/C-p fall back to next/previous-window;
