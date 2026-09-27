@@ -797,24 +797,54 @@ _dashboard_pad() {
 # the manifest — no RPC, no save — so it's cheap, and testable via
 # --emit-saved-rows.
 # Args: $1 "--dropped" to include dropped entries
+#
+# Entries are folded by default; 'z' expands one to list its AI panes as
+# child rows ("saved-pane:<id>:<window>:<pane>", carrying the entry's state
+# so Enter/K on a pane row act on its workspace). Which entries are open is a
+# server-scoped tmux option, @lazy_llm_saved_open (space-separated ids), for
+# the same reason fold state is external in the Workspaces tree: 'z' runs as
+# an fzf transform() subprocess (see --saved-fold-transform).
 _dashboard_build_saved_rows() {
-  local flag="${1:-}" state id name _dir panes _held convs _saved ago glyph color
-  local -a args=(saved --tsv)
+  local flag="${1:-}" state id name _dir panes _held convs _saved ago glyph color open fold
+  local parent_state="" w p tool pname conv where
+  open=" $(tmux show-option -sqv @lazy_llm_saved_open 2>/dev/null) "
+  local -a args=(saved --tsv --expand "$open")
   [[ "$flag" == "--dropped" ]] && args+=(--dropped)
   # Compact on purpose: the list column is under half the popup (the preview
   # takes the rest and shows the dir and every pane).
   while IFS=$'\t' read -r state id name _dir panes _held convs _saved ago; do
     [[ -n "$id" ]] || continue
+    if [[ "$state" == pane ]]; then
+      # pane <id> <window> <pane> <tool> <name> <conv> <visible|held>
+      w="$name"; p="$_dir"; tool="$panes"; pname="$_held"; conv="$convs"; where="$_saved"
+      [[ "$pname" == "-" ]] && pname=""
+      [[ "$conv" == "-" ]] && conv="no conversation" || conv="conv ${conv:0:8}"
+      printf 'saved-pane:%s:%s:%s\t%s\t      ↳ %s %s· %s · %s\n' "$id" "$w" "$p" "$parent_state" \
+        "$(_dashboard_pad 8 <<< "$tool")" "${pname:+$(lazy_llm_clamp_label "$pname" 24) }" "$conv" "$where"
+      continue
+    fi
+    parent_state="$state"
     case "$state" in
       live)       glyph="●"; color="#5fff00" ;;
       restorable) glyph="◌"; color="#ffff00" ;;
       closed)     glyph="◇"; color="#bcbcbc" ;;
       *)          glyph="✕"; color="#8a8a8a" ;;
     esac
-    printf 'saved:%s\t%s\t%s%s\033[0m %s %s · %s/%s conv · %s\n' "$id" "$state" \
+    [[ "$open" == *" $id "* ]] && fold="▾" || fold="▸"
+    printf 'saved:%s\t%s\t%s %s%s\033[0m %s %s · %s/%s conv · %s\n' "$id" "$state" "$fold" \
       "$(_ansi_fg "$color")" "$glyph" "$(lazy_llm_clamp_label "$name" 20 | _dashboard_pad 20)" \
       "$panes pane$([[ $panes -eq 1 ]] || echo s)" "$convs" "$panes" "$ago"
   done < <("$HOME/.local/bin/llm-persist" "${args[@]}" 2>/dev/null || true)
+}
+
+# The entry id behind a Saved-tab row id ("saved:<id>" or
+# "saved-pane:<id>:<w>:<p>").
+_dashboard_saved_row_entry() {
+  local rid="$1"
+  case "$rid" in
+    saved:*) printf '%s\n' "${rid#saved:}" ;;
+    saved-pane:*) rid="${rid#saved-pane:}"; printf '%s\n' "${rid%%:*}" ;;
+  esac
 }
 
 render_saved_tab() {
@@ -827,9 +857,9 @@ render_saved_tab() {
   if [[ -z "$lines" ]]; then
     header="nothing saved yet — s:save now"
   elif [[ "$_budget" -ge 60 ]]; then
-    header="enter:restore/switch c:close(keep) K:drop A:restore-all s:save d:dropped"
+    header="enter:restore/switch z:panes c:close(keep) K:drop A:restore-all s:save d:dropped"
   elif [[ "$_budget" -ge 30 ]]; then
-    header="enter:restore c:close K:drop s:save"
+    header="enter:restore z:panes c:close K:drop s:save"
   else
     header=""
   fi
@@ -838,7 +868,7 @@ render_saved_tab() {
   [[ -n "$_dashboard_flash" ]] && header="$_dashboard_flash"${header:+$'\n'"$header"}
 
   local preview_cmd
-  preview_cmd='set -- {1}; id="${1#saved:}"; '
+  preview_cmd='set -- {1}; id="${1#saved:}"; id="${id#saved-pane:}"; id="${id%%:*}"; '
   preview_cmd+='"$HOME/.local/bin/llm-persist" saved -v --id "$id" 2>&1'
 
   # Modal search + --height=100% — see the matching comments on the
@@ -861,18 +891,18 @@ render_saved_tab() {
     --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
     --bind='A:print(A)+accept' --bind='s:print(s)+accept' --bind='K:print(K)+accept' \
     --bind='c:print(c)+accept' --bind='d:print(d)+accept' --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
-    --bind='/:unbind(1,2,3,A,s,K,c,d,R,?)+show-input+enable-search' \
-    --bind='tab:clear-query+hide-input+rebind(1,2,3,A,s,K,c,d,R,?)' \
+    --bind="z:transform($_dashboard_self --saved-fold-transform '${flag:-_}' {1})" \
+    --bind='/:unbind(1,2,3,A,s,K,c,d,R,?,z)+show-input+enable-search' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,3,A,s,K,c,d,R,?,z)' \
     --bind='q:abort' \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
   local chosen_line chosen_id chosen_state
   chosen_line=$(echo "$selection" | tail -1)
-  chosen_id=$(printf '%s' "$chosen_line" | cut -f1)
-  chosen_id="${chosen_id#saved:}"
+  chosen_id=$(_dashboard_saved_row_entry "$(printf '%s' "$chosen_line" | cut -f1)")
   chosen_state=$(printf '%s' "$chosen_line" | cut -f2)
-  [[ "$chosen_line" == saved:* ]] || { chosen_id=""; chosen_state=""; }
+  [[ "$chosen_line" == saved* ]] || { chosen_id=""; chosen_state=""; }
 
   case "$key" in
     1)   echo "tab:workspaces" ;;
@@ -1273,6 +1303,7 @@ render_help_tab() {
     ""
     "SAVED  ●live ◌died ◇closed ✕dropped"
     " Enter  restore (switch if live)"
+    " z      show/hide its panes"
     " c      close a live one, keep it"
     " K      live: kill · else: drop"
     " A      restore all that died"
@@ -1388,6 +1419,7 @@ Inside the dashboard:
   A          restore every workspace that died with its tmux server (Saved)
   c          close a running workspace but keep it saved (Saved)
   d          show/hide dropped workspaces (Saved)
+  z          fold/unfold a saved workspace's AI panes (Saved; folded by default)
   R          refresh
   ?          open the Help tab
   q, Esc     close
@@ -1421,6 +1453,31 @@ while [[ $# -gt 0 ]]; do
       shift
       _dashboard_build_rows "${LAZY_LLM_LAUNCH_SESSION:-}"
       printf '%s\n' "$REPLY_ROWS"
+      exit 0
+      ;;
+    --saved-fold-transform)
+      # Reload-plumbing for the Saved tab's 'z' (fzf transform(), run out
+      # of process — see --fold-transform for the Workspaces tree's twin).
+      # Args: the tab's --dropped flag ("_" for none), the row id ({1}).
+      # Toggles the row's entry in @lazy_llm_saved_open, rebuilds the rows,
+      # and puts the cursor back on the entry's own row.
+      shift
+      _dashboard_sfold_flag="${1:-_}"; shift
+      [[ "$_dashboard_sfold_flag" == "_" ]] && _dashboard_sfold_flag=""
+      _dashboard_sfold_id=$(_dashboard_saved_row_entry "${1:-}")
+      if [[ -n "$_dashboard_sfold_id" ]]; then
+        _dashboard_sfold_open=" $(tmux show-option -sqv @lazy_llm_saved_open 2>/dev/null) "
+        if [[ "$_dashboard_sfold_open" == *" $_dashboard_sfold_id "* ]]; then
+          _dashboard_sfold_open="${_dashboard_sfold_open/ $_dashboard_sfold_id / }"
+        else
+          _dashboard_sfold_open+="$_dashboard_sfold_id "
+        fi
+        _dashboard_sfold_open=$(xargs <<< "$_dashboard_sfold_open")
+        tmux set-option -s @lazy_llm_saved_open "$_dashboard_sfold_open" 2>/dev/null || true
+      fi
+      REPLY_ROWS=$(_dashboard_build_saved_rows "$_dashboard_sfold_flag")
+      _dashboard_sfold_pos=$(awk -F'\t' -v id="saved:$_dashboard_sfold_id" '$1==id{print NR; exit}' <<< "$REPLY_ROWS") || true
+      _dashboard_print_reload "${_dashboard_sfold_pos:-1}"
       exit 0
       ;;
     --emit-saved-rows)

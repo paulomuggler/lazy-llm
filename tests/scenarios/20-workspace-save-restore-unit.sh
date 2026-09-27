@@ -218,6 +218,16 @@ assert_contains "$(head -1 <<< "$rows")" "^saved:[^	]*	live" "live entries first
 assert_contains "$rows" "restorable.*wsB-2" "restorable entry listed"
 assert_contains "$rows" "dropped.*wsB" "dropped entries listed in the dropped view"
 assert_not_contains "$(sbx llm-dashboard --emit-saved-rows 2>/dev/null)" "	dropped	" "...and only there"
+idA=$(jq -r .id "$(entry wsA)")
+assert_equals "$(sbx llm-dashboard --emit-saved-rows 2>/dev/null | grep -c '^saved-pane:')" "0" "entries are folded by default"
+out=$(sbx llm-dashboard --saved-fold-transform _ "saved:$idA" 2>/dev/null)
+assert_contains "$out" "^reload-sync\(cat " "z answers with a reload"
+assert_equals "$(T show-option -sqv @lazy_llm_saved_open)" "$idA" "z records the entry as open"
+rows=$(sbx llm-dashboard --emit-saved-rows 2>/dev/null)
+assert_equals "$(grep -c "^saved-pane:$idA:" <<< "$rows")" "3" "an open entry lists its 3 AI panes"
+assert_contains "$rows" "↳ claude   alpha · conv conv-a0 · held" "a pane row shows tool, name, conversation, held/visible"
+sbx llm-dashboard --saved-fold-transform _ "saved-pane:$idA:0:1" >/dev/null 2>&1
+assert_equals "$(T show-option -sqv @lazy_llm_saved_open)" "" "z on a pane row folds its entry back"
 
 echo ""
 echo "Test 12: removing a pane keeps display names aligned..."

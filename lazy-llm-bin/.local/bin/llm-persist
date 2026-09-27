@@ -530,14 +530,27 @@ saved_rows_fast() {
   done <<< "$out"
 }
 
+# The AI panes of an entry, for an expanded row in the Saved tab:
+#   pane id window pane tool name conv visible|held   (tab-separated; "-"
+#   stands in for an empty field, which a tab IFS would otherwise swallow)
+# Args: $1 entry file  $2 row key (printed as the id field)
+pane_rows() {
+  jq -r --arg key "$2" '.windows | to_entries[] | .key as $w | .value.visible as $v |
+    .value.panes | to_entries[] |
+    ["pane", $key, ($w | tostring), (.key | tostring), .value.tool,
+     (.value.name // "-"), (.value.conv // "-"),
+     (if .key == $v then "visible" else "held" end)] | @tsv' "$1"
+}
+
 cmd_saved() {
-  local verbose=false tsv=false with_dropped=false only_id="" f
+  local verbose=false tsv=false with_dropped=false only_id="" expand="" f
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -v) verbose=true ;;
       --tsv) tsv=true ;;
       --dropped) with_dropped=true ;;
       --id) only_id="${2:-}"; shift ;;
+      --expand) expand="${2:-}"; shift ;;
       *) die "unknown option for saved: $1" ;;
     esac
     shift
@@ -568,9 +581,15 @@ cmd_saved() {
 
   if $tsv; then
     [[ -n "$rows" ]] || return 0
-    local line
+    local line row_id
     while IFS= read -r line; do
       printf '%s\t%s\n' "$line" "$(ago "${line##*$'\t'}")"
+      row_id=$(cut -f2 <<< "$line")
+      if [[ " $expand " == *" $row_id "* ]]; then
+        f="$WS_DIR/$row_id.json"
+        [[ -f "$f" ]] || f="$DROPPED_DIR/$row_id.json"
+        pane_rows "$f" "$row_id"
+      fi
     done <<< "$rows"
     return 0
   fi
