@@ -23,7 +23,8 @@ fi
 
 sandbox=$(mktemp -d /tmp/lazy-llm-test-nvs-XXXXXX)
 proj="$sandbox/proj"
-mkdir -p "$proj/.lazy-llm/prompts" "$sandbox/state"
+mkdir -p "$proj/.lazy-llm/prompts" "$sandbox/state" "$sandbox/cfg/nvim/lua/lazy_llm"
+ln -s "$MODULE_RTP/lua/lazy_llm/session.lua" "$sandbox/cfg/nvim/lua/lazy_llm/session.lua"
 echo "one" > "$proj/.lazy-llm/prompts/prompt-20260101-000001.md"
 echo "two" > "$proj/.lazy-llm/prompts/prompt-20260101-000002.md"
 snap="$proj/.lazy-llm/sessions/prompt.vim"
@@ -150,6 +151,28 @@ rpc=$(timeout 5 nvim --server "$sock" --remote-expr "luaeval('dofile(_A[1]).snap
 timeout 5 nvim --server "$sock" --remote-send '<C-\><C-n>:qa!<CR>' >/dev/null 2>&1
 assert_equals "$rpc" "$rpc_snap" "remote snapshot() returns the path"
 assert_contains "$(cat "$rpc_snap" 2>/dev/null)" "prompt-20260101-000003.md" "remote snapshot holds that nvim's buffer"
+
+echo ""
+echo "Test 7: a save's snapshot skips an nvim blocked on input instead of waiting..."
+# The case found live: after a reboot, a prompt nvim sat on nvim's
+# "-- More --" pager over its swap-file message; every save waited out the
+# 2s RPC timeout on it. A pane that's too short for the message forces the
+# pager. Needs a terminal, hence tmux.
+if command -v tmux >/dev/null 2>&1; then
+    blk="$sandbox/blk"; mkdir -p "$blk"; echo hi > "$blk/f.md"
+    bt() { env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$blk" tmux "$@"; }
+    bt -f /dev/null new-session -d -s a -c "$blk" "nvim --clean --cmd 'set directory=$blk//' f.md"; sleep 1
+    bt send-keys -t a ihi Escape; sleep 0.3
+    kill -9 $(pgrep -P "$(bt display -t a -p '#{pane_pid}')") 2>/dev/null; sleep 0.5
+    bt new-session -d -s b -x 80 -y 8 -c "$blk" "nvim --clean --cmd 'set directory=$blk//' --listen $blk/n.sock f.md"; sleep 1.5
+    assert_contains "$(bt capture-pane -p -t b)" "More" "the reopened nvim is waiting in the pager"
+    t0=$(date +%s%N)
+    env XDG_CONFIG_HOME="$sandbox/cfg" "$REPO_ROOT/lazy-llm-bin/.local/bin/llm-persist" _snapshot-socket "$blk/n.sock" "$blk/snap.vim"
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    assert_pattern "$ms" "^[0-9]{1,3}$" "snapshotting a blocked nvim returns at once (${ms}ms), not after the 2s timeout"
+    assert_file_not_exists "$blk/snap.vim" "...and skips it"
+    bt kill-server 2>/dev/null
+fi
 
 rm -rf "$sandbox"
 

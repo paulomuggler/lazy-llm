@@ -195,6 +195,26 @@ assert_not_contains "$(sbx llm-persist saved)" "✕ wsB" "saved hides dropped en
 assert_contains "$(sbx llm-persist saved --dropped)" "✕ wsB" "...unless asked with --dropped"
 
 echo ""
+echo "Test 8b: closing or killing the workspace you're in keeps you in tmux..."
+if script -qfc true /dev/null >/dev/null 2>&1; then
+    sbx lazy-llm -s wsX -d "$SB/k" -t claude >/dev/null 2>&1
+    sbx lazy-llm -s wsY -d "$SB/k" -t claude >/dev/null 2>&1 </dev/null
+    sleep 1
+    # Attach to wsY first, so it's the most recently used other session.
+    ( sbx script -qfc "tmux attach -t =wsY" /dev/null </dev/null >/dev/null 2>&1 & )
+    sleep 1
+    T switch-client -c "$(T list-clients -F '#{client_name}' | head -1)" -t =wsX
+    sleep 0.5
+    assert_equals "$(T list-clients -F '#{client_session}')" "wsX" "a client is attached to wsX"
+    sbx llm-persist close wsX >/dev/null
+    assert_equals "$(T list-clients -F '#{client_session}')" "wsY" "closing wsX moves its client to the last-used session, not out of tmux"
+    sbx llm-sessions --kill wsY >/dev/null
+    assert_not_empty "$(T list-clients -F '#{client_session}')" "killing wsY moves it on again"
+    T detach-client -a 2>/dev/null; T list-clients -F '#{client_name}' | while read -r c; do T detach-client -t "$c"; done
+    sbx llm-persist forget wsX >/dev/null 2>&1
+fi
+
+echo ""
 echo "Test 9: a name collision never merges..."
 foreign="$SB/state/workspaces/foreign-id.json"
 jq '.id = "foreign-id" | .server = "1-1" | .gone = null' "$SB/state/dropped/$idB.json" > "$foreign"

@@ -78,6 +78,8 @@ cmd_kill() {
     "$HOME/.local/bin/llm-persist" forget --id "$ws_id" >/dev/null 2>&1 || true
   fi
 
+  lazy_llm_move_clients_off "$target"
+
   # Kill holding windows first (clean shutdown)
   local wins
   wins=$(tmux list-windows -t "$target" -F '#{window_name}' 2>/dev/null) || true

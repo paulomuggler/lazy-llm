@@ -1591,6 +1591,24 @@ lazy_llm_with_timeout() {
   wait "$pid"
 }
 
+# Before a session is killed: move every client attached to it onto the most
+# recently used other session, so closing (or killing) the workspace you're
+# in doesn't drop you out of tmux — tmux's default detach-on-destroy would.
+# With no other session there's nowhere to go, and tmux detaches as usual.
+# (No head/early-exit awk in the pipeline: callers run under pipefail.)
+# Always returns 0.
+lazy_llm_move_clients_off() {
+  local target="$1" other client
+  # session_last_attached is empty for a never-attached session: default 0.
+  other=$(tmux list-sessions -F '#{?session_last_attached,#{session_last_attached},0}	#{session_name}' 2>/dev/null \
+    | awk -F'\t' -v t="$target" '$2 != t && (n == "" || $1 + 0 > m + 0) {m = $1; n = $2} END {print n}') || other=""
+  [[ -n "$other" ]] || return 0
+  while IFS= read -r client; do
+    [[ -n "$client" ]] && tmux switch-client -c "$client" -t "=$other" 2>/dev/null
+  done < <(tmux list-clients -t "=$target" -F '#{client_name}' 2>/dev/null)
+  return 0
+}
+
 # Fire-and-forget manifest save (`llm-persist save --async`). Every fd is
 # redirected: the dashboard calls this from fzf transform() subprocesses, and
 # fzf reads a transform's stdout until EOF, so a background child holding it
