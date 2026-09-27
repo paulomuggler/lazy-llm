@@ -98,12 +98,31 @@ local function insert_note()
   type_into_marker(row, #line + #separator)
 end
 
--- Insert NOTE marker on a new line below, at the current line's indentation
+-- The text before and after a marker that makes it a comment in this buffer
+-- ('commentstring', e.g. "-- %s" or "/* %s */"), spaced off the marker; empty
+-- when the filetype has no comment syntax
+local function comment_around_marker()
+  local left, right = vim.bo.commentstring:match("^(.-)%%s(.-)$")
+  if not left then
+    return "", ""
+  end
+  if left ~= "" and not left:match("%s$") then
+    left = left .. " "
+  end
+  if right ~= "" and not right:match("^%s") then
+    right = " " .. right
+  end
+  return left, right
+end
+
+-- Insert NOTE marker as a comment on a new line below, at the current line's
+-- indentation
 local function insert_note_below()
   local row = vim.api.nvim_win_get_cursor(0)[1]
   local indent = vim.api.nvim_get_current_line():match("^%s*")
-  vim.api.nvim_buf_set_lines(0, row, row, false, { indent .. config.marker })
-  type_into_marker(row + 1, #indent)
+  local left, right = comment_around_marker()
+  vim.api.nvim_buf_set_lines(0, row, row, false, { indent .. left .. config.marker .. right })
+  type_into_marker(row + 1, #indent + #left)
 end
 
 -- Collect all NOTEs from current buffer
@@ -410,7 +429,7 @@ local specs = {
         "<leader>nI",
         insert_note_below,
         mode = "n",
-        desc = "Note: Insert [NOTE:] on a new line below",
+        desc = "Note: Insert [NOTE:] comment on a new line below",
       },
 
       -- Pull notes to prompt pane
