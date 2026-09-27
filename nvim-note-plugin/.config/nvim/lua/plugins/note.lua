@@ -82,25 +82,28 @@ local function collect_file_notes(filepath)
   return notes
 end
 
--- Insert NOTE marker at cursor position
-local function insert_note()
-  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-  local line = vim.api.nvim_get_current_line()
-
-  -- Insert marker at cursor position: [NOTE: ]
-  -- Cursor will be positioned between : and ] (where the space is)
-  local before = line:sub(1, col)
-  local after = line:sub(col + 1)
-  local new_line = before .. config.marker .. after
-
-  vim.api.nvim_set_current_line(new_line)
-
-  -- Position cursor after "[NOTE: " (before the closing ])
-  -- marker = "[NOTE: ]" has length 8, position 7 is before ]
+-- Put the cursor inside a marker that starts at column `col` (0-based) of line
+-- `row`, between "[NOTE: " and "]", and start typing there
+local function type_into_marker(row, col)
   vim.api.nvim_win_set_cursor(0, { row, col + #config.marker - 1 })
-
-  -- Enter insert mode
   vim.cmd("startinsert")
+end
+
+-- Insert NOTE marker at the end of the current line, one space after its text
+local function insert_note()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local line = vim.api.nvim_get_current_line()
+  local separator = (line == "" or line:match("%s$")) and "" or " "
+  vim.api.nvim_set_current_line(line .. separator .. config.marker)
+  type_into_marker(row, #line + #separator)
+end
+
+-- Insert NOTE marker on a new line below, at the current line's indentation
+local function insert_note_below()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local indent = vim.api.nvim_get_current_line():match("^%s*")
+  vim.api.nvim_buf_set_lines(0, row, row, false, { indent .. config.marker })
+  type_into_marker(row + 1, #indent)
 end
 
 -- Collect all NOTEs from current buffer
@@ -401,7 +404,13 @@ local specs = {
         "<leader>ni",
         insert_note,
         mode = "n",
-        desc = "Note: Insert [NOTE:] marker",
+        desc = "Note: Insert [NOTE:] at end of line",
+      },
+      {
+        "<leader>nI",
+        insert_note_below,
+        mode = "n",
+        desc = "Note: Insert [NOTE:] on a new line below",
       },
 
       -- Pull notes to prompt pane

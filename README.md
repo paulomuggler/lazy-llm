@@ -205,7 +205,8 @@ Add inline notes throughout your codebase that can be collected and sent to your
 
 | Key | Action |
 |-----|--------|
-| `<leader>ni` | **Insert Note** - Insert `[NOTE: ]` marker at cursor, ready to type |
+| `<leader>ni` | **Insert Note** - Append ` [NOTE: ]` to the end of the line, ready to type |
+| `<leader>nI` | **Insert Note Below** - `[NOTE: ]` on a new line below, at the line's indentation |
 | `<leader>nb` | **Buffer Notes** - Send all notes from current file to prompt pane |
 | `<leader>np` | **Project Notes** - Send all notes from entire project to prompt pane |
 | `]n` | **Next Note** - Jump to next note in buffer |
