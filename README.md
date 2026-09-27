@@ -318,9 +318,19 @@ lazy-llm close dev-env      # close a running workspace but keep it saved
 lazy-llm kill dev-env       # close it and drop it from the list
 lazy-llm forget dev-env     # drop a saved workspace that isn't running
 lazy-llm save               # save now (also Prefix+C-s, or s in the dashboard)
+lazy-llm restore --snapshot 20260928-001210 dev-env   # dev-env as it was at that manual save
+lazy-llm forget --snapshot 20260928-001210            # delete that manual save
 ```
 
-Or use the dashboard's **Saved** tab (`Prefix+S`, then `3`): Enter restores (or switches to a running one), `c` closes a running one (kept), `K` kills/drops, `A` restores everything that died, `s` saves, `d` shows dropped ones. `K` on a workspace in the Workspaces tab asks whether to close (keep) or kill (drop).
+**Autosave vs manual save.** Every change rewrites a workspace's *rolling* entry: its latest state, the one a plain `restore` uses. A *manual* save (`lazy-llm save`, Prefix+C-s, `s` in the dashboard) also writes a dated snapshot of each workspace that changed since its last one, including copies of its editor and prompt nvim state. So after closing a couple of panes you can still go back to how it was. Restoring a snapshot of a workspace that's running brings it back as a copy next to it (`name-2`). Otherwise it comes back as that workspace. Snapshots stay until you delete them.
+
+**From a fresh tmux** (after a reboot), Prefix+S opens the dashboard straight on the Saved tab, provided lazy-llm's bindings are registered when the server starts. Add this to your tmux.conf:
+
+```tmux
+if-shell 'test -x "$HOME/.local/bin/llm-tmux-init"' 'run-shell -b "$HOME/.local/bin/llm-tmux-init"'
+```
+
+Or use the dashboard's **Saved** tab (`Prefix+S`, then `3`). It lists the rolling entries at the top, then each manual save under a divider with its date. `z` expands an entry to show its AI panes (folded by default). Enter restores (or switches to a running one), `c` closes a running one (kept), `K` kills or drops (on a manual save's entry or divider: deletes it), `A` restores everything that died, `s` saves, `d` shows dropped ones. `K` on a workspace in the Workspaces tab asks whether to close (keep) or kill (drop).
 
 | State | Meaning |
 |---|---|
@@ -328,6 +338,7 @@ Or use the dashboard's **Saved** tab (`Prefix+S`, then `3`): Enter restores (or 
 | ◌ restorable | died with its tmux server (crash, reboot) — a plain `lazy-llm restore` brings these back |
 | ◇ closed | you closed it (`lazy-llm close`, the dashboard, or just in tmux) — kept; reopen with Enter, `restore <name>`, or by running `lazy-llm` in its directory |
 | ✕ dropped | killed or forgotten — hidden (`saved --dropped`, `d`), still restorable by name, deleted after 30 days |
+| ◆ manual save | a dated snapshot, listed under its save's divider — restore brings that version back |
 
 - **What comes back**: session name and identity, AI panes in order with their tools and display names, which one was visible (the rest held), each Claude pane resuming its conversation (`claude --resume <id>`, same model, same directory), the prompt file and the prompt pane's open buffers, the editor's open buffers and splits, fold state and dashboard order.
 - **When it's saved**: automatically on launch, adding/removing/cycling AI panes, dashboard renames/folds/reorders, a Prefix+$ rename, and whenever a Claude pane moves to a new conversation (`/clear`, `--resume` — recorded by lazy-llm's Claude Code plugin hook). Nothing runs on a timer.

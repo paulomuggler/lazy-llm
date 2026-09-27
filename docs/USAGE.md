@@ -44,6 +44,10 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Close a workspace but keep it saved      │ lazy-llm close <name>, or K on it in Prefix+S (choose "close"), or c in the Saved tab            │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Keep a dated version to go back to       │ Save manually (Prefix+C-s, s, lazy-llm save); Prefix+S → 3 lists it under a dated divider        │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ See what panes a saved workspace had     │ Prefix+S → 3, then z on it (folded by default)                                                   │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Drop a saved workspace                   │ lazy-llm kill <name> (running) / lazy-llm forget <name>, or Prefix+S → 3 → K                     │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Spawn workspace bound to a worktree      │ lazy-llm -W <branch> — creates branch+worktree if needed, always spawns a new workspace          │
