@@ -69,4 +69,5 @@ total=${#pane_arr[@]}
 new_idx=$((total - 1))
 "$HOME/.local/bin/llm-cycle" "$new_idx"
 
+lazy_llm_save_async
 echo "Added AI pane: $NEW_AI_TOOL ($new_pane_id) [$total total]"

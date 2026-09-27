@@ -774,6 +774,7 @@ dispatch_action() {
       if [[ -n "$new_name" ]] && [[ "$new_name" != "$name" ]]; then
         tmux rename-session -t "$name" "$new_name" 2>/dev/null \
           || echo "Could not rename to $new_name" >&2
+        lazy_llm_save_async
       fi
       ;;
     action:rename-pane:*)
@@ -813,6 +814,7 @@ dispatch_action() {
         if [[ -n "$new_label" ]] && [[ "$new_label" != "$current_label" ]]; then
           name_arr[$idx]="$new_label"
           tmux set-option -w -t "$name:$win" @AI_PANE_NAMES "${name_arr[*]}"
+          lazy_llm_save_async
         fi
       fi
       ;;
@@ -1148,6 +1150,7 @@ while [[ $# -gt 0 ]]; do
       _dashboard_fold_id="${1:-}"
       _dashboard_fold_ws=$(_dashboard_ws_from_id "$_dashboard_fold_id")
       [[ -n "$_dashboard_fold_ws" ]] && lazy_llm_toggle_collapsed "$_dashboard_fold_ws"
+      lazy_llm_save_async
 
       _dashboard_build_rows "${LAZY_LLM_LAUNCH_SESSION:-}"
 
@@ -1218,6 +1221,7 @@ while [[ $# -gt 0 ]]; do
           ;;
       esac
 
+      lazy_llm_save_async
       _dashboard_build_rows "${LAZY_LLM_LAUNCH_SESSION:-}"
 
       # Cursor target after the move: for a workspace row, the id STRING

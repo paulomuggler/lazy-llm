@@ -75,3 +75,4 @@ original_pane="$_CURRENT_PANE"
 lazy_llm_cycle_to_index "$_SESSION" "$_WINDOW" "$target_idx"
 
 tmux select-pane -t "$original_pane"
+lazy_llm_save_async

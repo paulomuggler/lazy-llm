@@ -15,7 +15,7 @@ echo -e "${GREEN}Starting llm-dev-session installation...${NC}"
 # --- 1. Dependency & Environment Checks ---
 echo "--> Checking dependencies and environment..."
 
-DEPS=("stow" "git" "nvim" "tmux")
+DEPS=("stow" "git" "nvim" "tmux" "jq")
 
 for dep in "${DEPS[@]}"; do
   if ! command -v "$dep" &>/dev/null; then

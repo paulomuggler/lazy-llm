@@ -158,4 +158,5 @@ else
 fi
 tmux select-pane -t "$original_pane"
 
+lazy_llm_save_async
 echo "Removed AI pane: $remove_tool ($remove_pane) [$total remaining]"

@@ -1340,6 +1340,17 @@ lazy_llm_register_tmux_integration() {
   tmux bind-key -N "lazy-llm dashboard" -T prefix S if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "run-shell '$HOME/.local/bin/llm-dashboard-open'"
+  tmux bind-key -N "Save lazy-llm workspaces" -T prefix C-s if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell -b '$HOME/.local/bin/llm-persist save --notify'"
+
+  # Re-save on a rename done outside the dashboard (Prefix+$). At its own
+  # array index so a user's own session-renamed hook isn't replaced. No
+  # session-closed hook, on purpose: at shutdown sessions close one by one
+  # while the server is still up, which a save would read as "closed on
+  # purpose" (see llm-persist's retention rule).
+  tmux set-hook -g 'session-renamed[40]' \
+    "run-shell -b '$HOME/.local/bin/llm-persist save --async'"
   # Prefix+L retired — its surface (Panes tab) lives inside llm-dashboard now,
   # reachable from any tab via the '3' key.
 }
@@ -1456,14 +1467,21 @@ lazy_llm_build_window() {
   tmux set-option -w -t "$session:$win_idx" pane-border-format \
     "#{?#{==:#{pane_id},#{@AI_PANE_ID}},#($HOME/.local/bin/llm-pane-border #{pane_id} #{@AI_TOOL}),#{?#{==:#{pane_id},#{@PROMPT_PANE_ID}},#[fg=#e4e4e4] prompt #[default],#[fg=#e4e4e4] #{pane_current_command} #[default]}}"
 
-  # Mark session as lazy-llm managed and enable mouse
+  # Mark session as lazy-llm managed and enable mouse. Identity and dir are
+  # set once, by the session's first lazy-llm window (restore presets them).
   tmux set-option -t "$session" @lazy_llm 1
   tmux set-option -t "$session" mouse on
+  [[ -n "$(tmux show-option -qv -t "$session" @lazy_llm_ws_id)" ]] \
+    || tmux set-option -t "$session" @lazy_llm_ws_id "$(date +%Y%m%d%H%M%S)-$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
+  [[ -n "$(tmux show-option -qv -t "$session" @lazy_llm_dir)" ]] \
+    || tmux set-option -t "$session" @lazy_llm_dir "$target_dir"
 
   lazy_llm_register_tmux_integration
 
   # Set initial focus to prompt buffer pane
   tmux select-pane -t "$session:$win_idx.$prompt_pane"
+
+  lazy_llm_save_async
 }
 
 # Add an AI pane to <session:window>'s pane list, parked in the window's
@@ -1505,6 +1523,25 @@ lazy_llm_add_ai_pane() {
     tmux set-option -w -t "$session:$window" @AI_PANE_NAMES "${name_arr[*]:0:${#pane_arr[@]}} _"
   fi
   printf '%s\n' "$new_pane_id"
+}
+
+# Run a command, killing it after $1 seconds (macOS has no `timeout`).
+# Returns the command's status, or 124 on timeout.
+lazy_llm_with_timeout() {
+  local secs="$1" pid ticks=0
+  shift
+  "$@" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( ticks >= secs * 10 )); then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  wait "$pid"
 }
 
 # Fire-and-forget manifest save (`llm-persist save --async`). Every fd is
