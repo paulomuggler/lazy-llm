@@ -106,18 +106,16 @@ case "$AI_TOOL" in
     tmux send-keys -t "$TARGET" Enter
     ;;
   *)
-    # Default strategy: Paste from buffer (for Claude, etc.)
-    # Load the complete message into tmux buffer
-    echo "$COMPLETE_MESSAGE" | tmux load-buffer -
-
-    # Paste the complete message (all newlines are part of the paste, not keypresses)
-    tmux paste-buffer -t "$TARGET"
-
-    # For large pastes, add a delay before sending Enter
-    BUFFER_SIZE=$(tmux show-buffer | wc -c)
-    if [ "$BUFFER_SIZE" -gt 1000 ]; then
-      sleep 0.5
-    fi
+    # Default strategy: bracketed paste (for Claude, etc.)
+    # -p wraps the paste in bracketed-paste markers when the tool has asked for
+    # them (Claude Code does), so it takes the message as one paste and the
+    # Enter below as a keypress of its own. A plain paste arrives as typed keys:
+    # the tool guesses where the paste ends, and a short prompt's Enter got
+    # swallowed into it (left unsubmitted) or its newlines submitted early.
+    # A named buffer, deleted after the paste (-d), leaves the user's paste
+    # buffers alone.
+    echo "$COMPLETE_MESSAGE" | tmux load-buffer -b lazy-llm-send -
+    tmux paste-buffer -b lazy-llm-send -d -p -t "$TARGET"
 
     # Send single Enter to submit the prompt
     tmux send-keys -t "$TARGET" Enter
