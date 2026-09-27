@@ -1395,7 +1395,7 @@ EOF
 }
 
 # Parse args
-current_tab=workspaces
+current_tab=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tab)
@@ -1566,6 +1566,16 @@ done
 # ──────────────────────────────────────────────────────────────────────────
 # Main outer loop — tab dispatch
 # ──────────────────────────────────────────────────────────────────────────
+
+# No --tab: open on Workspaces, or on Saved when no lazy-llm workspace is
+# running (a fresh tmux after a reboot — Saved is where they come back from).
+if [[ -z "$current_tab" ]]; then
+  if [[ -z "$(lazy_llm_gather_sessions 2>/dev/null)" ]]; then
+    current_tab=saved
+  else
+    current_tab=workspaces
+  fi
+fi
 
 if ! command -v fzf &>/dev/null; then
   echo "Error: fzf is required" >&2

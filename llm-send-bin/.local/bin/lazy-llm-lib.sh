@@ -1382,9 +1382,11 @@ lazy_llm_register_tmux_integration() {
       codex  '' \"run-shell '$HOME/.local/bin/llm-add -t codex'\" \
       grok   '' \"run-shell '$HOME/.local/bin/llm-add -t grok'\" \
       aider  '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
-  tmux bind-key -N "lazy-llm dashboard" -T prefix S if-shell \
-    "tmux show-option -wqv @AI_PANES" \
-    "run-shell '$HOME/.local/bin/llm-dashboard-open'"
+  # Unguarded, unlike the pane keys: the dashboard is useful from any window,
+  # and from a fresh tmux with no workspace at all (its Saved tab restores
+  # them; see llm-tmux-init for registering this at server start).
+  tmux bind-key -N "lazy-llm dashboard" -T prefix S \
+    run-shell "$HOME/.local/bin/llm-dashboard-open"
   tmux bind-key -N "Save lazy-llm workspaces" -T prefix C-s if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "run-shell -b '$HOME/.local/bin/llm-persist save --notify'"
