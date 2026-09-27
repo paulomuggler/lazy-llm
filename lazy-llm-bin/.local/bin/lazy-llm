@@ -283,18 +283,18 @@ create_workspace_window() {
   # Register keybindings — scoped to lazy-llm windows via if-shell check.
   # In non-lazy-llm windows, C-n/C-p fall back to next/previous-window;
   # other bindings are no-ops.
-  tmux bind-key -T prefix C-n if-shell \
+  tmux bind-key -N "Next AI pane (next window elsewhere)" -T prefix C-n if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "run-shell '$HOME/.local/bin/llm-cycle next'" \
     "next-window"
-  tmux bind-key -T prefix C-p if-shell \
+  tmux bind-key -N "Previous AI pane (previous window elsewhere)" -T prefix C-p if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "run-shell '$HOME/.local/bin/llm-cycle prev'" \
     "previous-window"
-  tmux bind-key -T prefix C-x if-shell \
+  tmux bind-key -N "Remove current AI pane" -T prefix C-x if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "confirm-before -p 'Remove current AI pane? (y/n)' \"run-shell '$HOME/.local/bin/llm-remove current'\""
-  tmux bind-key -T prefix A if-shell \
+  tmux bind-key -N "Add AI pane" -T prefix A if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "display-menu -T 'Add AI Pane' \
       claude '' \"run-shell '$HOME/.local/bin/llm-add -t claude'\" \
@@ -302,7 +302,7 @@ create_workspace_window() {
       codex  '' \"run-shell '$HOME/.local/bin/llm-add -t codex'\" \
       grok   '' \"run-shell '$HOME/.local/bin/llm-add -t grok'\" \
       aider  '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
-  tmux bind-key -T prefix S if-shell \
+  tmux bind-key -N "lazy-llm dashboard" -T prefix S if-shell \
     "tmux show-option -wqv @AI_PANES" \
     "run-shell '$HOME/.local/bin/llm-dashboard-open'"
   # Prefix+L retired — its surface (Panes tab) lives inside llm-dashboard now,
