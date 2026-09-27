@@ -4,7 +4,7 @@ title: Save lazy-llm workspaces to a manifest and rebuild them after the tmux se
 priority: P1
 status: done
 created: 2026-09-25_20:44
-updated: 2026-09-28_00:18
+updated: 2026-09-28_00:41
 depends-on: []
 tags: [resilience, restore, tmux, dashboard, nvim, design]
 model: inline
@@ -343,6 +343,18 @@ The user's feedback, and what changed:
   plus the `print_fail` counting (`d5de780`).
 - Scenario 20: 94/94. Scenarios 09–21 pass; 01–08 are the known backlog item.
 
+### Round 4 (2026-09-28 00:35)
+
+- **A manual save took ~6s.** One prompt nvim was sitting in nvim's `-- More --` pager (the
+  swap-file message after the reboot), and `--remote-expr` isn't served while nvim waits on input,
+  so each save waited out the 2s timeout, twice. The RPC now goes through a headless nvim client
+  that checks `nvim_get_mode().blocking` first (a fast API) and skips a blocked nvim. Reproduced in
+  scenario 21 test 7. A live save now takes ~0.95s.
+- **Closing the active workspace dropped out of tmux** (detach-on-destroy). `close` and `kill` both
+  run `lazy_llm_move_clients_off` first, which moves each attached client to the most recently used
+  other session. Covered by scenario 20 test 8b with a real pty client.
+- Scenario 20: 97/97. Scenario 21: 23/23.
+
 ## Human Validation
 
 - [ ] Right before rebooting, press Prefix+C-s (or run `lazy-llm save`). It should report 3 workspaces, 6/6 conversations.
@@ -360,3 +372,5 @@ The user's feedback, and what changed:
 - [ ] Restore-all feels quick: sessions appear within about 2 seconds (panes then finish starting on their own).
 - [ ] In the Saved tab, `z` on a workspace lists its panes; `z` again folds it.
 - [ ] Prefix+C-s, close a pane, Prefix+C-s again: two dated dividers. Enter on the older ◆ entry brings that workspace back as `name-2` with the closed pane.
+- [ ] In the workspace you're attached to, Prefix+S → `K` → close: you land in another workspace, not out of tmux.
+- [ ] Prefix+C-s takes about a second.
