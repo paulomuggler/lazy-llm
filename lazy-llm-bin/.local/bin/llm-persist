@@ -18,9 +18,7 @@
 #     alive 60s on — a save racing a dying server can mark, never drop;
 #   - with no server running, save does nothing at all.
 #
-# Usage:
-#   llm-persist save [--async|--notify]
-#   llm-persist forget <name> | --id <id>
+# Usage: see usage() below. find-dir <dir> is plumbing for the launcher.
 
 set -euo pipefail
 
@@ -377,16 +375,362 @@ cmd_forget() {
   lock_release
 }
 
+# ── entry states ────────────────────────────────────────────────────────────
+
+# live       its id is a running session's @lazy_llm_ws_id
+# restorable not live, and last seen by another (dead) server — or no server
+#            is running at all
+# closed     not live, closed during this server's lifetime (same server), or
+#            in closed/ (forgotten / closed and dropped)
+# Args: $1 entry file  $2 live ids (newline list)  $3 current server id
+entry_state() {
+  local f="$1" live_ids="$2" srv="$3" id server
+  read -r id server < <(jq -r '[.id, .server] | @tsv' "$f" | tr '\t' ' ')
+  if [[ -n "$live_ids" ]] && grep -qxF "$id" <<< "$live_ids"; then
+    echo live
+  elif [[ "$f" == "$CLOSED_DIR/"* ]]; then
+    echo closed
+  elif [[ -n "$srv" && "$server" == "$srv" ]]; then
+    echo closed
+  else
+    echo restorable
+  fi
+}
+
+ago() {
+  local s=$(( $(date +%s) - $1 ))
+  if (( s < 90 )); then echo "${s}s ago"
+  elif (( s < 5400 )); then echo "$((s / 60))m ago"
+  elif (( s < 172800 )); then echo "$((s / 3600))h ago"
+  else echo "$((s / 86400))d ago"; fi
+}
+
+# ── saved ───────────────────────────────────────────────────────────────────
+
+# Human listing, or (--tsv) one machine row per entry for the dashboard:
+#   state id name dir panes held convs saved_epoch   (tab-separated)
+# live entries first (dashboard order), then restorable, then closed.
+cmd_saved() {
+  local verbose=false tsv=false with_closed=false only_id="" f
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -v) verbose=true ;;
+      --tsv) tsv=true ;;
+      --closed) with_closed=true ;;
+      --id) only_id="${2:-}"; shift ;;
+      *) die "unknown option for saved: $1" ;;
+    esac
+    shift
+  done
+  local srv live_ids
+  srv=$(server_id)
+  live_ids=""
+  [[ -n "$srv" ]] && live_ids=$(live_workspaces | cut -f1)
+
+  local rows="" state rank
+  while IFS= read -r f; do
+    state=$(entry_state "$f" "$live_ids" "$srv")
+    [[ "$state" == closed && "$with_closed" == false && -z "$only_id" ]] && continue
+    case "$state" in live) rank=0 ;; restorable) rank=1 ;; *) rank=2 ;; esac
+    rows+=$(jq -r --arg state "$state" --arg rank "$rank" \
+      '[$rank, (.order|tostring), $state, .id, .name, .dir,
+        ([.windows[].panes[]] | length | tostring),
+        ([.windows[] | (.panes | length) - 1] | add | tostring),
+        ([.windows[].panes[] | select(.conv != null)] | length | tostring),
+        (.saved|tostring)] | @tsv' "$f")$'\n'
+  done < <(entry_files "$WS_DIR"; entry_files "$CLOSED_DIR")
+  rows=$(printf '%s' "$rows" | grep . | sort -t$'\t' -k1,1n -k2,2n | cut -f3- || true)
+  [[ -n "$only_id" ]] && rows=$(awk -F'\t' -v id="$only_id" '$2 == id' <<< "$rows")
+
+  if $tsv; then
+    [[ -n "$rows" ]] && printf '%s\n' "$rows"
+    return 0
+  fi
+  if [[ -z "$rows" ]]; then
+    echo "No saved lazy-llm workspaces."
+    return 0
+  fi
+  local id name dir panes held convs saved glyph file
+  while IFS=$'\t' read -r state id name dir panes held convs saved; do
+    case "$state" in live) glyph="●" ;; restorable) glyph="◌" ;; *) glyph="✕" ;; esac
+    printf '%s %-24s %-40s %s AI pane%s (%s held)  %s/%s conversations  saved %s\n' \
+      "$glyph" "$name" "${dir/#$HOME/\~}" "$panes" "$([[ $panes -eq 1 ]] || echo s)" \
+      "$held" "$convs" "$panes" "$(ago "$saved")"
+    $verbose || continue
+    file="$WS_DIR/$id.json"
+    [[ -f "$file" ]] || file="$CLOSED_DIR/$id.json"
+    jq -r --arg home "$HOME" '
+      def short: if . == null then "-" else sub("^" + $home; "~") end;
+      "    id \(.id)  state '"$state"'",
+      (.windows | to_entries[] |
+        "    window \(.key + 1): prompt file \(.value.prompt_file | short)",
+        "      editor snapshot \(.value.editor_session | short)",
+        "      prompt snapshot \(.value.prompt_session | short)",
+        (.value.visible as $v | .value.panes | to_entries[] |
+          "      pane \(.key + 1) \(if .key == $v then "visible" else "held   " end)  \(.value.tool)  \(.value.name // "-")  conv \(.value.conv // "-")  model \(.value.model // "-")  cwd \(.value.cwd | short)"))' "$file"
+  done <<< "$rows"
+}
+
+# ── find-dir ────────────────────────────────────────────────────────────────
+
+# Restorable entries for a dir (realpath comparison), for the launcher's
+# "restore instead?" prompt. Prints: id<TAB>name<TAB>summary
+cmd_find_dir() {
+  local want f real srv live_ids
+  want=$(realpath "${1:?usage: llm-persist find-dir <dir>}" 2>/dev/null || printf '%s' "$1")
+  srv=$(server_id)
+  live_ids=""
+  [[ -n "$srv" ]] && live_ids=$(live_workspaces | cut -f1)
+  while IFS= read -r f; do
+    [[ "$(entry_state "$f" "$live_ids" "$srv")" == restorable ]] || continue
+    real=$(realpath "$(jq -r .dir "$f")" 2>/dev/null || jq -r .dir "$f")
+    [[ "$real" == "$want" ]] || continue
+    jq -r --arg ago "$(ago "$(jq -r .saved "$f")")" '
+      ([.windows[].panes[]] | length) as $n |
+      ([.windows[].panes[] | select(.conv != null)] | length) as $c |
+      [.id, .name, "\($n) AI pane\(if $n == 1 then "" else "s" end), \($c) conversation\(if $c == 1 then "" else "s" end), saved \($ago)"] | @tsv' "$f"
+  done < <(entry_files "$WS_DIR")
+}
+
+# ── restore ─────────────────────────────────────────────────────────────────
+
+# Session name for a restored workspace: its saved name, or the launcher's
+# de-dup (name-2, name-3, ...) when a live session already has it. Exact
+# matches only (=name): tmux's own prefix matching would treat "ws-2" as ws.
+free_session_name() {
+  local base="$1" name="$1" n=2
+  while tmux has-session -t "=$name" 2>/dev/null; do
+    name="$base-$n"
+    n=$((n + 1))
+  done
+  printf '%s\n' "$name"
+}
+
+# The command typed into an AI pane: the tool adapter's launch command, run
+# from the pane's own cwd when that differs from the workspace dir (claude
+# looks conversations up under the project dir).
+pane_launch_cmd() {
+  local pane_json="$1" dir="$2" tool conv model cwd cmd
+  tool=$(jq -r .tool <<< "$pane_json")
+  conv=$(jq -r '.conv // ""' <<< "$pane_json")
+  model=$(jq -r '.model // ""' <<< "$pane_json")
+  cwd=$(jq -r '.cwd // ""' <<< "$pane_json")
+  cmd=$(lazy_llm_tool_launch_cmd "$tool" "$conv" "$model")
+  if [[ -n "$cwd" && "$cwd" != "$dir" && -d "$cwd" ]]; then
+    cmd="cd '${cwd//\'/\'\\\'\'}' && $cmd"
+  fi
+  printf '%s\n' "$cmd"
+}
+
+# Record a restored pane's conversation and model against its new pane id.
+# True by construction (the pane was launched resuming exactly these), and it
+# keeps the save that follows a restore from writing the conversations off as
+# unknown before the tool's own hook has reported in.
+seed_pane() {
+  local pane_id="$1" pane_json="$2" conv model
+  conv=$(jq -r '.conv // ""' <<< "$pane_json")
+  model=$(jq -r '.model // ""' <<< "$pane_json")
+  [[ -n "$conv" ]] && { lazy_llm_set_pane_conv "$pane_id" "$conv" || true; }
+  [[ -n "$model" ]] && lazy_llm_set_pane_model "$pane_id" "$model"
+  return 0
+}
+
+# Rebuild one workspace from its manifest entry. Prints the session name.
+# Args: $1 entry file
+restore_one() {
+  local f="$1" name dir id session win nwin w
+  name=$(jq -r .name "$f")
+  dir=$(jq -r .dir "$f")
+  id=$(jq -r .id "$f")
+  session=$(free_session_name "$name")
+
+  tmux new-session -d -s "$session" -n dev -c "$dir"
+  tmux set-option -t "=$session:" @lazy_llm_ws_id "$id"
+  tmux set-option -t "=$session:" @lazy_llm_dir "$dir"
+  win=$(tmux list-windows -t "=$session" -F '#{window_index}' | head -1)
+
+  nwin=$(jq '.windows | length' "$f")
+  for ((w = 0; w < nwin; w++)); do
+    local wj npanes p pj names="" any_name=false visible
+    wj=$(jq -c ".windows[$w]" "$f")
+    [[ $w -gt 0 ]] && win=$(tmux new-window -d -t "=$session:" -n dev -c "$dir" -P -F '#{window_index}')
+    tmux set-option -w -t "=$session:$win" @lazy_llm_editor_session "$(jq -r .editor_session <<< "$wj")"
+    tmux set-option -w -t "=$session:$win" @lazy_llm_prompt_session "$(jq -r .prompt_session <<< "$wj")"
+
+    pj=$(jq -c '.panes[0]' <<< "$wj")
+    lazy_llm_build_window "$session" "$win" "$dir" "$(jq -r .tool <<< "$pj")" \
+      "$(pane_launch_cmd "$pj" "$dir")" "$(jq -r '.prompt_file // ""' <<< "$wj")" restore
+    seed_pane "$(tmux show-option -wqv -t "=$session:$win" @AI_PANE_ID)" "$pj"
+    npanes=$(jq '.panes | length' <<< "$wj")
+    for ((p = 1; p < npanes; p++)); do
+      pj=$(jq -c ".panes[$p]" <<< "$wj")
+      seed_pane "$(lazy_llm_add_ai_pane "$session" "$win" "$dir" "$(jq -r .tool <<< "$pj")" \
+        "$(pane_launch_cmd "$pj" "$dir")")" "$pj"
+    done
+
+    names=$(jq -r '[.panes[] | .name // "_"] | join(" ")' <<< "$wj")
+    [[ "$names" =~ [^_\ ] ]] && any_name=true
+    $any_name && tmux set-option -w -t "=$session:$win" @AI_PANE_NAMES "$names"
+
+    visible=$(jq -r '.visible // 0' <<< "$wj")
+    [[ "$visible" -gt 0 ]] && lazy_llm_cycle_to_index "$session" "$win" "$visible"
+  done
+  [[ "$(jq -r .collapsed "$f")" == "true" ]] && tmux set-option -t "=$session:" @lazy_llm_collapsed 1
+  tmux select-window -t "=$session:$(tmux list-windows -t "=$session" -F '#{window_index}' | head -1)"
+  printf '%s\n' "$session"
+}
+
+cmd_restore() {
+  local dry_run=false
+  local -a selectors=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) dry_run=true ;;
+      --id) selectors+=("id:${2:?--id needs an id}"); shift ;;
+      -*) die "unknown option for restore: $1" ;;
+      *) selectors+=("name:$1") ;;
+    esac
+    shift
+  done
+  # Launched from inside a Claude Code session, this would otherwise leak
+  # into a tmux server started here, and every pane's claude would think it's
+  # nested.
+  unset CLAUDECODE
+
+  lock_acquire wait
+  local srv live_ids f state
+  srv=$(server_id)
+  live_ids=""
+  [[ -n "$srv" ]] && live_ids=$(live_workspaces | cut -f1)
+
+  # Candidates: every restorable entry, or exactly the selected ones.
+  local -a picked=() skipped=()
+  if [[ ${#selectors[@]} -eq 0 ]]; then
+    while IFS= read -r f; do
+      state=$(entry_state "$f" "$live_ids" "$srv")
+      case "$state" in
+        restorable) picked+=("$f") ;;
+        closed) skipped+=("$(jq -r .name "$f") (closed in this tmux server; restore it by name)") ;;
+      esac
+    done < <(entry_files "$WS_DIR")
+  else
+    local sel kind val
+    for sel in "${selectors[@]}"; do
+      kind="${sel%%:*}"; val="${sel#*:}"
+      local -a hits=()
+      while IFS= read -r f; do
+        [[ "$(entry_state "$f" "$live_ids" "$srv")" == live ]] && continue
+        if [[ "$kind" == id ]]; then
+          [[ "$(jq -r .id "$f")" == "$val" ]] && hits+=("$f")
+        else
+          [[ "$(jq -r .name "$f")" == "$val" ]] && hits+=("$f")
+        fi
+      done < <(entry_files "$WS_DIR"; entry_files "$CLOSED_DIR")
+      [[ ${#hits[@]} -eq 1 ]] || die "'$val' matches ${#hits[@]} saved workspaces that aren't running (see 'lazy-llm saved --closed')"
+      picked+=("${hits[0]}")
+    done
+  fi
+
+  if [[ ${#picked[@]} -eq 0 ]]; then
+    echo "Nothing to restore: every saved workspace is running."
+    local s
+    for s in "${skipped[@]}"; do echo "  skipped $s"; done
+    lock_release
+    return 0
+  fi
+
+  # Saved dashboard order.
+  local -a ordered=()
+  while IFS=$'\t' read -r _ f; do
+    ordered+=("$f")
+  done < <(for f in "${picked[@]}"; do printf '%s\t%s\n' "$(jq -r .order "$f")" "$f"; done | sort -n)
+
+  if $dry_run; then
+    local d
+    for f in "${ordered[@]}"; do
+      d=$(jq -r .dir "$f")
+      printf '%s  (%s)%s\n' "$(jq -r .name "$f")" "${d/#$HOME/\~}" "$([[ -d "$d" ]] || echo '  — dir missing, would skip')"
+      local nw w np p wj pj
+      nw=$(jq '.windows | length' "$f")
+      for ((w = 0; w < nw; w++)); do
+        wj=$(jq -c ".windows[$w]" "$f")
+        np=$(jq '.panes | length' <<< "$wj")
+        for ((p = 0; p < np; p++)); do
+          pj=$(jq -c ".panes[$p]" <<< "$wj")
+          printf '  %s pane %s %-8s %s\n      $ %s\n' "$([[ $nw -gt 1 ]] && echo "window $((w + 1))")" "$((p + 1))" \
+            "$([[ $p -eq $(jq -r .visible <<< "$wj") ]] && echo visible || echo held)" \
+            "$(jq -r '"\(.tool)  \(.name // "-")"' <<< "$pj")" "$(pane_launch_cmd "$pj" "$d")"
+        done
+        printf '  editor snapshot: %s\n  prompt snapshot: %s\n' \
+          "$(jq -r .editor_session <<< "$wj" | { read -r x; [[ -f "$x" ]] && echo "$x" || echo "none (bare editor)"; })" \
+          "$(jq -r .prompt_session <<< "$wj" | { read -r x; [[ -f "$x" ]] && echo "$x" || echo "none (prompt file $(jq -r '.prompt_file // "new"' <<< "$wj"))"; })"
+      done
+    done
+    lock_release
+    return 0
+  fi
+
+  local order_before
+  order_before=$(lazy_llm_apply_ws_order "$(lazy_llm_gather_sessions)" | cut -f1)
+
+  local -a restored=()
+  local d session saved_name
+  for f in "${ordered[@]}"; do
+    d=$(jq -r .dir "$f")
+    saved_name=$(jq -r .name "$f")
+    if [[ ! -d "$d" ]]; then
+      echo "Skipped $saved_name: $d no longer exists" >&2
+      continue
+    fi
+    # A closed/ entry being restored explicitly comes back into workspaces/.
+    [[ "$f" == "$CLOSED_DIR/"* ]] && { mkdir -p "$WS_DIR"; mv "$f" "$WS_DIR/"; f="$WS_DIR/$(basename "$f")"; }
+    session=$(restore_one "$f" | tail -1)
+    restored+=("$session")
+    if [[ "$session" == "$saved_name" ]]; then
+      echo "Restored $session"
+    else
+      echo "Restored $saved_name as $session ('$saved_name' is taken)"
+    fi
+    jq -r '.windows[].panes[] | select(.conv == null) | "  \(.tool) pane \(.name // "") started fresh (no saved conversation)"' "$f"
+  done
+
+  # Dashboard order: restored workspaces in their saved order, then the ones
+  # that were already running.
+  if [[ ${#restored[@]} -gt 0 ]]; then
+    local order_tail="" o
+    for o in $order_before; do order_tail+=" $o"; done
+    tmux set-option -s @lazy_llm_ws_order "${restored[*]}$order_tail"
+  fi
+
+  lock_release
+  "$0" save >/dev/null
+
+  [[ ${#restored[@]} -gt 0 ]] || return 0
+  if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]]; then
+    exec tmux attach-session -t "=${restored[0]}"
+  elif [[ -n "${TMUX:-}" && ${#restored[@]} -eq 1 ]]; then
+    tmux switch-client -t "=${restored[0]}"
+  else
+    echo "Attach with: tmux attach -t ${restored[0]}"
+  fi
+}
+
 usage() {
   cat <<'EOF'
-Usage: lazy-llm save [--async|--notify]
-       lazy-llm forget <name> | --id <id>
+Usage: lazy-llm save [--async|--notify]      save every running workspace now
+       lazy-llm restore [--dry-run] [--id <id>]... [name]...
+                                             rebuild saved workspaces that aren't running
+       lazy-llm saved [-v] [--closed]        list saved workspaces
+       lazy-llm forget <name> | --id <id>    drop a saved workspace
 EOF
 }
 
 case "${1:-}" in
-  save)    shift; cmd_save "$@" ;;
-  forget)  shift; cmd_forget "$@" ;;
+  save)     shift; cmd_save "$@" ;;
+  restore)  shift; cmd_restore "$@" ;;
+  saved)    shift; cmd_saved "$@" ;;
+  forget)   shift; cmd_forget "$@" ;;
+  find-dir) shift; cmd_find_dir "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

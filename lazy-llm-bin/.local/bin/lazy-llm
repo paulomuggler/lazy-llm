@@ -68,6 +68,7 @@ case "${1:-}" in
   list)     shift; exec "$HOME/.local/bin/llm-sessions" --list "$@" ;;
   kill)     shift; exec "$HOME/.local/bin/llm-sessions" --kill "$@" ;;
   sessions) shift; exec "$HOME/.local/bin/llm-sessions" "$@" ;;
+  save|restore|saved|forget) exec "$HOME/.local/bin/llm-persist" "$@" ;;
 esac
 
 # Parse named parameters
@@ -80,6 +81,8 @@ while getopts "s:d:t:wW:h" opt; do
   W) WORKTREE_BRANCH="$OPTARG" ;;
   h)
     echo "Usage: lazy-llm [-s session_name] [-d directory] [-t ai_tool] [-w] [-W branch]"
+    echo "       lazy-llm list | kill <name> | sessions"
+    echo "       lazy-llm save | restore [--dry-run] [name...] | saved [-v] | forget <name>"
     echo ""
     echo "Options:"
     echo "  -s  Session name (auto-generated if not provided)"
@@ -97,6 +100,12 @@ while getopts "s:d:t:wW:h" opt; do
     echo "  - With -s <existing>: Adds window to that session (attaches if needed)"
     echo "  - With -W <branch>: Always creates a new session bound to the worktree;"
     echo "    attaches to an existing lazy-llm session there if one exists"
+    echo "  - Opening a dir that has a saved (not running) workspace offers to restore it"
+    echo ""
+    echo "Save/restore:"
+    echo "  Workspaces are saved automatically on every change (and with Prefix+C-s)."
+    echo "  After the tmux server dies, 'lazy-llm restore' rebuilds them: AI panes and"
+    echo "  their conversations, display names, prompt and editor state, folds, order."
     exit 0
     ;;
   *)
@@ -164,7 +173,7 @@ TARGET_SESSION=""
 if [ "$NEW_WINDOW" = true ] || [ "$IN_TMUX" = true ]; then
   # Check if user provided -s with an existing session name
   SESSION_EXISTS=false
-  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  if tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
     SESSION_EXISTS=true
   fi
 
@@ -211,11 +220,11 @@ fi
 
 # Handle existing session: auto-generated names get a counter suffix,
 # explicitly named sessions (-s) just attach
-if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+if tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
   if [ "$NAME_AUTO_GENERATED" = true ]; then
     BASE_NAME="$SESSION_NAME"
     COUNTER=2
-    while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
+    while tmux has-session -t "=$SESSION_NAME" 2>/dev/null; do
       SESSION_NAME="${BASE_NAME}-${COUNTER}"
       COUNTER=$((COUNTER + 1))
     done
@@ -223,6 +232,37 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     echo "Session '$SESSION_NAME' already exists. Attaching..."
     tmux attach-session -t "$SESSION_NAME"
     exit 0
+  fi
+fi
+
+# A saved workspace for this dir that isn't running (e.g. after the tmux
+# server died): offer to bring it back instead of starting a fresh one.
+if [ -t 0 ] && [ -x "$HOME/.local/bin/llm-persist" ]; then
+  SAVED=$("$HOME/.local/bin/llm-persist" find-dir "$TARGET_DIR" 2>/dev/null || true)
+  if [ -n "$SAVED" ]; then
+    SAVED_COUNT=$(grep -c . <<< "$SAVED")
+    if [ "$SAVED_COUNT" -eq 1 ]; then
+      IFS=$'\t' read -r SAVED_ID SAVED_NAME SAVED_SUMMARY <<< "$SAVED"
+      printf "Saved workspace '%s' for this dir (%s).\nRestore it instead? [Y/n] " "$SAVED_NAME" "$SAVED_SUMMARY"
+      read -r ANSWER
+      case "$ANSWER" in
+        n|N|no|No) ;;
+        *) exec "$HOME/.local/bin/llm-persist" restore --id "$SAVED_ID" ;;
+      esac
+    else
+      echo "Saved workspaces for this dir:"
+      i=1
+      while IFS=$'\t' read -r _ SAVED_NAME SAVED_SUMMARY; do
+        echo "  $i) $SAVED_NAME ($SAVED_SUMMARY)"
+        i=$((i + 1))
+      done <<< "$SAVED"
+      printf "Restore which? [1-%s, n = new workspace] " "$SAVED_COUNT"
+      read -r ANSWER
+      if [[ "$ANSWER" =~ ^[0-9]+$ ]] && [ "$ANSWER" -ge 1 ] && [ "$ANSWER" -le "$SAVED_COUNT" ]; then
+        SAVED_ID=$(sed -n "${ANSWER}p" <<< "$SAVED" | cut -f1)
+        exec "$HOME/.local/bin/llm-persist" restore --id "$SAVED_ID"
+      fi
+    fi
   fi
 fi
 
