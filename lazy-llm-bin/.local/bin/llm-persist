@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # llm-persist - save lazy-llm workspaces to a manifest and rebuild them after
-# the tmux server dies. Reached as `lazy-llm save|restore|saved|forget`.
+# the tmux server dies. Reached as `lazy-llm save|restore|saved|close|forget`.
 #
 # The manifest is one JSON file per workspace under
 #   ${LAZY_LLM_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/lazy-llm}/workspaces/<id>.json
@@ -10,12 +10,21 @@
 # snapshots, its fold state and dashboard position. Design and rationale:
 # .agents/TODO/specs/workspace-save-restore.md.
 #
+# Entry states (entry_state):
+#   live        running
+#   restorable  died with an earlier tmux server (crash, reboot) — what a
+#               plain `lazy-llm restore` brings back
+#   closed      closed on purpose but kept (`lazy-llm close`, the dashboard, or
+#               just closed in tmux) — restored on demand, by name or Enter
+#   dropped     killed or forgotten — in dropped/, hidden, pruned after 30 days
+#
 # Retention rule (why a crash can't clobber the entries restore needs):
 #   - every entry records the tmux server that last saw it live;
 #   - save rewrites only live workspaces' files, never another server's;
 #   - an entry whose workspace vanished under the SAME server is only marked
-#     `gone`, and moved to closed/ once a later save still sees that server
-#     alive 60s on — a save racing a dying server can mark, never drop;
+#     `gone`, and marked closed once a later save still sees that server alive
+#     60s on — a save racing a dying server can mark, never close, so after a
+#     reboot it's still restorable;
 #   - with no server running, save does nothing at all.
 #
 # Usage: see usage() below. find-dir <dir> is plumbing for the launcher.
@@ -33,11 +42,11 @@ fi
 
 STATE="${LAZY_LLM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lazy-llm}"
 WS_DIR="$STATE/workspaces"
-CLOSED_DIR="$STATE/closed"
+DROPPED_DIR="$STATE/dropped"
 LOCK="$STATE/.lock"
 PENDING="$STATE/.pending"
 GONE_GRACE=60
-CLOSED_RETENTION_DAYS=30
+DROPPED_RETENTION_DAYS=30
 MANIFEST_VERSION=1
 
 command -v jq >/dev/null 2>&1 || { echo "llm-persist: jq is required" >&2; exit 1; }
@@ -272,7 +281,8 @@ save_workspace() {
     --arg server "$srv" --argjson saved "$(date +%s)" \
     --argjson windows "$(printf '%s\n' "${windows[@]}" | jq -sc .)" \
     '{version: $version, id: $id, name: $name, dir: $dir, collapsed: $collapsed,
-      order: $order, server: $server, saved: $saved, gone: null, windows: $windows}' \
+      order: $order, server: $server, saved: $saved, gone: null, closed: false,
+      windows: $windows}' \
     | write_file "$WS_DIR/$id.json"
 }
 
@@ -298,22 +308,22 @@ save_pass() {
     convs=$((convs + $(jq '[.windows[].panes[] | select(.conv != null)] | length' "$WS_DIR/$id.json")))
   done <<< "$live"
 
-  # Entries that aren't live: another server's are left exactly as they are;
-  # this server's are marked gone, then closed once the grace has passed.
-  local e_id e_srv e_gone
+  # Entries that aren't live: another server's are left exactly as they are,
+  # and so are closed ones; this server's are marked gone, then closed (kept,
+  # not restored by a plain restore) once the grace has passed.
+  local e_id e_srv e_gone e_closed
   while IFS= read -r f; do
-    read -r e_id e_srv e_gone < <(jq -r '[.id, .server, (.gone // "null")] | @tsv' "$f" | tr '\t' ' ')
+    read -r e_id e_srv e_gone e_closed < <(jq -r '[.id, .server, (.gone // "null"), (.closed // false)] | @tsv' "$f" | tr '\t' ' ')
     grep -q "^$e_id	" <<< "$live" && continue
-    [[ "$e_srv" == "$srv" ]] || continue
+    [[ "$e_srv" == "$srv" && "$e_closed" != "true" ]] || continue
     if [[ "$e_gone" == "null" ]]; then
       jq --argjson now "$now" '.gone = $now' "$f" | write_file "$f"
     elif (( now - e_gone >= GONE_GRACE )); then
-      mkdir -p "$CLOSED_DIR"
-      mv "$f" "$CLOSED_DIR/"
+      jq '.closed = true' "$f" | write_file "$f"
     fi
   done < <(entry_files "$WS_DIR")
 
-  find "$CLOSED_DIR" -name '*.json' -mtime +"$CLOSED_RETENTION_DAYS" -delete 2>/dev/null || true
+  find "$DROPPED_DIR" -name '*.json' -mtime +"$DROPPED_RETENTION_DAYS" -delete 2>/dev/null || true
   echo "lazy-llm: saved $ws_count workspace$([[ $ws_count -eq 1 ]] || echo s), $convs/$panes conversations"
 }
 
@@ -341,8 +351,8 @@ cmd_save() {
 
 # ── forget ──────────────────────────────────────────────────────────────────
 
-# Drop an entry from restore's view: workspaces/ → closed/. An entry already
-# in closed/ is deleted for good.
+# Drop an entry: workspaces/ → dropped/. An entry already dropped is deleted
+# for good.
 cmd_forget() {
   local id="" name="" f
   case "${1:-}" in
@@ -360,21 +370,21 @@ cmd_forget() {
       [[ "$(jq -r .name "$f")" == "$name" ]] || continue
       grep -qxF "$(jq -r .id "$f")" <<< "$live_ids" && continue
       matches+=("$f")
-    done < <(entry_files "$WS_DIR"; entry_files "$CLOSED_DIR")
-    [[ ${#matches[@]} -gt 0 ]] || die "no saved workspace named '$name' (live ones are killed with 'lazy-llm kill')"
+    done < <(entry_files "$WS_DIR"; entry_files "$DROPPED_DIR")
+    [[ ${#matches[@]} -gt 0 ]] || die "no saved workspace named '$name' (a running one: 'lazy-llm close' or 'lazy-llm kill')"
     [[ ${#matches[@]} -eq 1 ]] || die "several saved workspaces named '$name'; use --id (see 'lazy-llm saved')"
     id=$(jq -r .id "${matches[0]}")
   fi
 
   if [[ -f "$WS_DIR/$id.json" ]]; then
-    mkdir -p "$CLOSED_DIR"
-    mv "$WS_DIR/$id.json" "$CLOSED_DIR/$id.json"
-    echo "Forgot workspace $(jq -r .name "$CLOSED_DIR/$id.json") ($id)"
-  elif [[ -f "$CLOSED_DIR/$id.json" ]]; then
+    mkdir -p "$DROPPED_DIR"
+    mv "$WS_DIR/$id.json" "$DROPPED_DIR/$id.json"
+    echo "Dropped workspace $(jq -r .name "$DROPPED_DIR/$id.json") ($id)"
+  elif [[ -f "$DROPPED_DIR/$id.json" ]]; then
     local gone_name
-    gone_name=$(jq -r .name "$CLOSED_DIR/$id.json")
-    rm -f "$CLOSED_DIR/$id.json"
-    echo "Deleted closed workspace $gone_name ($id)"
+    gone_name=$(jq -r .name "$DROPPED_DIR/$id.json")
+    rm -f "$DROPPED_DIR/$id.json"
+    echo "Deleted dropped workspace $gone_name ($id)"
   else
     die "no saved workspace with id '$id'"
   fi
@@ -383,20 +393,20 @@ cmd_forget() {
 
 # ── entry states ────────────────────────────────────────────────────────────
 
-# live       its id is a running session's @lazy_llm_ws_id
-# restorable not live, and last seen by another (dead) server — or no server
-#            is running at all
-# closed     not live, closed during this server's lifetime (same server), or
-#            in closed/ (forgotten / closed and dropped)
+# See the header for what each state means.
 # Args: $1 entry file  $2 live ids (newline list)  $3 current server id
 entry_state() {
-  local f="$1" live_ids="$2" srv="$3" id server
-  read -r id server < <(jq -r '[.id, .server] | @tsv' "$f" | tr '\t' ' ')
+  local f="$1" live_ids="$2" srv="$3" id server closed
+  read -r id server closed < <(jq -r '[.id, .server, (.closed // false)] | @tsv' "$f" | tr '\t' ' ')
   if [[ -n "$live_ids" ]] && grep -qxF "$id" <<< "$live_ids"; then
     echo live
-  elif [[ "$f" == "$CLOSED_DIR/"* ]]; then
+  elif [[ "$f" == "$DROPPED_DIR/"* ]]; then
+    echo dropped
+  elif [[ "$closed" == "true" ]]; then
     echo closed
   elif [[ -n "$srv" && "$server" == "$srv" ]]; then
+    # Vanished in this server's lifetime (grace not over yet): closed, not
+    # a crash victim.
     echo closed
   else
     echo restorable
@@ -415,14 +425,15 @@ ago() {
 
 # Human listing, or (--tsv) one machine row per entry for the dashboard:
 #   state id name dir panes held convs saved_epoch saved_ago   (tab-separated)
-# live entries first (dashboard order), then restorable, then closed.
+# live entries first (dashboard order), then restorable, closed, dropped
+# (dropped only with --dropped).
 cmd_saved() {
-  local verbose=false tsv=false with_closed=false only_id="" f
+  local verbose=false tsv=false with_dropped=false only_id="" f
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -v) verbose=true ;;
       --tsv) tsv=true ;;
-      --closed) with_closed=true ;;
+      --dropped) with_dropped=true ;;
       --id) only_id="${2:-}"; shift ;;
       *) die "unknown option for saved: $1" ;;
     esac
@@ -436,15 +447,15 @@ cmd_saved() {
   local rows="" state rank
   while IFS= read -r f; do
     state=$(entry_state "$f" "$live_ids" "$srv")
-    [[ "$state" == closed && "$with_closed" == false && -z "$only_id" ]] && continue
-    case "$state" in live) rank=0 ;; restorable) rank=1 ;; *) rank=2 ;; esac
+    [[ "$state" == dropped && "$with_dropped" == false && -z "$only_id" ]] && continue
+    case "$state" in live) rank=0 ;; restorable) rank=1 ;; closed) rank=2 ;; *) rank=3 ;; esac
     rows+=$(jq -r --arg state "$state" --arg rank "$rank" \
       '[$rank, (.order|tostring), $state, .id, .name, .dir,
         ([.windows[].panes[]] | length | tostring),
         ([.windows[] | (.panes | length) - 1] | add | tostring),
         ([.windows[].panes[] | select(.conv != null)] | length | tostring),
         (.saved|tostring)] | @tsv' "$f")$'\n'
-  done < <(entry_files "$WS_DIR"; entry_files "$CLOSED_DIR")
+  done < <(entry_files "$WS_DIR"; entry_files "$DROPPED_DIR")
   rows=$(printf '%s' "$rows" | grep . | sort -t$'\t' -k1,1n -k2,2n | cut -f3- || true)
   [[ -n "$only_id" ]] && rows=$(awk -F'\t' -v id="$only_id" '$2 == id' <<< "$rows")
 
@@ -462,13 +473,13 @@ cmd_saved() {
   fi
   local id name dir panes held convs saved glyph file
   while IFS=$'\t' read -r state id name dir panes held convs saved; do
-    case "$state" in live) glyph="●" ;; restorable) glyph="◌" ;; *) glyph="✕" ;; esac
+    case "$state" in live) glyph="●" ;; restorable) glyph="◌" ;; closed) glyph="◇" ;; *) glyph="✕" ;; esac
     printf '%s %-24s %-40s %s AI pane%s (%s held)  %s/%s conversations  saved %s\n' \
       "$glyph" "$name" "${dir/#$HOME/\~}" "$panes" "$([[ $panes -eq 1 ]] || echo s)" \
       "$held" "$convs" "$panes" "$(ago "$saved")"
     $verbose || continue
     file="$WS_DIR/$id.json"
-    [[ -f "$file" ]] || file="$CLOSED_DIR/$id.json"
+    [[ -f "$file" ]] || file="$DROPPED_DIR/$id.json"
     jq -r --arg home "$HOME" '
       def short: if . == null then "-" else sub("^" + $home; "~") end;
       "    id \(.id)  state '"$state"'",
@@ -483,8 +494,8 @@ cmd_saved() {
 
 # ── find-dir ────────────────────────────────────────────────────────────────
 
-# Restorable entries for a dir (realpath comparison), for the launcher's
-# "restore instead?" prompt. Prints: id<TAB>name<TAB>summary
+# Restorable and closed entries for a dir (realpath comparison), for the
+# launcher's "restore instead?" prompt. Prints: id<TAB>name<TAB>summary
 cmd_find_dir() {
   local want f real srv live_ids
   want=$(realpath "${1:?usage: llm-persist find-dir <dir>}" 2>/dev/null || printf '%s' "$1")
@@ -492,7 +503,7 @@ cmd_find_dir() {
   live_ids=""
   [[ -n "$srv" ]] && live_ids=$(live_workspaces | cut -f1)
   while IFS= read -r f; do
-    [[ "$(entry_state "$f" "$live_ids" "$srv")" == restorable ]] || continue
+    case "$(entry_state "$f" "$live_ids" "$srv")" in restorable|closed) ;; *) continue ;; esac
     real=$(realpath "$(jq -r .dir "$f")" 2>/dev/null || jq -r .dir "$f")
     [[ "$real" == "$want" ]] || continue
     jq -r --arg ago "$(ago "$(jq -r .saved "$f")")" '
@@ -620,7 +631,7 @@ cmd_restore() {
       state=$(entry_state "$f" "$live_ids" "$srv")
       case "$state" in
         restorable) picked+=("$f") ;;
-        closed) skipped+=("$(jq -r .name "$f") (closed in this tmux server; restore it by name)") ;;
+        closed) skipped+=("$(jq -r .name "$f") (closed; restore it by name)") ;;
       esac
     done < <(entry_files "$WS_DIR")
   else
@@ -635,14 +646,14 @@ cmd_restore() {
         else
           [[ "$(jq -r .name "$f")" == "$val" ]] && hits+=("$f")
         fi
-      done < <(entry_files "$WS_DIR"; entry_files "$CLOSED_DIR")
-      [[ ${#hits[@]} -eq 1 ]] || die "'$val' matches ${#hits[@]} saved workspaces that aren't running (see 'lazy-llm saved --closed')"
+      done < <(entry_files "$WS_DIR"; entry_files "$DROPPED_DIR")
+      [[ ${#hits[@]} -eq 1 ]] || die "'$val' matches ${#hits[@]} saved workspaces that aren't running (see 'lazy-llm saved --dropped')"
       picked+=("${hits[0]}")
     done
   fi
 
   if [[ ${#picked[@]} -eq 0 ]]; then
-    echo "Nothing to restore: every saved workspace is running."
+    echo "Nothing to restore: no saved workspace died with its tmux server."
     local s
     for s in "${skipped[@]}"; do echo "  skipped $s"; done
     lock_release
@@ -692,8 +703,8 @@ cmd_restore() {
       echo "Skipped $saved_name: $d no longer exists" >&2
       continue
     fi
-    # A closed/ entry being restored explicitly comes back into workspaces/.
-    [[ "$f" == "$CLOSED_DIR/"* ]] && { mkdir -p "$WS_DIR"; mv "$f" "$WS_DIR/"; f="$WS_DIR/$(basename "$f")"; }
+    # A dropped entry being restored explicitly comes back into workspaces/.
+    [[ "$f" == "$DROPPED_DIR/"* ]] && { mkdir -p "$WS_DIR"; mv "$f" "$WS_DIR/"; f="$WS_DIR/$(basename "$f")"; }
     session=$(restore_one "$f" | tail -1)
     restored+=("$session")
     if [[ "$session" == "$saved_name" ]]; then
@@ -725,12 +736,52 @@ cmd_restore() {
   fi
 }
 
+# ── close ───────────────────────────────────────────────────────────────────
+
+# Close a running workspace but keep it: save it, mark it closed, kill its
+# session. It stays in `saved` / the Saved tab (◇) and comes back with
+# `lazy-llm restore <name>`, Enter in the Saved tab, or the launcher's
+# "restore instead?" prompt — but not with a plain `lazy-llm restore`, which
+# is for workspaces a dead server took with it.
+cmd_close() {
+  local name="" id="" s
+  case "${1:-}" in
+    --id) id="${2:-}"; [[ -n "$id" ]] || die "close --id needs an id" ;;
+    "") die "usage: lazy-llm close <name> | --id <id>" ;;
+    *) name="$1" ;;
+  esac
+  lock_acquire wait
+  [[ -n "$(server_id)" ]] || die "no tmux server running"
+  if [[ -n "$id" ]]; then
+    name=$(live_workspaces | awk -F'\t' -v id="$id" '$1 == id {print $2; exit}')
+    [[ -n "$name" ]] || die "no running workspace with id '$id'"
+  else
+    id=$(live_workspaces | awk -F'\t' -v n="$name" '$2 == n {print $1; exit}')
+    [[ -n "$id" ]] || die "no running lazy-llm workspace named '$name'"
+  fi
+  save_pass >/dev/null
+  [[ -f "$WS_DIR/$id.json" ]] || die "could not save '$name'"
+  jq '.closed = true' "$WS_DIR/$id.json" | write_file "$WS_DIR/$id.json"
+  lock_release
+
+  # Don't leave the calling client detached when it's closing its own session.
+  if [[ -n "${TMUX:-}" && "$(tmux display-message -p '#{session_name}' 2>/dev/null)" == "$name" ]]; then
+    tmux switch-client -n 2>/dev/null || true
+  fi
+  while IFS= read -r s; do
+    [[ "$s" == _hold_* ]] && tmux kill-window -t "=$name:$s" 2>/dev/null || true
+  done < <(tmux list-windows -t "=$name" -F '#{window_name}' 2>/dev/null)
+  tmux kill-session -t "=$name"
+  echo "Closed workspace $name (kept — 'lazy-llm restore $name' brings it back)"
+}
+
 usage() {
   cat <<'EOF'
 Usage: lazy-llm save [--async|--notify]      save every running workspace now
        lazy-llm restore [--dry-run] [--id <id>]... [name]...
                                              rebuild saved workspaces that aren't running
-       lazy-llm saved [-v] [--closed]        list saved workspaces
+       lazy-llm saved [-v] [--dropped]       list saved workspaces
+       lazy-llm close <name> | --id <id>     close a running workspace, keep it saved
        lazy-llm forget <name> | --id <id>    drop a saved workspace
 EOF
 }
@@ -739,6 +790,7 @@ case "${1:-}" in
   save)     shift; cmd_save "$@" ;;
   restore)  shift; cmd_restore "$@" ;;
   saved)    shift; cmd_saved "$@" ;;
+  close)    shift; cmd_close "$@" ;;
   forget)   shift; cmd_forget "$@" ;;
   find-dir) shift; cmd_find_dir "$@" ;;
   -h|--help|help) usage ;;

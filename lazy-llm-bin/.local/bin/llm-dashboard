@@ -369,6 +369,7 @@ render_sessions_tab() {
       header=""
     fi
   fi
+  [[ -n "$_dashboard_flash" ]] && header="$_dashboard_flash"${header:+$'\n'"$header"}
   # Workspaces that died with an earlier tmux server, waiting in the Saved tab.
   local _restorable
   _restorable=$(_dashboard_restorable_count)
@@ -739,10 +740,21 @@ render_worktrees_tab() {
 # Saved tab — workspaces in llm-persist's manifest (see llm-persist's header)
 # ──────────────────────────────────────────────────────────────────────────
 
-# Closed entries (closed in this tmux server, or forgotten) are hidden unless
-# toggled on with 'c'. The main loop owns this flag: each tab renders in a
-# subshell and can't flip it itself.
-_dashboard_saved_closed=false
+# Dropped entries (killed or forgotten) are hidden unless toggled on with
+# 'd'. The main loop owns this flag: each tab renders in a subshell and can't
+# flip it itself.
+_dashboard_saved_dropped=false
+
+# One-shot status line for the next render's header (e.g. a save's summary),
+# set by dispatch_action — which runs in the main loop's own shell — and
+# cleared by the main loop once a tab has rendered with it.
+_dashboard_flash=""
+
+# Blank the popup with a one-line message while a slow action runs (fzf has
+# exited, so otherwise its last frame just sits there looking current).
+_dashboard_busy() {
+  printf '\033[2J\033[H\n  %s\n' "$1" > /dev/tty 2>/dev/null || true
+}
 
 # Pad stdin (one line) to $1 characters — character-counted, not printf's
 # byte-counted %-*s (see _help_pad).
@@ -756,14 +768,14 @@ _dashboard_pad() {
 
 # One fzf line per manifest entry, from `llm-persist saved --tsv`:
 #   saved:<id> <TAB> <state> <TAB> <display>
-# live first (dashboard order), then restorable, then closed. Reads only the
-# manifest — no RPC, no save — so it's cheap, and testable via
+# live first (dashboard order), then restorable, closed, dropped. Reads only
+# the manifest — no RPC, no save — so it's cheap, and testable via
 # --emit-saved-rows.
-# Args: $1 "--closed" to include closed entries
+# Args: $1 "--dropped" to include dropped entries
 _dashboard_build_saved_rows() {
   local flag="${1:-}" state id name _dir panes _held convs _saved ago glyph color
   local -a args=(saved --tsv)
-  [[ "$flag" == "--closed" ]] && args+=(--closed)
+  [[ "$flag" == "--dropped" ]] && args+=(--dropped)
   # Compact on purpose: the list column is under half the popup (the preview
   # takes the rest and shows the dir and every pane).
   while IFS=$'\t' read -r state id name _dir panes _held convs _saved ago; do
@@ -771,6 +783,7 @@ _dashboard_build_saved_rows() {
     case "$state" in
       live)       glyph="●"; color="#5fff00" ;;
       restorable) glyph="◌"; color="#ffff00" ;;
+      closed)     glyph="◇"; color="#bcbcbc" ;;
       *)          glyph="✕"; color="#8a8a8a" ;;
     esac
     printf 'saved:%s\t%s\t%s%s\033[0m %s %s · %s/%s conv · %s\n' "$id" "$state" \
@@ -781,7 +794,7 @@ _dashboard_build_saved_rows() {
 
 render_saved_tab() {
   local lines header flag=""
-  $_dashboard_saved_closed && flag="--closed"
+  $_dashboard_saved_dropped && flag="--dropped"
   lines=$(_dashboard_build_saved_rows "$flag")
 
   local _budget
@@ -789,13 +802,15 @@ render_saved_tab() {
   if [[ -z "$lines" ]]; then
     header="nothing saved yet — s:save now"
   elif [[ "$_budget" -ge 60 ]]; then
-    header="enter:restore/switch A:restore-all s:save K:forget c:closed R:refresh"
+    header="enter:restore/switch c:close(keep) K:drop A:restore-all s:save d:dropped"
   elif [[ "$_budget" -ge 30 ]]; then
-    header="enter:restore A:all s:save K:forget"
+    header="enter:restore c:close K:drop s:save"
   else
     header=""
   fi
-  $_dashboard_saved_closed && header+=$'\n'"(showing closed workspaces — c to hide)"
+  [[ -n "$lines" && "$_budget" -ge 40 ]] && header+=$'\n'"● live  ◌ restorable (died)  ◇ closed (kept)  ✕ dropped"
+  $_dashboard_saved_dropped && header+=$'\n'"(showing dropped workspaces — d to hide)"
+  [[ -n "$_dashboard_flash" ]] && header="$_dashboard_flash"${header:+$'\n'"$header"}
 
   local preview_cmd
   preview_cmd='set -- {1}; id="${1#saved:}"; '
@@ -820,9 +835,9 @@ render_saved_tab() {
     --bind='enter:print()+accept' \
     --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
     --bind='A:print(A)+accept' --bind='s:print(s)+accept' --bind='K:print(K)+accept' \
-    --bind='c:print(c)+accept' --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
-    --bind='/:unbind(1,2,3,A,s,K,c,R,?)+show-input+enable-search' \
-    --bind='tab:clear-query+hide-input+rebind(1,2,3,A,s,K,c,R,?)' \
+    --bind='c:print(c)+accept' --bind='d:print(d)+accept' --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
+    --bind='/:unbind(1,2,3,A,s,K,c,d,R,?)+show-input+enable-search' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,3,A,s,K,c,d,R,?)' \
     --bind='q:abort' \
   ) || { echo "quit"; return 0; }
 
@@ -840,13 +855,20 @@ render_saved_tab() {
     3|R) echo "action:refresh" ;;
     A)   echo "action:saved-restore-all" ;;
     s)   echo "action:save-now" ;;
-    c)   echo "action:saved-toggle-closed" ;;
+    d)   echo "action:saved-toggle-dropped" ;;
     "?") echo "tab:help" ;;
+    c)
+      if [[ "$chosen_state" == live ]]; then
+        echo "action:saved-close:$chosen_id"
+      else
+        echo "action:saved-hint:only a running workspace can be closed — Enter restores this one"
+      fi
+      ;;
     K)
       if [[ -z "$chosen_id" ]]; then
         echo "action:refresh"
       elif [[ "$chosen_state" == live ]]; then
-        echo "action:saved-live-kill-hint"
+        echo "action:saved-kill:$chosen_id"
       else
         echo "action:saved-forget:$chosen_state:$chosen_id"
       fi
@@ -872,6 +894,36 @@ _dashboard_restorable_count() {
 # ──────────────────────────────────────────────────────────────────────────
 # Action dispatch
 # ──────────────────────────────────────────────────────────────────────────
+
+# Close (keep it saved, ◇ in the Saved tab) or kill (drop it) a running
+# workspace. With no $2, asks which; "no" is first so a stray Enter is safe.
+# Args: $1 session name  $2 close|kill (optional)
+_dashboard_close_or_kill() {
+  local name="$1" how="${2:-}" choice
+  if [[ -z "$how" ]]; then
+    choice=$(printf '%s\n' "no" "close — keep it in Saved, restore it later" "kill — drop it from Saved too" | fzf \
+      --height=100% --reverse --border=rounded --header="Close workspace '$name'?" \
+      --prompt="confirm> " || echo no)
+    case "$choice" in
+      close*) how="close" ;;
+      kill*)  how="kill" ;;
+      *)      return 0 ;;
+    esac
+  else
+    choice=$(printf 'no\nyes' | fzf \
+      --height=100% --reverse --border=rounded \
+      --header="$([[ "$how" == close ]] && echo "Close '$name', keeping it saved?" || echo "Kill '$name' and drop it from Saved?")" \
+      --prompt="confirm> " || echo no)
+    [[ "$choice" == yes ]] || return 0
+  fi
+  if [[ "$how" == close ]]; then
+    _dashboard_busy "closing $name…"
+    _dashboard_flash=$("$HOME/.local/bin/llm-persist" close "$name" 2>&1 | tail -1) || true
+  else
+    # llm-sessions --kill: the validated kill path (checks the @lazy_llm marker), and it drops the entry
+    "$HOME/.local/bin/llm-sessions" --kill "$name" >&2 || true
+  fi
+}
 
 dispatch_action() {
   local action="$1"
@@ -908,15 +960,17 @@ dispatch_action() {
         || echo "Could not switch to $name" >&2
       ;;
     action:kill:*)
-      local name="${action#action:kill:}"
-      # Use llm-sessions --kill for the validated kill path (checks @lazy_llm marker)
-      local confirm
-      confirm=$(printf 'no\nyes' | fzf \
-        --height=100% --reverse --border=rounded --header="Kill workspace '$name'?" \
-        --prompt="confirm> " || echo no)
-      if [[ "$confirm" == "yes" ]]; then
-        "$HOME/.local/bin/llm-sessions" --kill "$name" >&2 || true
-      fi
+      _dashboard_close_or_kill "${action#action:kill:}"
+      ;;
+    action:saved-close:*|action:saved-kill:*)
+      local sid="${action#action:saved-*:}" sname
+      sname=$(tmux list-sessions -F '#{session_name}	#{@lazy_llm_ws_id}' 2>/dev/null \
+        | awk -F'\t' -v id="$sid" '$2 == id {print $1; exit}') || sname=""
+      [[ -n "$sname" ]] && _dashboard_close_or_kill "$sname" \
+        "$([[ "$action" == action:saved-close:* ]] && echo close || echo kill)"
+      ;;
+    action:saved-hint:*)
+      tmux display-message "${action#action:saved-hint:}"
       ;;
     action:rename:*)
       local name="${action#action:rename:}"
@@ -981,13 +1035,15 @@ dispatch_action() {
       ;;
     action:save-now)
       local summary
+      _dashboard_busy "saving…"
       summary=$("$HOME/.local/bin/llm-persist" save 2>&1 | tail -1) || true
-      tmux display-message "${summary:-lazy-llm: save failed}"
+      _dashboard_flash="${summary:-lazy-llm: save failed} ($(date +%H:%M:%S))"
       ;;
     action:saved-restore:*)
       # From inside tmux, restoring exactly one workspace switches the client
       # to it (llm-persist restore's own behavior), which closes the popup.
       local out
+      _dashboard_busy "restoring…"
       out=$("$HOME/.local/bin/llm-persist" restore --id "${action#action:saved-restore:}" 2>&1) \
         || tmux display-message "lazy-llm: restore failed: $(tail -1 <<< "$out")"
       ;;
@@ -997,8 +1053,9 @@ dispatch_action() {
         --height=100% --reverse --border=rounded --header="Restore every saved workspace that isn't running?" \
         --prompt="confirm> " || echo no)
       if [[ "$confirm" == "yes" ]]; then
+        _dashboard_busy "restoring…"
         out=$("$HOME/.local/bin/llm-persist" restore 2>&1) || true
-        tmux display-message "lazy-llm: $(grep -c '^Restored' <<< "$out" || true) workspace(s) restored"
+        _dashboard_flash="lazy-llm: $(grep -c '^Restored' <<< "$out" || true) workspace(s) restored"
       fi
       ;;
     action:saved-switch:*)
@@ -1011,15 +1068,12 @@ dispatch_action() {
       local rest="${action#action:saved-forget:}" state sid question confirm
       state="${rest%%:*}"
       sid="${rest#*:}"
-      question="Forget this saved workspace? (it moves to the closed view)"
-      [[ "$state" == closed ]] && question="Delete this closed workspace for good?"
+      question="Drop this saved workspace? (d shows dropped ones; they're deleted after 30 days)"
+      [[ "$state" == dropped ]] && question="Delete this dropped workspace for good?"
       confirm=$(printf 'no\nyes' | fzf \
         --height=100% --reverse --border=rounded --header="$question" \
         --prompt="confirm> " || echo no)
       [[ "$confirm" == "yes" ]] && { "$HOME/.local/bin/llm-persist" forget --id "$sid" >/dev/null 2>&1 || true; }
-      ;;
-    action:saved-live-kill-hint)
-      tmux display-message "That workspace is running — kill it from the Workspaces tab (1, then K)."
       ;;
     action:pane-add)
       local tool
@@ -1175,7 +1229,7 @@ render_help_tab() {
     " ^Up ^Dn reorder row (own level)"
     " k  j   same, no-Ctrl alternate"
     " r      rename ws / pane label"
-    " K      ws: kill · pane: remove"
+    " K      ws: close/kill · pane: rm"
     "        (current workspace only)"
     " s      save all workspaces now"
     " R      refresh"
@@ -1192,12 +1246,13 @@ render_help_tab() {
     " K      atomic cleanup"
     " R      refresh"
     ""
-    "SAVED TAB  ● live ◌ saved ✕ closed"
+    "SAVED  ●live ◌died ◇closed ✕dropped"
     " Enter  restore (switch if live)"
-    " A      restore all not running"
+    " c      close a live one, keep it"
+    " K      live: kill · else: drop"
+    " A      restore all that died"
     " s      save now (also Prefix+C-s)"
-    " K      forget · closed: delete"
-    " c      show/hide closed ones"
+    " d      show/hide dropped ones"
     ""
     "GLOBAL"
     " ?      open this Help tab"
@@ -1300,12 +1355,14 @@ Inside the dashboard:
   a          add an AI pane to the CURRENT workspace (Workspaces — the one
              this dashboard was opened from, not whatever's highlighted)
   g          launch lazygit (Worktrees)
-  K          kill workspace / remove pane / cleanup worktree (with confirmation)
+  K          workspace: close (keep saved) or kill (drop) · pane: remove ·
+             Saved: drop · worktree: cleanup (all with confirmation)
   r          rename (Workspaces)
   ], [       cycle next / prev AI pane in the CURRENT workspace (Workspaces)
   s          save every workspace now (Workspaces, Saved; also Prefix+C-s)
-  A          restore every saved workspace that isn't running (Saved)
-  c          show/hide closed workspaces (Saved)
+  A          restore every workspace that died with its tmux server (Saved)
+  c          close a running workspace but keep it saved (Saved)
+  d          show/hide dropped workspaces (Saved)
   R          refresh
   ?          open the Help tab
   q, Esc     close
@@ -1496,13 +1553,15 @@ while true; do
     help)       result=$(render_help_tab) ;;
     *)         echo "Unknown tab: $current_tab" >&2; exit 1 ;;
   esac
+  # The flash was shown by the render that just returned.
+  _dashboard_flash=""
 
   case "$result" in
     tab:*)
       current_tab="${result#tab:}"
       ;;
-    action:saved-toggle-closed)
-      if $_dashboard_saved_closed; then _dashboard_saved_closed=false; else _dashboard_saved_closed=true; fi
+    action:saved-toggle-dropped)
+      if $_dashboard_saved_dropped; then _dashboard_saved_dropped=false; else _dashboard_saved_dropped=true; fi
       ;;
     action:switch:*|action:switch-pane:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*|action:save-now|action:saved-*)
       dispatch_action "$result"

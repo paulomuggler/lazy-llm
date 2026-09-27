@@ -68,7 +68,7 @@ case "${1:-}" in
   list)     shift; exec "$HOME/.local/bin/llm-sessions" --list "$@" ;;
   kill)     shift; exec "$HOME/.local/bin/llm-sessions" --kill "$@" ;;
   sessions) shift; exec "$HOME/.local/bin/llm-sessions" "$@" ;;
-  save|restore|saved|forget) exec "$HOME/.local/bin/llm-persist" "$@" ;;
+  save|restore|saved|close|forget) exec "$HOME/.local/bin/llm-persist" "$@" ;;
 esac
 
 # Parse named parameters
@@ -81,7 +81,9 @@ while getopts "s:d:t:wW:h" opt; do
   W) WORKTREE_BRANCH="$OPTARG" ;;
   h)
     echo "Usage: lazy-llm [-s session_name] [-d directory] [-t ai_tool] [-w] [-W branch]"
-    echo "       lazy-llm list | kill <name> | sessions"
+    echo "       lazy-llm list | sessions"
+    echo "       lazy-llm close <name>   close a workspace, keep it saved to restore later"
+    echo "       lazy-llm kill <name>    close a workspace and drop it from the saved list"
     echo "       lazy-llm save | restore [--dry-run] [name...] | saved [-v] | forget <name>"
     echo ""
     echo "Options:"
@@ -106,6 +108,8 @@ while getopts "s:d:t:wW:h" opt; do
     echo "  Workspaces are saved automatically on every change (and with Prefix+C-s)."
     echo "  After the tmux server dies, 'lazy-llm restore' rebuilds them: AI panes and"
     echo "  their conversations, display names, prompt and editor state, folds, order."
+    echo "  A workspace you close stays saved; 'lazy-llm restore <name>' reopens it."
+    echo "  See them all with 'lazy-llm saved' or Prefix+S then 3."
     exit 0
     ;;
   *)
