@@ -414,7 +414,7 @@ entry_state() {
 }
 
 ago() {
-  local s=$(( $(date +%s) - $1 ))
+  local s=$(( ${EPOCHSECONDS:-$(date +%s)} - $1 ))
   if (( s < 90 )); then echo "${s}s ago"
   elif (( s < 5400 )); then echo "$((s / 60))m ago"
   elif (( s < 172800 )); then echo "$((s / 3600))h ago"
@@ -427,6 +427,53 @@ ago() {
 #   state id name dir panes held convs saved_epoch saved_ago   (tab-separated)
 # live entries first (dashboard order), then restorable, closed, dropped
 # (dropped only with --dropped).
+# cmd_saved's rows (rank, order, then the --tsv columns) from ONE jq over
+# every manifest, instead of three jq runs per entry (version check, state
+# fields, row) — 15 execs for 5 entries, ~150ms, paid on every dashboard
+# Workspaces render (its "N saved workspaces not running" header line counts
+# these). Same state rules as entry_state. Returns 1 if jq fails on the batch
+# (e.g. one unparseable file), so the caller falls back to the per-entry path
+# with its per-file error tolerance.
+# Args: $1 live ids (newline-separated)  $2 server id  $3 with_dropped  $4 only_id
+saved_rows_fast() {
+  local live_ids="$1" srv="$2" with_dropped="$3" only_id="$4"
+  local -a files=()
+  local f
+  for f in "$WS_DIR"/*.json "$DROPPED_DIR"/*.json; do
+    [[ -f "$f" ]] && files+=("$f")
+  done
+  [[ ${#files[@]} -gt 0 ]] || return 0
+  local out
+  out=$(jq -r '[input_filename, (.version // "" | tostring), .id, (.server // ""),
+      ((.closed // false) | tostring), (.order | tostring), .name, .dir,
+      ([.windows[].panes[]] | length | tostring),
+      ([.windows[] | (.panes | length) - 1] | add | tostring),
+      ([.windows[].panes[] | select(.conv != null)] | length | tostring),
+      (.saved | tostring)] | @tsv' "${files[@]}" 2>/dev/null) || return 1
+  local file version id server closed order rest state rank
+  while IFS=$'\t' read -r file version id server closed order rest; do
+    [[ -n "$file" ]] || continue
+    if [[ "$version" != "$MANIFEST_VERSION" ]]; then
+      echo "llm-persist: skipping $file (manifest version '${version:-?}', expected $MANIFEST_VERSION)" >&2
+      continue
+    fi
+    if [[ -n "$live_ids" && $'\n'"$live_ids"$'\n' == *$'\n'"$id"$'\n'* ]]; then
+      state=live
+    elif [[ "$file" == "$DROPPED_DIR/"* ]]; then
+      state=dropped
+    elif [[ "$closed" == "true" ]]; then
+      state=closed
+    elif [[ -n "$srv" && "$server" == "$srv" ]]; then
+      state=closed
+    else
+      state=restorable
+    fi
+    [[ "$state" == dropped && "$with_dropped" == false && -z "$only_id" ]] && continue
+    case "$state" in live) rank=0 ;; restorable) rank=1 ;; closed) rank=2 ;; *) rank=3 ;; esac
+    printf '%s\t%s\t%s\t%s\t%s\n' "$rank" "$order" "$state" "$id" "$rest"
+  done <<< "$out"
+}
+
 cmd_saved() {
   local verbose=false tsv=false with_dropped=false only_id="" f
   while [[ $# -gt 0 ]]; do
@@ -444,18 +491,22 @@ cmd_saved() {
   live_ids=""
   [[ -n "$srv" ]] && live_ids=$(live_workspaces | cut -f1)
 
-  local rows="" state rank
-  while IFS= read -r f; do
-    state=$(entry_state "$f" "$live_ids" "$srv")
-    [[ "$state" == dropped && "$with_dropped" == false && -z "$only_id" ]] && continue
-    case "$state" in live) rank=0 ;; restorable) rank=1 ;; closed) rank=2 ;; *) rank=3 ;; esac
-    rows+=$(jq -r --arg state "$state" --arg rank "$rank" \
-      '[$rank, (.order|tostring), $state, .id, .name, .dir,
-        ([.windows[].panes[]] | length | tostring),
-        ([.windows[] | (.panes | length) - 1] | add | tostring),
-        ([.windows[].panes[] | select(.conv != null)] | length | tostring),
-        (.saved|tostring)] | @tsv' "$f")$'\n'
-  done < <(entry_files "$WS_DIR"; entry_files "$DROPPED_DIR")
+  local rows
+  if ! rows=$(saved_rows_fast "$live_ids" "$srv" "$with_dropped" "$only_id"); then
+    rows=""
+    local state rank
+    while IFS= read -r f; do
+      state=$(entry_state "$f" "$live_ids" "$srv")
+      [[ "$state" == dropped && "$with_dropped" == false && -z "$only_id" ]] && continue
+      case "$state" in live) rank=0 ;; restorable) rank=1 ;; closed) rank=2 ;; *) rank=3 ;; esac
+      rows+=$(jq -r --arg state "$state" --arg rank "$rank" \
+        '[$rank, (.order|tostring), $state, .id, .name, .dir,
+          ([.windows[].panes[]] | length | tostring),
+          ([.windows[] | (.panes | length) - 1] | add | tostring),
+          ([.windows[].panes[] | select(.conv != null)] | length | tostring),
+          (.saved|tostring)] | @tsv' "$f")$'\n'
+    done < <(entry_files "$WS_DIR"; entry_files "$DROPPED_DIR")
+  fi
   rows=$(printf '%s' "$rows" | grep . | sort -t$'\t' -k1,1n -k2,2n | cut -f3- || true)
   [[ -n "$only_id" ]] && rows=$(awk -F'\t' -v id="$only_id" '$2 == id' <<< "$rows")
 

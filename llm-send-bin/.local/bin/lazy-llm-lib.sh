@@ -656,42 +656,41 @@ lazy_llm_cleanup_worktree() {
 # (ATTACHED is "*" when attached, empty otherwise.)
 # Lists nothing if no sessions exist or no tmux server is running.
 lazy_llm_gather_sessions() {
-  local sessions
-  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 0
-  [[ -z "$sessions" ]] && return 0
+  # One `tmux list-panes -a` for everything (user options resolve in -F
+  # formats), instead of ~5 tmux calls per session: this runs on every
+  # status-bar refresh and every dashboard render, and the per-call cost
+  # (~7ms each on a busy server) was most of the dashboard's latency.
+  # \x1f separates fields, not tabs: `read` collapses runs of a whitespace
+  # IFS, which would shift every field after an empty one.
+  local rows
+  rows=$(tmux list-panes -a -F $'#{session_name}\x1f#{@lazy_llm}\x1f#{window_index}\x1f#{window_name}\x1f#{window_active}#{pane_active}\x1f#{pane_current_path}\x1f#{@AI_TOOLS}\x1f#{@AI_TOOL}\x1f#{session_attached}' 2>/dev/null) || return 0
+  [[ -z "$rows" ]] && return 0
 
-  while IFS= read -r session; do
-    # Only include lazy-llm-marked sessions (session-scoped @lazy_llm option)
-    local marker
-    marker=$(tmux show-option -v -t "$session" @lazy_llm 2>/dev/null) || true
-    [[ "$marker" != "1" ]] && continue
-
-    # Directory from first pane of first window
-    local dir
-    dir=$(tmux display-message -t "$session:" -p '#{pane_current_path}' 2>/dev/null) || dir="?"
-
-    # AI tools from the first window's @AI_TOOLS (or legacy @AI_TOOL)
-    local first_win tools
-    first_win=$(tmux list-windows -t "$session" -F '#{window_index}' 2>/dev/null | head -1)
-    tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOLS 2>/dev/null) || true
-    [[ -z "$tools" ]] && tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOL 2>/dev/null) || true
-    [[ -z "$tools" ]] && tools="?"
-
-    # Workspace window count (exclude holding windows named _hold_*)
-    local win_count
-    win_count=$(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -cv '^_hold_' || echo 0)
-
-    # Attached marker
-    local attached
-    attached=$(tmux display-message -t "$session" -p '#{session_attached}' 2>/dev/null) || attached=0
-    if [[ "$attached" -gt 0 ]]; then
-      attached="*"
-    else
-      attached=""
+  # Per session, in tmux's own session order: DIR is the current window's
+  # active pane's path, TOOLS the first window's @AI_TOOLS (or legacy
+  # @AI_TOOL), WINS the window count minus holding windows (_hold_*).
+  local cur="" dir tools wins attached first_win seen_wins
+  local s mark win wname act path t_multi t_single att
+  _lazy_llm_gather_emit() {
+    [[ -n "$cur" ]] || return 0
+    printf '%s\t%s\t%s\t%s\t%s\n' "$cur" "${dir:-?}" "${tools:-?}" "$wins" "$attached"
+  }
+  while IFS=$'\x1f' read -r s mark win wname act path t_multi t_single att; do
+    [[ "$mark" == "1" ]] || continue
+    if [[ "$s" != "$cur" ]]; then
+      _lazy_llm_gather_emit
+      cur="$s"; dir=""; tools=""; wins=0; first_win="$win"; seen_wins=" "
+      attached=""; [[ "${att:-0}" -gt 0 ]] && attached="*"
     fi
-
-    printf '%s\t%s\t%s\t%s\t%s\n' "$session" "$dir" "$tools" "$win_count" "$attached"
-  done <<< "$sessions"
+    if [[ "$seen_wins" != *" $win "* ]]; then
+      seen_wins+="$win "
+      [[ "$wname" == _hold_* ]] || wins=$((wins + 1))
+    fi
+    [[ "$win" == "$first_win" && -z "$tools" ]] && tools="${t_multi:-$t_single}"
+    [[ "$act" == "11" ]] && dir="$path"
+  done <<< "$rows"
+  _lazy_llm_gather_emit
+  unset -f _lazy_llm_gather_emit
 }
 
 # Read the AI pane list for an ARBITRARY session:window, not just the current one.
@@ -788,15 +787,20 @@ lazy_llm_apply_ws_order() {
   local -a order_arr
   read -ra order_arr <<< "$order"
 
+  local -A line_of=()
+  local name rest
+  while IFS=$'\t' read -r name rest; do
+    [[ -n "$name" && -z "${line_of[$name]+set}" ]] && line_of[$name]="$name"$'\t'"$rest"
+  done <<< "$data"
+
   local out="" seen=" "
-  local o line
+  local o
   for o in "${order_arr[@]}"; do
-    line=$(printf '%s\n' "$data" | awk -F'\t' -v n="$o" '$1==n{print; exit}')
-    [[ -z "$line" ]] && continue
-    out+="$line"$'\n'
+    [[ -n "${line_of[$o]+set}" ]] || continue
+    [[ "$seen" == *" $o "* ]] && continue
+    out+="${line_of[$o]}"$'\n'
     seen+="$o "
   done
-  local name rest
   while IFS=$'\t' read -r name rest; do
     [[ -z "$name" ]] && continue
     [[ "$seen" == *" $name "* ]] && continue

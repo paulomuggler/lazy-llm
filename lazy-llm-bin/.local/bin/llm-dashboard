@@ -107,6 +107,19 @@ _dashboard_ws_from_id() {
   esac
 }
 
+# The fzf action chain --fold-transform / --reorder-transform print back:
+# reload the tree from the rows they already built (REPLY_ROWS), then put the
+# cursor on row $1. The rows go through a temp file that the reload command
+# itself deletes, rather than reload-sync re-running --emit-rows: that
+# rebuilt the whole tree (a tmux capture per AI pane) a second time on every
+# fold/reorder keypress, for the same rows the transform had just built.
+_dashboard_print_reload() {
+  local pos="$1" rows_file
+  rows_file=$(mktemp "${TMPDIR:-/tmp}/lazy-llm-dashboard-rows.XXXXXX")
+  printf '%s\n' "$REPLY_ROWS" > "$rows_file"
+  printf "reload-sync(cat '%s'; rm -f '%s')+pos(%s)\n" "$rows_file" "$rows_file" "$pos"
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 # Workspaces tab
 # ──────────────────────────────────────────────────────────────────────────
@@ -158,7 +171,7 @@ _dashboard_ws_from_id() {
 # exits fzf, see the fzf --bind list below.)
 
 # Build the Workspaces tree's row list. Factored out of render_sessions_tab so
-# --emit-rows (fzf's reload-sync() target for the fold key) can produce the
+# --emit-rows (standalone row output, used by tests and ad-hoc checks) can produce the
 # exact same rows from a cold, standalone process invocation. Called DIRECTLY
 # (not via command substitution) — a subshell would make the REPLY_START_POS
 # side-output invisible to the caller — same REPLY_* convention
@@ -197,122 +210,134 @@ _dashboard_build_rows() {
 
   REPLY_ROWS=""
   REPLY_START_POS=1
+  [[ -n "$data" ]] || return 0
+
+  # Every workspace's first-window state in ONE tmux call (user options
+  # resolve in -F formats) rather than ~8 tmux calls per workspace: this
+  # function runs on every open, every fold and every reorder, and a tmux
+  # call costs ~7ms on a busy server — measured >1s per fold with 4
+  # workspaces / 8 AI panes before. \x1f, not tab: `read` collapses runs of
+  # a whitespace IFS, shifting every field after an empty one.
+  #   first window    — lowest-index window (list-panes order), as before
+  #   @AI_PANES/...   — that window's pane list, tools, labels, cycle index
+  #   @AI_PANE_ID/@AI_TOOL — legacy single-pane fallback (@AI_PANES unset)
+  #   focused pane    — tmux's own pane_active in that window, see below
+  #   @lazy_llm_collapsed — the session's fold flag
+  local -A w_first=() w_panes=() w_tools=() w_names=() w_idx=() w_single=() w_single_tool=() w_focused=() w_collapsed=()
+  local s win act pane_id o_panes o_tools o_names o_idx o_single o_single_tool o_collapsed
+  while IFS=$'\x1f' read -r s win act pane_id o_panes o_tools o_names o_idx o_single o_single_tool o_collapsed; do
+    if [[ -z "${w_first[$s]+set}" ]]; then
+      w_first[$s]="$win"; w_panes[$s]="$o_panes"; w_tools[$s]="$o_tools"; w_names[$s]="$o_names"
+      w_idx[$s]="$o_idx"; w_single[$s]="$o_single"; w_single_tool[$s]="$o_single_tool"
+      w_collapsed[$s]="$o_collapsed"
+    fi
+    [[ "$win" == "${w_first[$s]}" && "$act" == "1" ]] && w_focused[$s]="$pane_id"
+  done < <(tmux list-panes -a -F $'#{session_name}\x1f#{window_index}\x1f#{pane_active}\x1f#{pane_id}\x1f#{@AI_PANES}\x1f#{@AI_TOOLS}\x1f#{@AI_PANE_NAMES}\x1f#{@AI_PANE_IDX}\x1f#{@AI_PANE_ID}\x1f#{@AI_TOOL}\x1f#{@lazy_llm_collapsed}' 2>/dev/null)
+
+  # Colored glyph per status, computed once rather than two subshells per row.
+  local -A glyph=()
+  local st
+  for st in waiting unread working idle unknown; do
+    glyph[$st]=$(glyph_for_colored "$st")
+  done
+
   local lines="" _line_no=0
-  if [[ -n "$data" ]]; then
-    while IFS=$'\t' read -r name dir tools wins attached; do
-      local first_win
-      first_win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1)
+  local name dir tools wins attached
+  while IFS=$'\t' read -r name dir tools wins attached; do
+    # Full per-pane list for this workspace's first window — every AI pane
+    # gets its own row + glyph, not just the first (the old Sessions tab's
+    # limitation this task exists to fix).
+    local reply_idx="${w_idx[$name]:-0}" reply_names="${w_names[$name]:-}"
+    local -a pane_arr=() tool_arr=() name_arr=()
+    if [[ -n "${w_panes[$name]:-}" ]]; then
+      read -ra pane_arr <<< "${w_panes[$name]}"
+      read -ra tool_arr <<< "${w_tools[$name]:-}"
+    elif [[ -n "${w_single[$name]:-}" ]]; then
+      # Legacy/single-pane fallback: @AI_PANES was never set for this window
+      # (e.g. a workspace that's never had a second pane added).
+      pane_arr=("${w_single[$name]}")
+      tool_arr=("${w_single_tool[$name]:-${tools%% *}}")
+    fi
+    [[ -n "$reply_names" ]] && read -ra name_arr <<< "$reply_names"
 
-      # Full per-pane list for this workspace's first window — every AI pane
-      # gets its own row + glyph, not just the first (the old Sessions tab's
-      # limitation this task exists to fix).
-      local reply_panes reply_tools reply_idx reply_names
-      lazy_llm_read_multi_state_for "$name" "$first_win"
-      reply_panes="$REPLY_PANES"; reply_tools="$REPLY_TOOLS"; reply_idx="${REPLY_IDX:-0}"
-      reply_names="$REPLY_PANE_NAMES"
-
-      local -a pane_arr=() tool_arr=()
-      if [[ -n "$reply_panes" ]]; then
-        read -ra pane_arr <<< "$reply_panes"
-        read -ra tool_arr <<< "$reply_tools"
-      else
-        # Legacy/single-pane fallback: @AI_PANES was never set for this window
-        # (e.g. a workspace that's never had a second pane added).
-        local single_pane_id
-        single_pane_id=$(tmux show-option -wv -t "$name:$first_win" @AI_PANE_ID 2>/dev/null) || single_pane_id=""
-        if [[ -n "$single_pane_id" ]]; then
-          local single_tool
-          single_tool=$(tmux show-option -wv -t "$name:$first_win" @AI_TOOL 2>/dev/null) || single_tool="${tools%% *}"
-          pane_arr=("$single_pane_id")
-          tool_arr=("$single_tool")
-        fi
-      fi
-
-      # "Active pane" heuristic: tmux's OWN per-window pane_active flag —
-      # the pane last given real focus in that window — instead of
-      # @AI_PANE_IDX (only updated by llm-cycle, so it goes stale the moment
-      # focus moves any other way: mouse click, prefix+arrow, etc.).
-      # Reported directly as "still not working" after the @AI_PANE_IDX
-      # version; tmux already tracks this natively and correctly per window,
-      # no extra bookkeeping needed. Falls back to @AI_PANE_IDX only when
-      # the actually-focused pane isn't one of this workspace's AI panes at
-      # all (e.g. focus is on the editor/prompt pane, not an AI one).
-      local focused_pane_id focus_i
-      focused_pane_id=$(tmux list-panes -t "$name:$first_win" -f '#{pane_active}' -F '#{pane_id}' 2>/dev/null | head -1) || focused_pane_id=""
-      if [[ -n "$focused_pane_id" ]]; then
-        for focus_i in "${!pane_arr[@]}"; do
-          [[ "${pane_arr[$focus_i]}" == "$focused_pane_id" ]] && { reply_idx="$focus_i"; break; }
-        done
-      fi
-
-      # Workspace row's aggregate glyph: worst-case across its panes, in the
-      # order a human would want to notice — blocked-on-you beats
-      # your-turn beats busy beats idle.
-      local saw_waiting=false saw_unread=false saw_working=false saw_idle=false
-      local i st
-      for i in "${!pane_arr[@]}"; do
-        st=$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]:-claude}")
-        case "$st" in
-          waiting) saw_waiting=true ;;
-          unread)  saw_unread=true ;;
-          working) saw_working=true ;;
-          idle)    saw_idle=true ;;
-        esac
+    # "Active pane" heuristic: tmux's OWN per-window pane_active flag —
+    # the pane last given real focus in that window — instead of
+    # @AI_PANE_IDX (only updated by llm-cycle, so it goes stale the moment
+    # focus moves any other way: mouse click, prefix+arrow, etc.).
+    # Reported directly as "still not working" after the @AI_PANE_IDX
+    # version; tmux already tracks this natively and correctly per window,
+    # no extra bookkeeping needed. Falls back to @AI_PANE_IDX only when
+    # the actually-focused pane isn't one of this workspace's AI panes at
+    # all (e.g. focus is on the editor/prompt pane, not an AI one).
+    local focused_pane_id="${w_focused[$name]:-}" focus_i
+    if [[ -n "$focused_pane_id" ]]; then
+      for focus_i in "${!pane_arr[@]}"; do
+        [[ "${pane_arr[$focus_i]}" == "$focused_pane_id" ]] && { reply_idx="$focus_i"; break; }
       done
-      local agg_glyph
-      agg_glyph=$(glyph_for_colored unknown)
-      if   [[ "$saw_waiting" == true ]]; then agg_glyph=$(glyph_for_colored waiting)
-      elif [[ "$saw_unread"  == true ]]; then agg_glyph=$(glyph_for_colored unread)
-      elif [[ "$saw_working" == true ]]; then agg_glyph=$(glyph_for_colored working)
-      elif [[ "$saw_idle"    == true ]]; then agg_glyph=$(glyph_for_colored idle)
-      fi
+    fi
 
-      local short_dir="${dir/#$HOME/\~}"
-      [[ ${#short_dir} -gt 40 ]] && short_dir="...${short_dir: -37}"
-      local mark=""
-      [[ -n "$attached" ]] && mark=" *"
+    # Each pane's status, detected once (it feeds both the workspace row's
+    # aggregate glyph and the pane's own row).
+    local -a st_arr=()
+    local i
+    for i in "${!pane_arr[@]}"; do
+      st_arr[i]=$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]:-claude}")
+    done
 
-      local collapsed
-      collapsed=$(lazy_llm_read_collapsed "$name")
-      local fold_glyph="▾"
-      [[ "$collapsed" == "1" ]] && fold_glyph="▸"
+    # Workspace row's aggregate glyph: worst-case across its panes, in the
+    # order a human would want to notice — blocked-on-you beats
+    # your-turn beats busy beats idle.
+    local agg="unknown"
+    case " ${st_arr[*]} " in
+      *" waiting "*) agg=waiting ;;
+      *" unread "*)  agg=unread ;;
+      *" working "*) agg=working ;;
+      *" idle "*)    agg=idle ;;
+    esac
 
-      local ws_display
-      ws_display=$(printf '%s %-26s  %-40s  %s %-14s %sw%s' \
-        "$fold_glyph" "$name" "$short_dir" "$agg_glyph" "$tools" "$wins" "$mark")
-      lines+="ws:${name}"$'\t'"${ws_display}"$'\n'
-      _line_no=$((_line_no + 1))
-      # Fallback start position: the launch workspace's own row, in case it
-      # has no pane rows to land on below (collapsed, or no panes at all).
-      [[ "$name" == "$launch_ws" ]] && REPLY_START_POS=$_line_no
+    local short_dir="${dir/#$HOME/\~}"
+    [[ ${#short_dir} -gt 40 ]] && short_dir="...${short_dir: -37}"
+    local mark=""
+    [[ -n "$attached" ]] && mark=" *"
 
-      if [[ "$collapsed" != "1" ]]; then
-        for i in "${!pane_arr[@]}"; do
-          local pid="${pane_arr[$i]}" tool="${tool_arr[$i]:-?}" glyph
-          # Display label: the custom rename if one's set (and isn't the
-          # "_" no-override placeholder), else the tool name. Status
-          # detection below always uses $tool, never the display label —
-          # renaming a pane must not change what it's detected as.
-          local display_label
-          display_label=$(lazy_llm_pane_display_label "$tool" "$reply_names" "$i")
-          st=$(lazy_llm_detect_pane_status "$pid" "$tool")
-          glyph=$(glyph_for_colored "$st")
-          local pane_display
-          pane_display=$(printf '    ↳ %-12s %s' "$display_label" "$glyph")
-          # Bold instead of an "(active)" text tag — real ANSI codes (not
-          # tmux's #[..] syntax), since this is plain fzf row text rendered
-          # via --ansi, a different rendering context than status-right/
-          # pane-border-format.
-          [[ "$i" -eq "$reply_idx" ]] && pane_display=$'\033[1m'"${pane_display}"$'\033[0m'
-          lines+="pane:${name}:${i}:${pid}"$'\t'"${pane_display}"$'\n'
-          _line_no=$((_line_no + 1))
-          # Precise start position: this workspace's currently-active pane.
-          [[ "$name" == "$launch_ws" && "$i" -eq "$reply_idx" ]] && REPLY_START_POS=$_line_no
-        done
-      fi
-    done <<< "$data"
-    lines="${lines%$'\n'}"
-  fi
+    local collapsed="${w_collapsed[$name]:-}"
+    local fold_glyph="▾"
+    [[ "$collapsed" == "1" ]] && fold_glyph="▸"
+
+    local ws_display
+    printf -v ws_display '%s %-26s  %-40s  %s %-14s %sw%s' \
+      "$fold_glyph" "$name" "$short_dir" "${glyph[$agg]}" "$tools" "$wins" "$mark"
+    lines+="ws:${name}"$'\t'"${ws_display}"$'\n'
+    _line_no=$((_line_no + 1))
+    # Fallback start position: the launch workspace's own row, in case it
+    # has no pane rows to land on below (collapsed, or no panes at all).
+    [[ "$name" == "$launch_ws" ]] && REPLY_START_POS=$_line_no
+
+    if [[ "$collapsed" != "1" ]]; then
+      for i in "${!pane_arr[@]}"; do
+        local pid="${pane_arr[$i]}" tool="${tool_arr[$i]:-?}"
+        # Display label: the custom rename if one's set (and isn't the
+        # "_" no-override placeholder), else the tool name — same rule as
+        # lazy_llm_pane_display_label, inlined to skip a subshell per row.
+        # Status detection always uses $tool, never the display label —
+        # renaming a pane must not change what it's detected as.
+        local display_label="${name_arr[$i]:-_}"
+        [[ "$display_label" == "_" ]] && display_label="$tool"
+        local pane_display
+        printf -v pane_display '    ↳ %-12s %s' "$display_label" "${glyph[${st_arr[$i]}]:-${glyph[unknown]}}"
+        # Bold instead of an "(active)" text tag — real ANSI codes (not
+        # tmux's #[..] syntax), since this is plain fzf row text rendered
+        # via --ansi, a different rendering context than status-right/
+        # pane-border-format.
+        [[ "$i" -eq "$reply_idx" ]] && pane_display=$'\033[1m'"${pane_display}"$'\033[0m'
+        lines+="pane:${name}:${i}:${pid}"$'\t'"${pane_display}"$'\n'
+        _line_no=$((_line_no + 1))
+        # Precise start position: this workspace's currently-active pane.
+        [[ "$name" == "$launch_ws" && "$i" -eq "$reply_idx" ]] && REPLY_START_POS=$_line_no
+      done
+    fi
+  done <<< "$data"
+  lines="${lines%$'\n'}"
   REPLY_ROWS="$lines"
 }
 
@@ -431,7 +456,7 @@ render_sessions_tab() {
   # --fold-transform (the command run) toggles this row's workspace's fold
   # flag out-of-process ({1} is the hidden id field — same idiom the preview
   # command above already uses for {1}), rebuilds the row list, and prints
-  # back `reload-sync(... --emit-rows)+pos(N)` — reload-sync() swaps in the
+  # back `reload-sync(cat <rows file>)+pos(N)` — reload-sync() swaps in the
   # new list in the SAME running fzf process (no exit, no relaunch, no
   # flicker — verified live: identical fzf PID across a fold action, via
   # `ps --ppid <popup pane pid> --forest`), and the chained pos(N) explicitly
@@ -1428,7 +1453,6 @@ while [[ $# -gt 0 ]]; do
       _dashboard_fold_id="${1:-}"
       _dashboard_fold_ws=$(_dashboard_ws_from_id "$_dashboard_fold_id")
       [[ -n "$_dashboard_fold_ws" ]] && lazy_llm_toggle_collapsed "$_dashboard_fold_ws"
-      lazy_llm_save_async
 
       _dashboard_build_rows "${LAZY_LLM_LAUNCH_SESSION:-}"
 
@@ -1454,7 +1478,10 @@ while [[ $# -gt 0 ]]; do
       # (`man fzf`'s own reload(...) vs reload-sync(...) distinction is
       # about blocking behavior for exactly this kind of chained-action
       # ordering, not just multi-select preservation).
-      printf 'reload-sync(%s --emit-rows)+pos(%s)\n' "$_dashboard_self" "$_dashboard_fold_pos"
+      _dashboard_print_reload "$_dashboard_fold_pos"
+      # After the output, so the manifest save doesn't compete with the
+      # redraw for CPU (it's detached either way).
+      lazy_llm_save_async
       exit 0
       ;;
     --reorder-transform)
@@ -1499,7 +1526,6 @@ while [[ $# -gt 0 ]]; do
           ;;
       esac
 
-      lazy_llm_save_async
       _dashboard_build_rows "${LAZY_LLM_LAUNCH_SESSION:-}"
 
       # Cursor target after the move: for a workspace row, the id STRING
@@ -1528,7 +1554,8 @@ while [[ $# -gt 0 ]]; do
       # --fold-transform (a plain reload()'s chained pos(N) can be
       # discarded before the new list actually lands); see its own comment
       # for the full root-cause writeup.
-      printf 'reload-sync(%s --emit-rows)+pos(%s)\n' "$_dashboard_self" "$_dashboard_reorder_pos"
+      _dashboard_print_reload "$_dashboard_reorder_pos"
+      lazy_llm_save_async
       exit 0
       ;;
     --help|-h) usage; exit 0 ;;
