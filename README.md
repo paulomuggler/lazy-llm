@@ -312,18 +312,27 @@ lazy-llm keeps its workspace state in tmux options, which die with the tmux serv
 ```bash
 lazy-llm restore            # rebuild every saved workspace whose tmux server is gone
 lazy-llm restore --dry-run  # show what would be rebuilt, with the exact launch commands
-lazy-llm restore dev-env    # just this one (also brings back one you closed)
-lazy-llm saved [-v]         # list saved workspaces (● live, ◌ restorable, ✕ closed with --closed)
-lazy-llm forget dev-env     # drop a saved workspace
+lazy-llm restore dev-env    # just this one (also reopens one you closed)
+lazy-llm saved [-v]         # list saved workspaces (add --dropped for dropped ones)
+lazy-llm close dev-env      # close a running workspace but keep it saved
+lazy-llm kill dev-env       # close it and drop it from the list
+lazy-llm forget dev-env     # drop a saved workspace that isn't running
 lazy-llm save               # save now (also Prefix+C-s, or s in the dashboard)
 ```
 
-Or use the dashboard's **Saved** tab (`Prefix+S`, then `3`): Enter restores (or switches to a running one), `A` restores everything, `s` saves, `K` forgets, `c` shows closed ones.
+Or use the dashboard's **Saved** tab (`Prefix+S`, then `3`): Enter restores (or switches to a running one), `c` closes a running one (kept), `K` kills/drops, `A` restores everything that died, `s` saves, `d` shows dropped ones. `K` on a workspace in the Workspaces tab asks whether to close (keep) or kill (drop).
+
+| State | Meaning |
+|---|---|
+| ● live | running |
+| ◌ restorable | died with its tmux server (crash, reboot) — a plain `lazy-llm restore` brings these back |
+| ◇ closed | you closed it (`lazy-llm close`, the dashboard, or just in tmux) — kept; reopen with Enter, `restore <name>`, or by running `lazy-llm` in its directory |
+| ✕ dropped | killed or forgotten — hidden (`saved --dropped`, `d`), still restorable by name, deleted after 30 days |
 
 - **What comes back**: session name and identity, AI panes in order with their tools and display names, which one was visible (the rest held), each Claude pane resuming its conversation (`claude --resume <id>`, same model, same directory), the prompt file and the prompt pane's open buffers, the editor's open buffers and splits, fold state and dashboard order.
 - **When it's saved**: automatically on launch, adding/removing/cycling AI panes, dashboard renames/folds/reorders, a Prefix+$ rename, and whenever a Claude pane moves to a new conversation (`/clear`, `--resume` — recorded by lazy-llm's Claude Code plugin hook). Nothing runs on a timer.
 - **Restoring next to running workspaces** is fine: restore only ever creates sessions. A name that's taken comes back as `name-2`; it never merges into a live session. Opening a directory with `lazy-llm` that has a restorable workspace asks whether to restore it instead.
-- **Crash safety**: every entry records the tmux server that last saw it. A save only rewrites running workspaces, never another server's entries, and does nothing when no server is running. A workspace that disappears while its server stays up is only marked closed after a minute (so a save racing a dying server can't drop anything); `lazy-llm kill` and the dashboard's kill forget it at once. One edge: closing the *last* workspace with plain `tmux kill-session` also ends the server, so it stays restorable — `lazy-llm forget <name>` it.
+- **Crash safety**: every entry records the tmux server that last saw it. A save only rewrites running workspaces, never another server's entries, and does nothing when no server is running. A workspace that disappears while its server stays up counts as closed only after a minute (so a save racing a dying server can't turn a crash victim into a closed one). One edge: closing the *last* workspace with plain `tmux kill-session` also ends the server, so it shows as restorable, not closed — `lazy-llm close` doesn't have that problem.
 - **Other AI tools** restart fresh for now; resume is wired per tool in `lazy_llm_tool_launch_cmd` / `lazy_llm_tool_conv` (lib), and only Claude has a branch so far.
 - **nvim state**: each workspace nvim keeps one rolling `:mksession` snapshot in `<dir>/.lazy-llm/sessions/` (nvim-session-plugin). The prompt pane restores its snapshot on every open; the editor's is used by `lazy-llm restore`. Your persistence.nvim sessions (`<leader>qs`/`<leader>qr`) are untouched — except that the prompt pane keeps its own in `sessions/lazy-llm-prompt/`, so the two panes no longer overwrite each other's.
 

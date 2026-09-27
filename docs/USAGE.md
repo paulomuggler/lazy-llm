@@ -40,9 +40,11 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Bring workspaces back after tmux died    │ lazy-llm restore (or Prefix+S → 3 → Enter / A) — panes resume their conversations                │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ See what's saved                         │ lazy-llm saved [-v] or Prefix+S → 3 (● live, ◌ restorable, ✕ closed)                             │
+  │ See what's saved                         │ lazy-llm saved [-v] or Prefix+S → 3 (● live, ◌ died, ◇ closed; d / --dropped: ✕ dropped)         │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Drop a saved workspace                   │ lazy-llm forget <name> or Prefix+S → 3 → K                                                       │
+  │ Close a workspace but keep it saved      │ lazy-llm close <name>, or K on it in Prefix+S (choose "close"), or c in the Saved tab            │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Drop a saved workspace                   │ lazy-llm kill <name> (running) / lazy-llm forget <name>, or Prefix+S → 3 → K                     │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Spawn workspace bound to a worktree      │ lazy-llm -W <branch> — creates branch+worktree if needed, always spawns a new workspace          │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
