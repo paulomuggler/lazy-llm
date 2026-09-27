@@ -135,15 +135,18 @@ out("plain_path", require("persistence").current())
 assert_contains "$r" "plain_path=$sandbox/state/nvim/sessions/%" "without the call, persistence keeps its own dir"
 
 echo ""
-echo "Test 6: snapshot() over RPC..."
+echo "Test 6: snapshot() over RPC, into an nvim that never had the module on its rtp..."
+# That's the case llm-persist's RPC exists for (an nvim started before the
+# plugin was installed): its loader can't find the module, so llm-persist
+# loads it by path — mirror that call exactly.
 echo "three" > "$proj/.lazy-llm/prompts/prompt-20260101-000003.md"
 sock="$sandbox/n.sock"
 rpc_snap="$proj/.lazy-llm/sessions/editor.vim"
 (cd "$proj" && env -u TMUX -u TMUX_PANE XDG_STATE_HOME="$sandbox/state" \
     nvim --headless --clean --listen "$sock" \
-    --cmd "set rtp^=$MODULE_RTP" .lazy-llm/prompts/prompt-20260101-000003.md >/dev/null 2>&1 &)
+    .lazy-llm/prompts/prompt-20260101-000003.md >/dev/null 2>&1 &)
 for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.1; done
-rpc=$(timeout 5 nvim --server "$sock" --remote-expr "luaeval('require(\"lazy_llm.session\").snapshot(_A)', '$rpc_snap')" 2>&1)
+rpc=$(timeout 5 nvim --server "$sock" --remote-expr "luaeval('dofile(_A[1]).snapshot(_A[2])', ['$MODULE_RTP/lua/lazy_llm/session.lua', '$rpc_snap'])" 2>&1)
 timeout 5 nvim --server "$sock" --remote-send '<C-\><C-n>:qa!<CR>' >/dev/null 2>&1
 assert_equals "$rpc" "$rpc_snap" "remote snapshot() returns the path"
 assert_contains "$(cat "$rpc_snap" 2>/dev/null)" "prompt-20260101-000003.md" "remote snapshot holds that nvim's buffer"

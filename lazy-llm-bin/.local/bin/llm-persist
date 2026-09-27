@@ -148,12 +148,18 @@ nvim_socket_for_pane() {
 # nvim-session-plugin's lazy_llm.session). Covers nvims started before the
 # plugin was installed; for the others it just refreshes what their own
 # autosave keeps. Best effort, bounded by a 2s timeout.
+#
+# The module is loaded by path (dofile), not require: a running nvim's
+# module loader indexes the runtimepath at startup, so a module stowed after
+# that nvim started isn't found by require (confirmed live on 0.12).
+NVIM_SESSION_MODULE="${XDG_CONFIG_HOME:-$HOME/.config}/nvim/lua/lazy_llm/session.lua"
 nvim_snapshot() {
   local pane="$1" path="$2" sock
+  [[ -f "$NVIM_SESSION_MODULE" ]] || return 0
   sock=$(nvim_socket_for_pane "$pane")
   [[ -n "$sock" ]] || return 0
   lazy_llm_with_timeout 2 nvim --server "$sock" --remote-expr \
-    "luaeval('require(\"lazy_llm.session\").snapshot(_A)', '${path//\'/\'\'}')" >/dev/null 2>&1 || true
+    "luaeval('dofile(_A[1]).snapshot(_A[2])', ['${NVIM_SESSION_MODULE//\'/\'\'}', '${path//\'/\'\'}'])" >/dev/null 2>&1 || true
 }
 
 # The prompt file a pre-feature prompt pane was opened on: the last *.md
