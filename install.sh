@@ -50,8 +50,10 @@ for package in "${STOW_PACKAGES[@]}"; do
     target_file="$HOME/$(echo "$file_to_stow" | sed -e "s#^$package/##")"
 
     if [ -e "$target_file" ]; then
-      # Skip symlinks - stow will handle them with --restow
-      if [ -L "$target_file" ]; then
+      # Skip symlinks - stow will handle them with --restow. That includes a
+      # file reached through a symlinked (stow-folded) directory, which
+      # resolves to this very package file.
+      if [ -L "$target_file" ] || [ "$(realpath "$target_file")" = "$(realpath "$file_to_stow")" ]; then
         continue
       fi
 
