@@ -1127,9 +1127,9 @@ lazy_llm_set_pane_model() {
   return 0
 }
 
-# Stdout: the pane's model, shortened (lazy_llm_short_model), or nothing if
-# unknown. Always returns 0.
-lazy_llm_pane_model() {
+# Stdout: the pane's model id exactly as the harness reported it, or nothing
+# if unknown. Always returns 0.
+lazy_llm_pane_model_raw() {
   local pane_id="${1:-}" f saved="" model="" pid
   f="$_LAZY_LLM_MODEL_DIR/$pane_id"
   [[ -n "$pane_id" && -f "$f" ]] || return 0
@@ -1139,7 +1139,14 @@ lazy_llm_pane_model() {
     rm -f "$f" 2>/dev/null || true
     return 0
   fi
-  lazy_llm_short_model "$model"
+  printf '%s' "$model"
+  return 0
+}
+
+# Stdout: the pane's model, shortened (lazy_llm_short_model), or nothing if
+# unknown. Always returns 0.
+lazy_llm_pane_model() {
+  lazy_llm_short_model "$(lazy_llm_pane_model_raw "${1:-}")"
   return 0
 }
 
@@ -1165,11 +1172,86 @@ lazy_llm_short_model() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────
+# Per-pane conversation id — which conversation an agent pane is on, so
+# `lazy-llm restore` can resume it. For claude, llm-claude-hook records the
+# session_id every hook payload carries (SessionStart also fires after /clear,
+# --resume and compaction, so this follows the current conversation).
+#
+# ~/.cache/lazy-llm/conv/<pane_id> holds "<pane_pid> <conversation id>" —
+# same pid guard as the model store, same reason (%N reuse after a restart).
+# ──────────────────────────────────────────────────────────────────────────
+_LAZY_LLM_CONV_DIR="$HOME/.cache/lazy-llm/conv"
+
+# Args: $1 pane_id  $2 conversation id
+# Returns 0 if the recorded id changed, 1 if it was already recorded (or
+# nothing could be recorded) — callers save the manifest only on a change.
+lazy_llm_set_pane_conv() {
+  local pane_id="${1:-}" conv="${2:-}" pid f saved="" old=""
+  [[ -n "$pane_id" && -n "$conv" ]] || return 1
+  pid=$(_lazy_llm_pane_pid "$pane_id") || return 1
+  [[ -n "$pid" ]] || return 1
+  f="$_LAZY_LLM_CONV_DIR/$pane_id"
+  [[ -f "$f" ]] && read -r saved old < "$f" 2>/dev/null
+  [[ "$saved" == "$pid" && "$old" == "$conv" ]] && return 1
+  mkdir -p "$_LAZY_LLM_CONV_DIR" 2>/dev/null || return 1
+  printf '%s %s\n' "$pid" "$conv" > "$f" 2>/dev/null || return 1
+  return 0
+}
+
+# Stdout: the pane's recorded conversation id, or nothing. Always returns 0.
+lazy_llm_pane_conv() {
+  local pane_id="${1:-}" f saved="" conv="" pid
+  f="$_LAZY_LLM_CONV_DIR/$pane_id"
+  [[ -n "$pane_id" && -f "$f" ]] || return 0
+  read -r saved conv < "$f" 2>/dev/null || true
+  pid=$(_lazy_llm_pane_pid "$pane_id") || pid=""
+  if [[ -z "$pid" || "$saved" != "$pid" ]]; then
+    rm -f "$f" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s' "$conv"
+  return 0
+}
+
+# Fallback for claude panes with no hook record (started before the hook
+# learned to record ids, or with lazy-llm's plugin disabled): Claude Code's
+# own registry, ~/.claude/sessions/<claude pid>.json, whose sessionId is the
+# conversation that process is on. Internal to Claude Code, so best effort:
+# the hook record always wins when there is one.
+# Stdout: the conversation id, or nothing. Always returns 0.
+_lazy_llm_claude_registry_conv() {
+  local pane_id="$1" pid c f
+  pid=$(_lazy_llm_pane_pid "$pane_id") || return 0
+  [[ -n "$pid" ]] || return 0
+  for c in $(pgrep -P "$pid" 2>/dev/null); do
+    f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$c.json"
+    [[ -f "$f" ]] || continue
+    jq -r --argjson pid "$c" 'select(.pid == $pid) | .sessionId // empty' "$f" 2>/dev/null
+    return 0
+  done
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────
 # Tool adapters — the ONLY place that knows how each AI tool is launched.
 # Save/restore and the manifest treat a pane's conversation id and model as
 # opaque strings; supporting resume for another tool means adding a branch
 # here (and to lazy_llm_tool_conv, its capture side).
 # ──────────────────────────────────────────────────────────────────────────
+
+# The conversation an AI pane is on right now.
+# Args: $1 tool  $2 pane_id   Stdout: the id, or nothing. Always returns 0.
+lazy_llm_tool_conv() {
+  local tool="$1" pane_id="$2" conv
+  case "$tool" in
+    claude)
+      conv=$(lazy_llm_pane_conv "$pane_id")
+      [[ -n "$conv" ]] || conv=$(_lazy_llm_claude_registry_conv "$pane_id")
+      printf '%s' "$conv"
+      ;;
+  esac
+  return 0
+}
 
 # The command line typed into an AI pane's shell.
 # Args: $1 tool  $2 conversation id ("" for a fresh one)  $3 model ("" = default)
@@ -1423,4 +1505,14 @@ lazy_llm_add_ai_pane() {
     tmux set-option -w -t "$session:$window" @AI_PANE_NAMES "${name_arr[*]:0:${#pane_arr[@]}} _"
   fi
   printf '%s\n' "$new_pane_id"
+}
+
+# Fire-and-forget manifest save (`llm-persist save --async`). Every fd is
+# redirected: the dashboard calls this from fzf transform() subprocesses, and
+# fzf reads a transform's stdout until EOF, so a background child holding it
+# open would stall the UI. Always returns 0.
+lazy_llm_save_async() {
+  [[ -x "$HOME/.local/bin/llm-persist" ]] || return 0
+  ( "$HOME/.local/bin/llm-persist" save --async </dev/null >/dev/null 2>&1 & )
+  return 0
 }

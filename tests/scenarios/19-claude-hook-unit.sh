@@ -60,6 +60,14 @@ echo "switch: model=<\$(lazy_llm_pane_model \$P)>"
 
 hook "" '{"hook_event_name": "SessionStart", "model": {"id": "claude-haiku-4-5-20251001", "display_name": "Haiku"}}'
 echo "sessionstart-object: model=<\$(lazy_llm_pane_model \$P)>"
+
+hook "" '{"hook_event_name":"SessionStart","source":"startup","session_id":"11111111-aaaa-4bbb-8ccc-000000000001"}'
+echo "conv-start: conv=<\$(lazy_llm_pane_conv \$P)>"
+hook "" '{"hook_event_name":"Stop","session_id":"11111111-aaaa-4bbb-8ccc-000000000001"}'
+lazy_llm_set_pane_conv "\$P" 11111111-aaaa-4bbb-8ccc-000000000001; echo "conv-same: changed=\$?"
+hook "" '{"hook_event_name":"SessionStart","source":"clear","session_id":"22222222-aaaa-4bbb-8ccc-000000000002"}'
+echo "conv-clear: conv=<\$(lazy_llm_pane_conv \$P)>"
+lazy_llm_tool_conv claude "\$P"; echo " <- tool_conv"
 tmux kill-server 2>/dev/null
 EOF
 )
@@ -83,6 +91,13 @@ assert_contains "$output" "sessionstart: model=<sonnet5>" "SessionStart records 
 assert_contains "$output" "stop-no-overwrite: model=<sonnet5>" "Stop never overwrites a recorded model"
 assert_contains "$output" "switch: model=<opus5.5\[1m\]>" "PostModelSwitch records to_model"
 assert_contains "$output" "sessionstart-object: model=<haiku4.5>" "object-shaped SessionStart model is accepted"
+
+echo ""
+echo "Test 4: conversation id tracking..."
+assert_contains "$output" "conv-start: conv=<11111111-aaaa-4bbb-8ccc-000000000001>" "SessionStart records session_id as the pane's conversation"
+assert_contains "$output" "conv-same: changed=1" "re-recording the same id reports unchanged (no save)"
+assert_contains "$output" "conv-clear: conv=<22222222-aaaa-4bbb-8ccc-000000000002>" "/clear's SessionStart moves the pane to the new conversation"
+assert_contains "$output" "22222222-aaaa-4bbb-8ccc-000000000002 <- tool_conv" "claude adapter returns the hook-recorded id"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

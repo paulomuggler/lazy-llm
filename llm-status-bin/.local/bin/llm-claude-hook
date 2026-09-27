@@ -21,6 +21,8 @@
 #   SessionStart  records the payload's `model` (documented as not always
 #                 present — hence the Stop fallback).
 #   PostModelSwitch  records `to_model` — /model switches show up right away.
+#   (every event)  records `session_id` as the pane's conversation, for
+#                 `lazy-llm restore`; saves the workspace manifest when it changes.
 #
 # idle_prompt maps to "idle", NOT "waiting": it's Claude Code's own idle nudge,
 # firing some time AFTER a response already completed. Mapping it to "waiting"
@@ -112,6 +114,13 @@ write_status() {
   # Opportunistic cleanup: status files for panes not touched in a day.
   find "$STATUS_DIR" -type f -mtime +1 -delete 2>/dev/null
 }
+
+# Every payload carries the conversation's session_id; recording it on every
+# event keeps the pane's conversation current through /clear and --resume,
+# and the manifest is re-saved only when it actually changed.
+if lazy_llm_set_pane_conv "$PANE_ID" "$(field session_id)"; then
+  lazy_llm_save_async
+fi
 
 case "$(field hook_event_name)" in
   Notification)
