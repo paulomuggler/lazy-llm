@@ -23,6 +23,16 @@ Revision 3 (2026-09-27 14:44):
   `<leader>q*` keys are left exactly as they are today (§5.2).
 - Tmux bindings get registered on the live server by an explicit save (§11.1).
 
+Revision 4 (2026-09-27 15:18), correcting revision 3 after checking the live nvims:
+- The user's persistence setup is manual only (`qs` saves, `qr` restores). The "prompt
+  overwrites editor on exit" bug didn't exist; the real problem is that both panes share one
+  per-cwd session file.
+- The prompt pane now gets its own persistence dir, and lazy-llm doesn't stop or change
+  persistence in any other way.
+- The snapshots are workspace-local (`<dir>/.lazy-llm/sessions/`), and the prompt one is
+  restored on **every** open.
+- Retention no longer deletes prompt files that a snapshot still references (§5.2).
+
 ---
 
 ## 1. Goal and scope
@@ -40,8 +50,9 @@ tabs, cursor positions), and the same dashboard order and fold state.
 - Prefix+C-s to save now.
 - A **Saved** tab in the dashboard.
 - The launcher offering to restore instead of creating a new workspace.
-- Editor and prompt nvim state through lazy-llm's rolling snapshots, plus the fix for the
-  prompt nvim overwriting the editor's persistence session (§5, §11.3).
+- Editor and prompt nvim state through lazy-llm's rolling snapshots. The prompt pane's
+  state comes back on every open. The two panes get separate manual (`qs`/`qr`) sessions
+  (§5, §11.3).
 - Refactors that let restore reuse the launcher's build code.
 - The `@AI_PANE_NAMES` slot bug (§11.2).
 - Tests.
@@ -84,7 +95,7 @@ window to the current session. The manifest saves every lazy-llm window, in inde
 | `order` | 0-based position in `lazy_llm_apply_ws_order "$(lazy_llm_gather_sessions)"` |
 | window `visible` | `@AI_PANE_IDX` |
 | window `prompt_file` | New window option `@lazy_llm_prompt_file`, set by the build function. Adoption: if unset, take the last argument ending in `.md` from `ps -o args=` of the prompt pane's descendant `nvim` processes, and write it back. If nothing is found, use `null` (restore creates a new prompt file). |
-| window `editor_session`, `prompt_session` | The window options `@lazy_llm_editor_session` and `@lazy_llm_prompt_session`: the fixed snapshot paths from §5.2. Adoption: if they're unset, assign `@lazy_llm_win_token` and both paths. They're recorded whether or not the file exists yet; restore only passes one on if it's readable. |
+| window `editor_session`, `prompt_session` | The window options `@lazy_llm_editor_session` and `@lazy_llm_prompt_session`: the snapshot paths from §5.2 (`<dir>/.lazy-llm/sessions/{editor,prompt}[-N].vim`). Adoption: if they're unset, assign them by the window's position. They're recorded whether or not the file exists yet; the launch only adds restore when the file is readable. |
 | pane `tool` | `@AI_TOOLS[i]` |
 | pane `name` | `@AI_PANE_NAMES[i]`, or `null` when missing or `_` |
 | pane `conv` | `lazy_llm_tool_conv <tool> <pane_id>` (§4), or `null` |
@@ -142,83 +153,99 @@ up `--resume` IDs under the project dir).
 
 ## 5. nvim state: editor and prompt panes
 
-Both nvims in a workspace get their state restored: open buffers, splits, tabs, cursor
-positions and cwd. For the prompt pane, that covers every prompt file it has open, not only
-the current one. File contents come from disk. Unsaved text comes from the swap file (the
-prompt nvim already keeps swap and undo under `.lazy-llm/`), and undo history comes from the
-undofile.
+Both nvims in a workspace get their state back after a workspace restore: open buffers,
+splits, tabs, cursor positions. The **prompt pane goes further and restores its last state
+every time it opens**, including a plain `lazy-llm` launch in that dir. The user keeps several
+prompt files open in parallel, and every new buffer in that pane is backed by a
+`.lazy-llm/prompts/prompt-<ts>.md` file (`llm-send`'s `<leader>fn` override, `364a727`). File
+contents come from disk, unsaved text from the swap file (already under `.lazy-llm/swap`), and
+undo history from the undofile (already under `.lazy-llm/undo`).
 
-### 5.1 Facts this design rests on (checked 2026-09-27)
+### 5.1 Facts this design rests on (checked live 2026-09-27)
 
-- LazyVim ships `folke/persistence.nvim`, lazy-loaded on `BufReadPre`, with
-  `branch = true, need = 1`. It saves `:mksession!` to
-  `stdpath("state")/sessions/<cwd>[%%<branch>].vim` **only on `VimLeavePre`**. Its keys are
-  `<leader>qs` (restore this dir's session), `qS` (pick one), `ql` (last) and `qd` (don't save).
-  The user's config adds nothing on top.
-- **A bug that exists today:** the prompt-buffer nvim runs with the same cwd, loads
-  persistence (it reads the prompt file, which fires `BufReadPre`) and saves on exit, which
-  overwrites the editor's session. `…%microdots.digital.vim` currently holds only
-  `.lazy-llm/prompts/prompt-*.md` buffers.
-- A tmux death sends SIGHUP to nvim. Whether `VimLeavePre` runs then isn't guaranteed, so
-  nothing may depend on exit-time saving.
+- The user's persistence config (dev-env `dotfiles/omarchy/dot-config/nvim/lua/plugins/persistence.lua`,
+  `a570bf6`) is **manual only**: its `config` only loads the options, so nothing is saved on
+  exit and nothing is restored on start.
+  - `<leader>qs` saves the session for the cwd (plus the git branch).
+  - `<leader>qr` restores it.
+  - `qS` picks a session, and `ql` loads the most recent one.
+  - The session file is `stdpath("state")/sessions/<cwd>[%%<branch>].vim`.
+- **Both nvims in a workspace have the same cwd**, so both resolve to the same persistence
+  file. The prompt pane is launched as `cd '<dir>' && nvim … '<prompt file>'`. RPC
+  `getcwd()` and `persistence.current()` on all six live nvims returned the project dir and
+  one shared file per workspace (e.g. `…dev-env%%omarchy-4.vim` for both of `dev-env`'s
+  panes). So today, `qs` in one pane overwrites what `qs` saved in the other, and `qr` in
+  either pane loads whichever pane saved last.
+- A tmux death sends SIGHUP to nvim, so nothing may depend on exit-time saving.
 - nvim 0.12 runs as a TUI client plus an `nvim --embed` server child. The RPC socket belongs to
-  the **server**: `$XDG_RUNTIME_DIR/nvim.<pid>.0` on Linux, and
-  `$TMPDIR/nvim.$USER/*/nvim.<pid>.0` on macOS. It was confirmed live with
-  `nvim --server <sock> --remote-expr 'luaeval(...)'` against the running editor.
+  the **server**: `$XDG_RUNTIME_DIR/nvim.<pid>.0` on Linux, `$TMPDIR/nvim.$USER/*/nvim.<pid>.0`
+  on macOS. `nvim --server <sock> --remote-expr …` worked against every live nvim.
 
-### 5.2 Two mechanisms that never touch each other's files
+### 5.2 Two layers, never sharing a file
 
-**persistence.nvim stays as it is today in both nvims.** Its keys, its per-dir files and its
-exit save are unchanged, with one exception: in the **prompt** nvim its exit save is turned off
-(`persistence.stop()`), which fixes the overwrite bug. `<leader>qs` and the other keys still
-work there.
+**Layer 1: the manual sessions keep working as today, but the two panes get separate files.**
+`<leader>qs`, `qr`, `qS` and `ql` keep their bindings and behavior in both nvims. The one
+change is the **prompt** nvim's session dir: `stdpath("state")/sessions/lazy-llm-prompt/`
+instead of `…/sessions/`. The file inside is still named after the cwd (plus branch), so
+`qs`/`qr` in the prompt pane save and restore that dir's prompt layout, and `qS` there lists
+the prompt sessions of every project. The editor pane, and any nvim lazy-llm didn't start,
+keep exactly today's dir and files.
 
-**lazy-llm keeps its own rolling snapshots:** exactly **one file per nvim**, overwritten in place
-and never added to.
+**Layer 2: lazy-llm's automatic rolling snapshots.** There's one file per nvim, overwritten in
+place and never added to. They live workspace-local, next to the `prompts/`, `swap/` and
+`undo/` dirs that already exist:
 
 ```
-$STATE/nvim/<ws_id>/<win_token>-editor.vim
-$STATE/nvim/<ws_id>/<win_token>-prompt.vim
+<dir>/.lazy-llm/sessions/editor.vim     editor nvim of the session's 1st lazy-llm window
+<dir>/.lazy-llm/sessions/prompt.vim     prompt nvim of the 1st window
+<dir>/.lazy-llm/sessions/editor-2.vim   … 2nd lazy-llm window in the same session, and so on
 ```
 
-- `<win_token>` is a random per-window token, set once as window option
-  `@lazy_llm_win_token`. The build function records both paths as window options
-  `@lazy_llm_editor_session` and `@lazy_llm_prompt_session`. Restore reuses the saved paths,
-  so the same two files keep rolling across restores.
-- The directory `$STATE/nvim/<ws_id>/` is deleted when its entry is deleted for good (§7.3
-  closed-pruning, or the Saved tab's closed-view `K`). Nothing else ever creates files in it,
-  so it can't grow.
+The suffix is the window's position among its session's lazy-llm windows, and the build
+function stores the chosen path in window options `@lazy_llm_editor_session` and
+`@lazy_llm_prompt_session`. Keying the files by dir, not by workspace ID, is what lets a
+**fresh** launch in a dir pick up that dir's last prompt state. Nothing in manual Layer 1
+reads or writes these files.
+
+| Snapshot | Autosaved | Auto-restored |
+|---|---|---|
+| `prompt*.vim` | always (debounced) | **on every open**: plain `lazy-llm` launch and workspace restore |
+| `editor*.vim` | always (debounced) | only on workspace restore; a plain launch opens a bare `nvim` as today (the user has `qr` for that) |
 
 **New stow package `nvim-session-plugin`** (added to `install.sh` `STOW_PACKAGES`):
 
 - `.config/nvim/lua/lazy_llm/session.lua`, a module:
-  - `snapshot(path)`: if at least one listed buffer has `buftype == ""` and a name
-    (persistence's own `need` filter), run `mksession! <path>.tmp` and then rename it to
-    `<path>` (atomic). Return `path`. Otherwise return `""` and write nothing, so an empty
-    nvim never overwrites a good snapshot. It uses the user's `sessionoptions`, just as
-    persistence does.
-  - `restore(path)`: `vim.cmd("silent! source " .. vim.fn.fnameescape(path))` if the file is
-    readable (see V5).
+  - `snapshot(path)`: if at least one listed buffer has `buftype == ""` and a name, run
+    `mksession! <path>.tmp` and then rename it to `<path>` (atomic). Return `path`. Otherwise
+    return `""` and write nothing, so an empty nvim never overwrites a good snapshot. It uses
+    the user's `sessionoptions`.
+  - `restore(path)`: `vim.cmd("silent! source " .. fnameescape(path))` if the file is
+    readable (see V5). Then wipe listed buffers that are unmodified, empty, and whose file no
+    longer exists on disk (for example, prompt files removed by retention). In the prompt
+    role, if no file buffer is left, open a new `.lazy-llm/prompts/prompt-<ts>.md`. That's the
+    same 4 lines as `llm-send`'s `open_new_prompt_file`; move that function into this module
+    and have `llm-send` call it, so it exists once.
   - `autosave(path)`: debounced (1s) `snapshot(path)` on `BufEnter`, `BufWritePost`,
     `BufDelete`, `WinClosed`, `TabClosed`, `FocusLost` and `VimLeavePre`.
-  - `stop_persistence_autosave()`: `require("persistence").stop()` if
-    `package.loaded.persistence`. Otherwise register a `User LazyLoad` autocmd that does it
-    once `persistence.nvim` loads.
-- `.config/nvim/lua/plugins/lazy-llm-session.lua`, a lazy.nvim spec that adds only an `init`
-  to LazyVim's persistence spec. It changes neither `lazy` nor `cond`, so persistence loads
-  exactly as it does today:
+  - `use_prompt_session_dir()`: point persistence at the prompt dir. It must win over the
+    user's own `persistence.lua` `opts` whatever the spec merge order, so apply it **after**
+    persistence's config has run. If `package.loaded["persistence.config"]` is set, assign
+    `require("persistence.config").options.dir = <prompt dir>` and `mkdir -p` it. Otherwise
+    register a `User LazyLoad` autocmd that does the same once `persistence.nvim` loads.
+- `.config/nvim/lua/plugins/lazy-llm-session.lua`, a spec adding only an `init` to the
+  persistence spec (it doesn't touch `opts`, `config`, `keys`, `lazy` or `cond`):
 
   ```lua
   return {
     "folke/persistence.nvim",
     init = function()
       local role, path = vim.env.LAZY_LLM_NVIM_ROLE, vim.env.LAZY_LLM_NVIM_SESSION
-      if not role then return end            -- not started by lazy-llm: behave as today
+      if not role then return end                -- not started by lazy-llm: exactly as today
       local s = require("lazy_llm.session")
-      if role == "prompt" then s.stop_persistence_autosave() end
+      if role == "prompt" then s.use_prompt_session_dir() end
       if path then
         vim.api.nvim_create_autocmd("VimEnter", { once = true, callback = function()
-          s.restore(path)
+          if vim.env.LAZY_LLM_NVIM_RESTORE == "1" then s.restore(path) end
           s.autosave(path)
         end })
       end
@@ -226,29 +253,39 @@ $STATE/nvim/<ws_id>/<win_token>-prompt.vim
   }
   ```
 
-**Build function (§11.1):**
-- Editor pane: `LAZY_LLM_NVIM_ROLE=editor LAZY_LLM_NVIM_SESSION='<editor path>' nvim`.
-- Prompt pane: `LAZY_LLM_NVIM_ROLE=prompt LAZY_LLM_NVIM_SESSION='<prompt path>' nvim --cmd … '<prompt_file>'`.
+**Build function (§11.1): how the nvims are launched.** `<ep>`/`<pp>` are the window's snapshot
+paths. `R` means "set `LAZY_LLM_NVIM_RESTORE=1`" and is added only when that snapshot is
+readable.
 
-The prompt file argument stays. With no snapshot yet, nvim opens it as today. With a
-snapshot, the session sourced at `VimEnter` brings back the whole prompt-buffer layout, and
-the current prompt file is part of it.
+| Case | Editor pane | Prompt pane |
+|---|---|---|
+| Plain launch | `LAZY_LLM_NVIM_ROLE=editor LAZY_LLM_NVIM_SESSION='<ep>' nvim` | prompt snapshot readable: `R` + role/session env + `nvim --cmd <swap/undo> --cmd <VimEnter ft/insert>`, **with no file argument and no new prompt file created**. Otherwise: as today, with a new `prompt-<ts>.md` argument. |
+| Workspace restore | `R` + the same env, if `<ep>` is readable | same as a plain launch |
+
+The prompt pane's `--cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert'`
+stays. It runs alongside the session's own `VimEnter` restore; `.md` buffers get their filetype
+from detection anyway.
+
+**Retention must not eat restored prompts.** Once prompts persist across opens, a prompt file
+that's open but untouched for more than `PROMPT_RETENTION_DAYS` (7) would be deleted by the
+launcher's `cleanup_old_files`, and its text lost. So `cleanup_old_files` skips any
+`prompt-*.md` referenced by a `badd`/`edit` line in any `<dir>/.lazy-llm/sessions/prompt*.vim`.
 
 **Save-time RPC (in `llm-persist save`), for every lazy-llm window, on both nvim panes.**
-Find the descendant `nvim` processes of the pane's `#{pane_pid}` (`pgrep -P`, two levels deep)
-and the first socket that exists for one of them (the paths in §5.1). Then call it under a 2s
-timeout:
-- Both panes: `luaeval('require("lazy_llm.session").snapshot(_A)', '<path>')`.
-- The prompt pane also gets `…stop_persistence_autosave()`.
-
-This is what gives the **already-running, pre-feature** nvims their snapshots, and stops their
-prompt nvims from overwriting the editor sessions at shutdown. For those nvims, adoption
-(§3) first assigns `@lazy_llm_win_token` and the two paths. For nvims started by lazy-llm, it
-just refreshes a snapshot their own autosave keeps anyway. The stowed module is on every
-nvim's runtimepath, so `require` works in nvims started before the install.
+Find the pane's descendant `nvim` processes (`pgrep -P`, two levels deep) and the first socket
+that exists for one of them. Then call
+`luaeval('require("lazy_llm.session").snapshot(_A)', '<path>')` under a 2s timeout. This is
+what gives the **already-running, pre-feature** nvims their first snapshots (adoption, §3,
+assigns the two window options first). For nvims started by lazy-llm, it only refreshes a
+snapshot their autosave keeps anyway. The stowed module is on every nvim's runtimepath, so
+`require` works in nvims started before the install. The RPC never touches persistence.
 
 **Timeout:** a lib helper `lazy_llm_with_timeout <secs> <cmd…>` that runs the command in the
 background, polls, and kills it when time runs out. macOS has no `timeout`.
+
+**Known edge, accepted:** two *different* lazy-llm sessions opened on the same dir, which is
+unusual, since the launcher attaches to an existing session for a `-W` worktree. Both would
+autosave to that dir's `prompt.vim`/`editor.vim`, and the last writer wins.
 
 ## 6. Manifest
 
@@ -284,8 +321,8 @@ dependency: add it to `install.sh` `DEPS`.
     {
       "visible": 1,
       "prompt_file": "/home/paulomuggler/Projects/dev-env/.lazy-llm/prompts/prompt-20260925-194824.md",
-      "editor_session": "/home/paulomuggler/.local/state/lazy-llm/nvim/20260927130000-3fa2c91e/5c1e9a0b-editor.vim",
-      "prompt_session": "/home/paulomuggler/.local/state/lazy-llm/nvim/20260927130000-3fa2c91e/5c1e9a0b-prompt.vim",
+      "editor_session": "/home/paulomuggler/Projects/dev-env/.lazy-llm/sessions/editor.vim",
+      "prompt_session": "/home/paulomuggler/Projects/dev-env/.lazy-llm/sessions/prompt.vim",
       "panes": [
         { "tool": "claude", "name": "lazy-llm-dashboard-improvements",
           "conv": "11111111-1111-4111-8111-111111111111", "model": "claude-opus-5-5[1m]",
@@ -360,13 +397,13 @@ The grace period in §7.3 is the second line of defense against the same scenari
      - With `gone` at least 60s old, move the file to `closed/`.
 
      The grace means a save racing a dying server can only *mark* entries, never drop them.
-5. Delete `closed/*.json` older than 30 days, along with each one's `$STATE/nvim/<id>/`.
+5. Delete `closed/*.json` older than 30 days. The nvim snapshots are workspace-local and are
+   left alone: the next launch in that dir still wants `prompt.vim`.
 6. Release the lock. If `.pending` exists, remove it and go back to step 1 (at most once more).
 
 **forget** (`--id <id>` or a name): move `workspaces/<id>.json` to `closed/`. With a name, it
 matches non-live entries; an ambiguous match errors and asks for `--id`. **forget on a `closed/`
-entry** (dashboard `K` in the closed view) deletes it for good, after confirmation, together
-with `$STATE/nvim/<id>/`.
+entry** (dashboard `K` in the closed view) deletes it for good, after confirmation.
 
 Known edge, accepted: if the last lazy-llm session is closed with plain `tmux kill-session`,
 tmux exits with the session, so the entry stays `restorable`. Remove it with
@@ -415,12 +452,12 @@ died) are untouched. Concretely:
      keeps them.
    - For each window in order: the first uses the session's initial window, and later ones use
      `new-window -d`.
-     - Prompt file: the saved one if it still exists, otherwise a new
+     - Snapshots: set the two window options from the saved `editor_session` and
+       `prompt_session`, so the same files keep rolling, then launch both nvims with restore
+       as in the §5.2 table.
+     - Prompt file (only used when there's no readable prompt snapshot): the saved
+       `prompt_file` if it still exists, otherwise a new
        `<dir>/.lazy-llm/prompts/prompt-<ts>.md`.
-     - Snapshots: set `@lazy_llm_win_token` and the two session paths from the saved
-       `editor_session`/`prompt_session`, so the same files keep rolling. The nvims get
-       `LAZY_LLM_NVIM_SESSION` as in §5.2, which restores their layout when the file is
-       readable.
      - Build the window with pane 0's `lazy_llm_tool_launch_cmd`, add panes 1..n with
        `lazy_llm_add_ai_pane` (they go to the hold window), set `@AI_PANE_NAMES` (`_` for
        `null`), then `lazy_llm_cycle_to_index` to `visible`.
@@ -527,10 +564,10 @@ Help tab: document the new keys. `llm-dashboard` usage: accept `--tab saved`.
   - It derives swap and undo dirs from `<dir>/.lazy-llm/` and `mkdir -p`s them. It must not
     run `cleanup_old_files`, which would delete prompt files restore is about to reopen.
   - The per-tool `case` becomes one `send-keys "$launch_cmd"`.
-  - The editor and prompt nvim commands gain `LAZY_LLM_NVIM_ROLE` (and
-    `LAZY_LLM_NVIM_SESSION`) as in §5.2.
-  - New: `@lazy_llm_prompt_file`, `@lazy_llm_win_token` and the two session paths on the
-    window; `@lazy_llm_ws_id` and `@lazy_llm_dir` on the session if unset;
+  - The editor and prompt nvim commands follow the §5.2 table: role and session env, prompt
+    auto-restore on a plain launch, and no new prompt file when a prompt snapshot exists.
+    `cleanup_old_files` skips prompt files that a snapshot references.
+  - New: `@lazy_llm_prompt_file` and the two session paths on the window; `@lazy_llm_ws_id` and `@lazy_llm_dir` on the session if unset;
     `lazy_llm_save_async` at the end.
   - The server-global hooks and key bindings it registers today (`after-select-pane`,
     Prefix+C-n/C-p/C-x/A/S), plus the new `session-renamed` hook and Prefix+C-s, move into
@@ -552,11 +589,12 @@ Help tab: document the new keys. `llm-dashboard` usage: accept `--tab saved`.
 wrong pane. This is live now: `dev-env` has 4 names for 3 panes. Fix: pad with `_`, then drop
 the same index. This goes in its own commit, first.
 
-### 11.3 Bug: the prompt nvim overwrites the editor's persistence session
+### 11.3 Bug: the editor and prompt panes share one manual session file
 
-Fixed by §5.2: the prompt role stops persistence's exit save, and the RPC `stop()` covers
-prompt nvims that are already running. The keys keep working. This goes in its own commit,
-before the save work.
+Both nvims have the workspace dir as cwd, so `qs`/`qr` in either pane read and write the same
+`sessions/<cwd>.vim` (§5.1). Fixed by §5.2 Layer 1: the prompt role uses
+`sessions/lazy-llm-prompt/`. This goes in its own commit (the nvim plugin package), before the
+save work.
 
 ## 12. Tests
 
@@ -582,12 +620,13 @@ server.
      `$HOME/.claude/sessions/<fake claude pid>.json`.
    - Set names, cycle wsA to index 1, fold wsB, and move wsB above wsA.
    - Assert: the editor pane's fake nvim was started with `ROLE=editor` and
-     `SESSION=$STATE/nvim/<id>/<token>-editor.vim`, and the prompt pane's with `ROLE=prompt`
-     and the matching `-prompt.vim` path.
+     `SESSION=<a>/.lazy-llm/sessions/editor.vim` with no `RESTORE`, and the prompt pane's with
+     `ROLE=prompt`, `…/prompt.vim`, no `RESTORE`, and a new `prompt-<ts>.md` argument (no
+     snapshot yet).
 2. **Save.** Plain `llm-persist save`. Assert both JSON files match the expected structure (jq
    assertions on `windows[].panes[]`, including the registry-sourced `conv`,
-   `editor_session`/`prompt_session` equal to the window options, no snapshot files on disk,
-   and the same `server`).
+   `editor_session`/`prompt_session` equal to the window options, no snapshot files on disk
+   (the fake nvims have no socket), and the same `server`).
 3. **No-server no-op.** `kill-server`, then `save`. Assert the files are byte-identical.
 4. **Restore.** Assert for both sessions:
    - `@lazy_llm 1` and the same `@lazy_llm_ws_id`.
@@ -595,15 +634,20 @@ server.
    - A hold window with `@lazy_llm_hold 1` holding the non-visible panes.
    - `@lazy_llm_collapsed` on wsB.
    - `@lazy_llm_ws_order` = `wsB wsA`.
-   - `argv.log` has `claude --resume <uuid>` for all 4 panes, and each prompt nvim got the
-     saved prompt file.
+   - `argv.log` has `claude --resume <uuid>` for all 4 panes. wsB's prompt nvim (no snapshot)
+     got the saved prompt file as its argument.
    - `llm-dashboard --emit-rows` lists `ws:wsB` first, with no pane rows under the folded wsB
      and 3 pane rows under wsA.
-5. **Snapshot paths carry over.** Before the step 4 restore, create both snapshot files for
-   wsA. Assert the restored nvims logged the same `SESSION=` paths, and that the window
-   options hold those same paths (the files keep rolling, with no new ones). Deleting wsA for
-   good (step 7's closed-view `K`, via `forget` on a `closed/` entry) removes
-   `$STATE/nvim/<id>/`.
+5. **Snapshots restore.** Before the step 4 restore, create both snapshot files for wsA. Assert
+   that wsA's restored editor and prompt nvims logged `RESTORE=1` with the same `SESSION=`
+   paths, that the prompt nvim got **no** file argument, and that no new `prompt-*.md` was
+   created in `<a>/.lazy-llm/prompts/`.
+5b. **Prompt auto-restore on a plain launch.** With `<b>/.lazy-llm/sessions/prompt.vim`
+   present, a fresh `lazy-llm -s wsC -d <b>` starts its prompt nvim with `RESTORE=1` and no
+   file argument, and its editor with no `RESTORE`.
+5c. **Retention.** Backdate a prompt file referenced by a `badd` line of a prompt snapshot to
+   10 days, and an unreferenced one too. Launch → the referenced file survives and the
+   unreferenced one is deleted.
 6. **Idempotent.** A second restore restores nothing, and the session count is unchanged.
 7. **Deliberate close.** `kill-session -t wsA`, then save → `gone` is set. Restore skips it
    ("closed"), and `--emit-saved-rows --closed` shows it as `✕`. Backdate `gone` by 61s and
@@ -626,11 +670,13 @@ server.
 - `snapshot(p)` with a file buffer writes `p` containing that file and returns `p`. Calling it
   again overwrites the same single file (the dir holds exactly one file, and no `.tmp` is left).
 - `snapshot(p)` with no file buffers returns `""` and leaves an existing `p` byte-identical.
-- `restore(p)` in a fresh nvim opens the buffers.
-- **Prompt role:** with `LAZY_LLM_NVIM_ROLE=prompt` and the plugin spec loaded through a
-  minimal lazy.nvim bootstrap (or by calling `stop_persistence_autosave()` directly if the
-  bootstrap is impractical under `--clean`), quitting with a file open writes **no** file into
-  persistence's `dir`. With no role set, quitting writes one, as today.
+- `restore(p)` in a fresh nvim opens the buffers. A buffer whose file was deleted after the
+  snapshot is wiped. In the prompt role, when nothing is left, a new
+  `.lazy-llm/prompts/prompt-<ts>.md` is opened.
+- **Prompt session dir:** after `use_prompt_session_dir()`, persistence's `save()` (what `qs`
+  runs) writes under `…/sessions/lazy-llm-prompt/`, and `load()` (`qr`) reads from there. Test
+  both the "already loaded" and the `User LazyLoad` paths. With no role, `save()` writes to
+  `…/sessions/` exactly as before.
 - **RPC:** start nvim with `--listen $sandbox/n.sock` and a file open, then run
   `nvim --server … --remote-expr` with `snapshot(_A)`. Assert the returned path and the
   file.
@@ -651,12 +697,11 @@ The existing scenarios 01–19 must stay green (run `tests/test-runner.sh`).
    - `dev-env` shows 3 names.
    - Held panes present.
    - Order `ai-dev-workflow microdots_digital dev-env`.
-   - For each window, the snapshot files exist under `~/.local/state/lazy-llm/nvim/<id>/`:
-     the editor's holds its buffers and the prompt's holds its prompt files. The prompt nvims
-     had persistence's exit save stopped (check one with
-     `--remote-expr 'luaeval("require(\"persistence\").active()")'` → `v:false`). The
-     persistence file for each dir is left alone (`…microdots.digital.vim` still has its old,
-     overwritten content until the editor nvim next exits normally).
+   - For each window, `<dir>/.lazy-llm/sessions/editor.vim` and `prompt.vim` exist. The
+     editor's holds its buffers and the prompt's holds all the prompt files it has open.
+     Nothing under `~/.local/state/nvim/sessions/` changed (compare mtimes before and after).
+     Note that the running pre-feature prompt nvims still share the editor's manual session
+     file until they're restarted; the reboot takes care of that.
 4. `lazy-llm restore --dry-run` → nothing to restore. To rehearse, copy one file into a
    scratch state dir with a foreign `server`, then run
    `LAZY_LLM_STATE_DIR=<scratch> lazy-llm restore --dry-run` and read the launch commands.
@@ -665,7 +710,7 @@ The existing scenarios 01–19 must stay green (run `tests/test-runner.sh`).
    (Prefix+S, then `3`), the editor buffers, and that one pane's conversation came back.
 
 Manual fallback if restore fails: each pane gives `cd <cwd> && claude --resume <conv>`, and
-each nvim gives `nvim -c 'source <editor_session|prompt_session>'`.
+each nvim gives `nvim -c 'source <dir>/.lazy-llm/sessions/{editor,prompt}.vim'`.
 
 ## 14. Decisions made, and checks to run during execution
 
@@ -675,8 +720,11 @@ each nvim gives `nvim -c 'source <editor_session|prompt_session>'`.
 - One JSON file per workspace, using jq.
 - The retention rule is based on server identity, with a 60s grace period, and there's no
   `session-closed` hook.
-- nvim state is saved in lazy-llm's own rolling snapshots (one file per nvim), through
-  `:mksession`. persistence.nvim is untouched, apart from the prompt nvim's exit save.
+- nvim state is saved in lazy-llm's own workspace-local rolling snapshots (one file per nvim),
+  through `:mksession`. The prompt snapshot restores on every open; the editor snapshot only
+  on workspace restore.
+- persistence.nvim's keys and behavior are unchanged. The only change is that lazy-llm's
+  prompt nvim uses the `sessions/lazy-llm-prompt/` dir.
 - Don't store the worktree branch: `dir` is the worktree path, which survives on disk.
 - A name collision de-dups to `name-N`, and restore never merges.
 - Non-Claude tools start fresh until they get adapter branches.
@@ -690,10 +738,11 @@ each nvim gives `nvim -c 'source <editor_session|prompt_session>'`.
   `claude --model 'claude-opus-5-5[1m]' --resume <id>` in a sandbox, without sending a prompt.
   If it's rejected, the claude adapter drops `--model` altogether (the model is still saved and
   shown).
-- **V3 (the `init` merge and the prompt stop).** With the real config under a sandboxed
-  `XDG_STATE_HOME`: in a prompt-role nvim, `<leader>qs` still loads the dir's session, and
-  quitting writes nothing to persistence's `dir`. In a no-role nvim, behavior is exactly as
-  today. If lazy.nvim drops the `init` merge, move the same body into a standalone spec file
+- **V3 (the `init` merge and the prompt session dir, with the user's real config).** Run
+  under a sandboxed `XDG_STATE_HOME`. In a prompt-role nvim, `<leader>qs` writes to
+  `sessions/lazy-llm-prompt/<cwd>.vim` and `<leader>qr` loads it back; in an editor-role or
+  no-role nvim, they use `sessions/<cwd>.vim` exactly as today. The prompt snapshot restores on
+  launch, the editor one doesn't. If lazy.nvim drops the `init` merge, move the same body into a standalone spec file
   whose top level runs it at startup (files in `lua/plugins/` are evaluated when lazy loads the
   specs).
 - **V5 (swap recovery through a sourced session).** After killing an nvim that has unsaved

@@ -4,7 +4,7 @@ title: Save lazy-llm workspaces to a manifest and rebuild them after the tmux se
 priority: P1
 status: pending
 created: 2026-09-25_20:44
-updated: 2026-09-27_14:55
+updated: 2026-09-27_15:30
 depends-on: []
 tags: [resilience, restore, tmux, dashboard, nvim, design]
 model: inline
@@ -63,14 +63,18 @@ them, which mangles the live workspaces.
   branch to each.
 - The manifest is one JSON file per workspace, handled with jq (the user approved jq as a
   dependency).
-- nvim state for **both** panes (editor and prompt) is kept in lazy-llm's own rolling
-  snapshots, one file per nvim that's overwritten in place. persistence.nvim and its
-  `<leader>q*` keys stay exactly as they are today, apart from one change. **A bug that
-  exists today:** the prompt nvim runs persistence's exit save too, and overwrites the
-  editor's per-dir session (`…%microdots.digital.vim` holds only prompt files). So the prompt
-  role turns that exit save off. For nvims already running, `lazy-llm save` snapshots them
-  and stops the prompt nvim's persistence over nvim's RPC socket (confirmed live on 0.12:
-  the socket belongs to the `--embed` child).
+- nvim state for **both** panes is kept in lazy-llm's own workspace-local rolling snapshots
+  (`<dir>/.lazy-llm/sessions/{editor,prompt}.vim`, one file per nvim, overwritten in place).
+  The **prompt** snapshot restores on every open, so the several prompt files the user keeps
+  open in parallel come back even on a plain `lazy-llm` launch. The editor snapshot restores
+  on workspace restore.
+- The user's persistence config is manual only (dev-env `a570bf6`: `qs` saves, `qr`
+  restores, no exit save), and it stays as it is. **A real collision today:** both panes have
+  the workspace dir as cwd, so they share one `qs`/`qr` file (confirmed over RPC on all six
+  live nvims). The fix: the prompt role uses `sessions/lazy-llm-prompt/`.
+- For nvims already running, `lazy-llm save` writes their first snapshots over nvim's RPC
+  socket (confirmed live on 0.12: the socket belongs to the `--embed` child).
+- The launcher's 7-day prompt retention must skip files that a snapshot references.
 - A pre-existing bug: `llm-remove` and `lazy_llm_prune_stale_panes` never drop the
   `@AI_PANE_NAMES` slot, so names shift onto the wrong panes. It's live now (`dev-env`: 4
   names, 3 panes).
@@ -104,6 +108,11 @@ them, which mangles the live workspaces.
 - `nvim-session-plugin/.config/nvim/lua/lazy_llm/session.lua` and
   `…/lua/plugins/lazy-llm-session.lua`: **new** stow package (spec §5.2).
 - `install.sh`: jq in `DEPS`, and `nvim-session-plugin` in `STOW_PACKAGES`.
+- `nvim-llm-send-plugin/.config/nvim/lua/plugins/llm-send.lua`: `open_new_prompt_file`
+  (`:40-50`) moves into `lazy_llm/session.lua`, and the `<leader>fn` override (`:702-720`)
+  calls it from there.
+- `lazy-llm-bin/.local/bin/lazy-llm` `cleanup_old_files` (`:46-52`): skip prompt files that a
+  snapshot references.
 - `llm-add-bin/.local/bin/llm-add`: calls the lib add-pane function, then save.
 - `llm-remove-bin/.local/bin/llm-remove`: names slot fix (`:190-198`), then save.
 - `llm-cycle-bin/.local/bin/llm-cycle`: save after a cycle.
@@ -124,7 +133,9 @@ them, which mangles the live workspaces.
 - `lazy-llm-bin/.local/bin/llm-dashboard` `render_worktrees_tab` (`:621-715`): the model for
   the Saved tab.
 - `~/.local/share/nvim/lazy/persistence.nvim/lua/persistence/init.lua`: the API the nvim
-  module wraps (the prompt-role stop).
+  module works with, and dev-env's
+  `dotfiles/omarchy/dot-config/nvim/lua/plugins/persistence.lua` (the user's manual-only
+  override: `qs`/`qr`).
 - `~/Projects/dev-env/.claude/coding-standards/frameworks/tmux-fzf.md`: `set -e` with
   fzf/tmux, and the testing notes (never send keys into a pane you haven't verified as a
   sandbox pane).
@@ -154,9 +165,9 @@ them, which mangles the live workspaces.
 ## Commit plan (code commits, in order)
 
 1. `@AI_PANE_NAMES` slot fix in `llm-remove` and `lazy_llm_prune_stale_panes` (spec §11.2).
-2. `nvim-session-plugin` (module plus spec), the role env vars on the launcher's two nvims,
-   and `install.sh` stowing the new package: this fixes the prompt nvim overwriting the editor
-   session (§5, §11.3). Include scenario 21.
+2. `nvim-session-plugin` (module plus spec), move `open_new_prompt_file` from `llm-send` into
+   the module, the role and session env on the launcher's two nvims, prompt auto-restore, the
+   retention skip, and `install.sh` stowing the package (§5, §11.3). Include scenario 21.
 3. Move the build and add-pane code into the lib, and add the tool adapters. No other
    behavior change (§11.1, §4).
 4. Conversation capture: conversation store, hook recording, registry fallback, raw model
@@ -201,16 +212,19 @@ style).
 ## Acceptance Criteria
 
 - [ ] `@AI_PANE_NAMES` stays in line with `@AI_PANES` after `llm-remove` and after pruning.
-- [ ] Each workspace's editor and prompt nvims autosave to one rolling snapshot file each, and
-      restore from it. The prompt nvim no longer runs persistence's exit save.
-      persistence.nvim's keys and files work as today, and nvims lazy-llm didn't start are
-      unchanged.
+- [ ] Each workspace's editor and prompt nvims autosave to one rolling snapshot file each
+      (`<dir>/.lazy-llm/sessions/`). The prompt snapshot restores on every open (with no
+      stray new prompt file), and the editor snapshot on workspace restore. Retention skips
+      prompt files a snapshot references.
+- [ ] `qs`/`qr`/`qS`/`ql` work as today in both panes. The prompt pane's live in
+      `sessions/lazy-llm-prompt/`, so the two panes no longer overwrite each other. nvims
+      lazy-llm didn't start are unchanged.
 - [ ] `lazy-llm` and `llm-add` build through the lib functions. Per-tool behavior sits only in
       the two adapter functions. Scenarios 01–19 are green.
 - [ ] The Claude hook records `session_id` per pane on every event and saves only on a change.
       The registry fallback resolves panes that have no hook record.
 - [ ] `lazy-llm save` writes one JSON file per live workspace in the spec §6 format, adopting
-      pre-feature workspaces, snapshotting both nvims and stopping prompt persistence over RPC.
+      pre-feature workspaces and snapshotting both nvims over RPC.
 - [ ] Save never drops or alters an entry from another server. With no server running it's a
       no-op. A same-server close is marked `gone` and dropped only after 60s.
       `lazy-llm kill` and the dashboard's kill forget the entry immediately.
