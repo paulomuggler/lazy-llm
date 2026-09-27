@@ -4,9 +4,10 @@ title: Optional per-pane worktree isolation for concurrent AI panes in one works
 priority: P1
 status: backlog
 created: 2026-09-23_04:20
-updated: 2026-09-23_04:20
+updated: 2026-09-28_00:30
 depends-on: []
 tags: [worktree, concurrency, dashboard, design]
+spec: ../specs/worktree-concurrency-mode.md
 commits: []
 ---
 
@@ -35,7 +36,28 @@ like a mode, or an optional thing, idk?" — this must NOT default to giving eve
 additional pane its own worktree unconditionally. It needs to be opt-in at some
 granularity not yet decided.
 
-## Open design questions (none resolved — this is why it's backlog, not pending)
+## Design (2026-09-28): spec drafted, awaiting review
+
+Full design: [`specs/worktree-concurrency-mode.md`](../specs/worktree-concurrency-mode.md).
+Decisions made with the user:
+
+- **Toggle**: opt-in per pane. Dashboard `A` and `llm-add --isolate`; `a` is unchanged.
+- **Lifecycle**: the worktree and branch `lazy/<ws>/<tool>-<n>` are created on an isolated add.
+  Closing the pane **always asks**, and warns about any work that would be lost.
+- **Merging back** is the agent's job: it commits in logical units and runs `llm-wt integrate`
+  (rebase in the worktree, then `--ff-only` into the main directory). A Claude skill and
+  `SessionStart` context tell the agent it's isolated.
+- **Reuse**: `lazy_llm_setup_worktree` / `lazy_llm_cleanup_worktree`, extended. Pane worktrees
+  show in the Worktrees tab, tagged by owning pane or as orphaned.
+- **Editor**: nvim's cwd never changes. `<leader>llmw` toggles the current buffer between the
+  main copy and the visible pane's worktree copy (editable).
+- **Untracked files**: link (the default) or copy, set in a gitignore-style `worktree-files`
+  config, plus a `worktree-init` hook. Copies are checksummed and reconciled on close.
+- **Prerequisite bug found**: the workspace directory is read from the active pane's cwd
+  (`gather_sessions`, `llm-add`). With an isolated pane focused, worktree cleanup would kill
+  the whole workspace. It must be fixed first (spec §2).
+
+## Original open design questions (resolved above)
 
 - **Toggle granularity**: per-workspace setting (e.g. a dashboard action or
   `lazy-llm` flag "make this workspace's additional panes worktree-isolated")?
