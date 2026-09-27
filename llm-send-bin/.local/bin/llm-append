@@ -51,13 +51,16 @@ tmux send-keys -t "$TARGET" -X cancel 2>/dev/null || true
 tmux send-keys -t "$TARGET" Escape
 tmux send-keys -t "$TARGET" A
 
+# Bracketed paste (-p): nvim takes the text as one paste, not as typed keys that
+# run completion (blink.cmp errored on them) and auto-indent line by line. A
+# named buffer, deleted after the paste (-d), leaves the user's paste buffers
+# alone.
 if [[ "$RAW_MODE" == "true" ]]; then
   # Raw mode: append inline at cursor position (no extra newlines)
-  printf '%s' "$CONTENT" | tmux load-buffer -
-  tmux paste-buffer -t "$TARGET"
+  printf '%s' "$CONTENT" | tmux load-buffer -b lazy-llm-append -
 else
   # Wrapped mode: add blank line spacing before and after content
   tmux send-keys -t "$TARGET" Enter Enter
-  printf '%s\n' "$CONTENT" | tmux load-buffer -
-  tmux paste-buffer -t "$TARGET"
+  printf '%s\n' "$CONTENT" | tmux load-buffer -b lazy-llm-append -
 fi
+tmux paste-buffer -b lazy-llm-append -d -p -t "$TARGET"
