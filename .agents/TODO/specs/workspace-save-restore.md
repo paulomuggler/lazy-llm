@@ -1,6 +1,6 @@
 # Spec: workspace save/restore
 
-Companion to the task `../workspace-save-restore.md`. The task file holds the brief, the
+Companion to the task `../done/workspace-save-restore.md`. The task file holds the brief, the
 acceptance criteria and the work log. This file holds the design: every decision here is
 settled, so an executor implements it as written. If a premise proves false, stop and report
 it. Don't redesign.
