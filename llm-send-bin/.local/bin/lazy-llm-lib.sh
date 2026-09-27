@@ -71,9 +71,18 @@ lazy_llm_read_multi_state() {
 }
 
 # Check if a tmux pane is still alive.
-# Returns 0 if alive, 1 if dead.
+# Returns 0 if alive, 1 if dead. Doesn't trust the exit status: tmux 3.7c's
+# display-message exits 0 with empty output for a pane that no longer exists
+# (confirmed live). A %N id must echo back as itself; any other target form
+# (legacy "session:win.idx", ":.+") must resolve to some pane.
 lazy_llm_validate_pane() {
-  tmux display-message -t "$1" -p '#{pane_id}' &>/dev/null
+  local got
+  got=$(tmux display-message -t "$1" -p '#{pane_id}' 2>/dev/null) || return 1
+  if [[ "$1" == %* ]]; then
+    [[ "$got" == "$1" ]]
+  else
+    [[ -n "$got" ]]
+  fi
 }
 
 # Classify AI pane content into a status.
@@ -356,18 +365,23 @@ lazy_llm_status_color() {
 lazy_llm_prune_stale_panes() {
   [[ -z "$AI_PANES" ]] && return 0
 
-  local -a pane_arr tool_arr valid_panes valid_tools
+  local -a pane_arr tool_arr name_arr=() valid_panes valid_tools valid_names
   read -ra pane_arr <<< "$AI_PANES"
   read -ra tool_arr <<< "$AI_TOOLS"
+  [[ -n "${AI_PANE_NAMES:-}" ]] && read -ra name_arr <<< "$AI_PANE_NAMES"
   local total=${#pane_arr[@]}
   local current_idx="${AI_PANE_IDX:-0}"
 
+  # @AI_PANE_NAMES is parallel to @AI_PANES by position: it must lose the
+  # same slots, or every later name shifts onto the wrong pane.
   valid_panes=()
   valid_tools=()
+  valid_names=()
   for i in "${!pane_arr[@]}"; do
     if lazy_llm_validate_pane "${pane_arr[$i]}"; then
       valid_panes+=("${pane_arr[$i]}")
       valid_tools+=("${tool_arr[$i]:-unknown}")
+      valid_names+=("${name_arr[$i]:-_}")
     fi
   done
 
@@ -383,6 +397,10 @@ lazy_llm_prune_stale_panes() {
 
   tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANES "$AI_PANES"
   tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOLS "$AI_TOOLS"
+  if [[ -n "${AI_PANE_NAMES:-}" ]]; then
+    AI_PANE_NAMES="${valid_names[*]}"
+    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_NAMES "$AI_PANE_NAMES"
+  fi
 
   # Adjust current index if out of bounds
   if [[ "$current_idx" -ge "$total" ]] && [[ "$total" -gt 0 ]]; then

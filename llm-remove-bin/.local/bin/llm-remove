@@ -42,6 +42,8 @@ fi
 # Parse into arrays (already pruned)
 read -ra pane_arr <<< "$AI_PANES"
 read -ra tool_arr <<< "$AI_TOOLS"
+name_arr=()
+[ -n "$AI_PANE_NAMES" ] && read -ra name_arr <<< "$AI_PANE_NAMES"
 current_idx="${AI_PANE_IDX:-0}"
 total=${#pane_arr[@]}
 
@@ -93,13 +95,16 @@ fi
 # Kill the pane
 tmux kill-pane -t "$remove_pane" 2>/dev/null || true
 
-# Build new arrays without the removed entry
+# Build new arrays without the removed entry. @AI_PANE_NAMES is parallel to
+# @AI_PANES by position, so it loses the same slot ("_" = no override).
 new_panes=()
 new_tools=()
+new_names=()
 for i in "${!pane_arr[@]}"; do
   if [ "$i" -ne "$remove_idx" ]; then
     new_panes+=("${pane_arr[$i]}")
     new_tools+=("${tool_arr[$i]}")
+    new_names+=("${name_arr[$i]:-_}")
   fi
 done
 
@@ -128,6 +133,7 @@ fi
 # Update state
 tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANES "${new_panes[*]}"
 tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOLS "${new_tools[*]}"
+[ -n "$AI_PANE_NAMES" ] && tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_NAMES "${new_names[*]}"
 tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_IDX "$current_idx"
 tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_ID "${new_panes[$current_idx]}"
 tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOL "${new_tools[$current_idx]}"
