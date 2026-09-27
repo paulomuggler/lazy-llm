@@ -35,7 +35,9 @@ Send prompts and confirmations directly from the prompt editor pane to the agent
 - **Git integration**: Editor pane includes vim-fugitive, gitsigns, and vgit for tracking changes
 - **Multiple AI tools**: Supports Claude, Gemini, Codex, Grok, Aider, or any agentic TUI tool
 - **Multi-AI pane tabbing**: Run multiple AI tools side-by-side, cycling between them with keybindings
-- **Dashboard popup**: `Prefix+S` opens a tabbed popup (Workspaces / Worktrees / Help). The Workspaces tab is a collapsible tree — every workspace with its AI panes nested beneath it, each with its own status glyph and live ANSI preview, `z` to fold/unfold. Full keybinding reference is in the Help tab (`3` or `?` from either other tab) — the dashboard's own headers only have room for a couple of hints
+- **Dashboard popup**: `Prefix+S` opens a tabbed popup (Workspaces / Worktrees / Saved, plus Help on `?`). The Workspaces tab is a collapsible tree — every workspace with its AI panes nested beneath it, each with its own status glyph and live ANSI preview, `z` to fold/unfold. Full keybinding reference is in the Help tab (`?` from any tab) — the dashboard's own headers only have room for a couple of hints
+- **Save & restore**: workspaces are saved on every change; after the tmux server dies, `lazy-llm restore` rebuilds them — AI panes resuming their Claude conversations, display names, held panes, prompt and editor state, folds and order (see [Save & Restore](#save--restore))
+- **Prompt pane memory**: the prompt pane reopens every prompt file it had open, in the same layout, whenever you open a workspace in that directory
 - **Scoped keybindings**: All tmux and nvim bindings are scoped — no interference outside lazy-llm workspaces
 - **Confirmation dialogs**: Removing AI panes requires confirmation (bypass with `--force`)
 - **Stale pane recovery**: Dead panes are auto-pruned; holding windows auto-recover if accidentally closed
@@ -261,7 +263,8 @@ Registered automatically when a workspace is created. Keybindings are **scoped t
 | `Prefix + C-p` | Cycle to previous AI pane |
 | `Prefix + A` | Add new AI pane (tool picker menu) |
 | `Prefix + C-x` | Remove current AI pane |
-| `Prefix + S` | Dashboard popup (Workspaces tree / Worktrees / Help tabs; switch with `1`/`2`/`3`, or `?` for Help from either other tab) |
+| `Prefix + S` | Dashboard popup (Workspaces tree / Worktrees / Saved tabs; switch with `1`/`2`/`3`, `?` for Help) |
+| `Prefix + C-s` | Save every workspace now (they're also saved automatically on every change) |
 
 ### Multi-AI Pane Tabbing
 
@@ -291,6 +294,29 @@ Inactive AI panes are held in a hidden tmux window. `tmux swap-pane` atomically 
 | `llm-dashboard` | Tabbed popup dashboard (Workspaces, Worktrees) with live ANSI preview. Bound to `Prefix+S`. |
 | `llm-sessions` | CLI helper for non-interactive listing/killing of workspaces (`--list`, `--kill <name>`). Interactive mode subsumed by `llm-dashboard`. |
 | `llm-panes` | Alias for `llm-dashboard --tab workspaces` — AI panes live nested in the Workspaces tree now, not a separate tab (kept for CLI muscle memory) |
+| `llm-persist` | Save/restore backend, reached as `lazy-llm save \| restore \| saved \| forget` (see [Save & Restore](#save--restore)) |
+
+### Save & Restore
+
+lazy-llm keeps its workspace state in tmux options, which die with the tmux server (and which tmux-resurrect can't bring back). So lazy-llm saves each workspace to its own manifest, `~/.local/state/lazy-llm/workspaces/<id>.json` (JSON, needs `jq`), and rebuilds from it:
+
+```bash
+lazy-llm restore            # rebuild every saved workspace whose tmux server is gone
+lazy-llm restore --dry-run  # show what would be rebuilt, with the exact launch commands
+lazy-llm restore dev-env    # just this one (also brings back one you closed)
+lazy-llm saved [-v]         # list saved workspaces (● live, ◌ restorable, ✕ closed with --closed)
+lazy-llm forget dev-env     # drop a saved workspace
+lazy-llm save               # save now (also Prefix+C-s, or s in the dashboard)
+```
+
+Or use the dashboard's **Saved** tab (`Prefix+S`, then `3`): Enter restores (or switches to a running one), `A` restores everything, `s` saves, `K` forgets, `c` shows closed ones.
+
+- **What comes back**: session name and identity, AI panes in order with their tools and display names, which one was visible (the rest held), each Claude pane resuming its conversation (`claude --resume <id>`, same model, same directory), the prompt file and the prompt pane's open buffers, the editor's open buffers and splits, fold state and dashboard order.
+- **When it's saved**: automatically on launch, adding/removing/cycling AI panes, dashboard renames/folds/reorders, a Prefix+$ rename, and whenever a Claude pane moves to a new conversation (`/clear`, `--resume` — recorded by lazy-llm's Claude Code plugin hook). Nothing runs on a timer.
+- **Restoring next to running workspaces** is fine: restore only ever creates sessions. A name that's taken comes back as `name-2`; it never merges into a live session. Opening a directory with `lazy-llm` that has a restorable workspace asks whether to restore it instead.
+- **Crash safety**: every entry records the tmux server that last saw it. A save only rewrites running workspaces, never another server's entries, and does nothing when no server is running. A workspace that disappears while its server stays up is only marked closed after a minute (so a save racing a dying server can't drop anything); `lazy-llm kill` and the dashboard's kill forget it at once. One edge: closing the *last* workspace with plain `tmux kill-session` also ends the server, so it stays restorable — `lazy-llm forget <name>` it.
+- **Other AI tools** restart fresh for now; resume is wired per tool in `lazy_llm_tool_launch_cmd` / `lazy_llm_tool_conv` (lib), and only Claude has a branch so far.
+- **nvim state**: each workspace nvim keeps one rolling `:mksession` snapshot in `<dir>/.lazy-llm/sessions/` (nvim-session-plugin). The prompt pane restores its snapshot on every open; the editor's is used by `lazy-llm restore`. Your persistence.nvim sessions (`<leader>qs`/`<leader>qr`) are untouched — except that the prompt pane keeps its own in `sessions/lazy-llm-prompt/`, so the two panes no longer overwrite each other's.
 
 ### Workflow
 
