@@ -408,7 +408,7 @@ ago() {
 # ── saved ───────────────────────────────────────────────────────────────────
 
 # Human listing, or (--tsv) one machine row per entry for the dashboard:
-#   state id name dir panes held convs saved_epoch   (tab-separated)
+#   state id name dir panes held convs saved_epoch saved_ago   (tab-separated)
 # live entries first (dashboard order), then restorable, then closed.
 cmd_saved() {
   local verbose=false tsv=false with_closed=false only_id="" f
@@ -443,7 +443,11 @@ cmd_saved() {
   [[ -n "$only_id" ]] && rows=$(awk -F'\t' -v id="$only_id" '$2 == id' <<< "$rows")
 
   if $tsv; then
-    [[ -n "$rows" ]] && printf '%s\n' "$rows"
+    [[ -n "$rows" ]] || return 0
+    local line
+    while IFS= read -r line; do
+      printf '%s\t%s\n' "$line" "$(ago "${line##*$'\t'}")"
+    done <<< "$rows"
     return 0
   fi
   if [[ -z "$rows" ]]; then

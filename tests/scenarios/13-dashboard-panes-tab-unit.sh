@@ -46,7 +46,8 @@ fi
 
 echo ""
 echo "Test 3: Prefix+S binding untouched..."
-prefix_s=$(command grep -A2 'bind-key -T prefix S if-shell' "$LAZY_LLM" | tail -1)
+# The bindings live in the lib's lazy_llm_register_tmux_integration, and carry -N notes.
+prefix_s=$(command grep -A2 -E 'bind-key( -N "[^"]*")? -T prefix S if-shell' "$LIB" | tail -1)
 assert_contains "$prefix_s" "llm-dashboard" "Prefix+S still launches llm-dashboard"
 
 # ──────────────────────────────────────────────────────────────────────────

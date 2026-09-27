@@ -132,7 +132,8 @@ assert_contains "$bogus_out" "Unknown arg" "should report unknown arg"
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
 echo "Test 9: Prefix+S launches llm-dashboard..."
-prefix_s=$(command grep -A2 'bind-key -T prefix S if-shell' "$LAZY_LLM" | tail -1)
+# The bindings live in the lib's lazy_llm_register_tmux_integration, and carry -N notes.
+prefix_s=$(command grep -A2 -E 'bind-key( -N "[^"]*")? -T prefix S if-shell' "$LIB_FILE" | tail -1)
 
 assert_contains "$prefix_s" "llm-dashboard" "Prefix+S should launch llm-dashboard"
 assert_not_contains "$prefix_s" "llm-sessions" "Prefix+S should no longer reference llm-sessions"
