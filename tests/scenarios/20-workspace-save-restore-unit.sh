@@ -86,7 +86,7 @@ assert_contains "$log" "startinsert $PROMPT_A ROLE=prompt SESSION=$SB/a/.lazy-ll
 echo ""
 echo "Test 2: save..."
 out=$(sbx llm-persist save)
-assert_equals "$out" "lazy-llm: saved 2 workspaces, 4/4 conversations" "save summary counts workspaces and conversations"
+assert_contains "$out" "^lazy-llm: saved 2 workspaces, 4/4 conversations · snapshot [0-9-]+ [0-9:]+ \(2 workspaces\)$" "save summary counts workspaces and conversations, and the manual save's snapshot"
 fA=$(entry wsA); fB=$(entry wsB)
 assert_equals "$(jq -c '[.windows[0].panes[] | [.tool, .name, .conv]]' "$fA")" \
     '[["claude","alpha","conv-a0"],["claude","beta","conv-a1"],["claude","gamma","conv-a2"]]' "wsA panes: tools, names, hook-recorded conversations"
@@ -191,7 +191,7 @@ idB=$(T show-option -qv -t '=wsB:' @lazy_llm_ws_id)
 sbx llm-sessions --kill wsB >/dev/null
 assert_file_exists "$SB/state/dropped/$idB.json" "a killed workspace is dropped"
 assert_file_not_exists "$SB/state/workspaces/$idB.json" "...and out of workspaces/"
-assert_not_contains "$(sbx llm-persist saved)" "wsB" "saved hides dropped entries"
+assert_not_contains "$(sbx llm-persist saved)" "✕ wsB" "saved hides dropped entries"
 assert_contains "$(sbx llm-persist saved --dropped)" "✕ wsB" "...unless asked with --dropped"
 
 echo ""
@@ -230,8 +230,52 @@ sbx llm-dashboard --saved-fold-transform _ "saved-pane:$idA:0:1" >/dev/null 2>&1
 assert_equals "$(T show-option -sqv @lazy_llm_saved_open)" "" "z on a pane row folds its entry back"
 
 echo ""
+echo "Test 11b: manual saves write dated snapshots..."
+rm -rf "$SB/state/snapshots"
+sbx llm-persist save >/dev/null
+nsnap() { find "$SB/state/snapshots" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
+assert_equals "$(nsnap)" "1" "a manual save writes a snapshot"
+out=$(sbx llm-persist save)
+assert_contains "$out" "no changes since the last snapshot" "an unchanged workspace isn't snapshotted again"
+assert_equals "$(nsnap)" "1" "...so no second snapshot"
+sbx llm-persist save --async; sleep 0.5
+assert_equals "$(nsnap)" "1" "autosaves never snapshot"
+ts1=$(find "$SB/state/snapshots" -mindepth 1 -maxdepth 1 -type d -exec basename {} ';')
+idA=$(jq -r .id "$(entry wsA)")
+assert_equals "$(jq -r '[.windows[].panes[]] | length' "$SB/state/snapshots/$ts1/$idA.json")" "3" "the snapshot has wsA's 3 panes"
+# Drop a pane from the live wsA: the rolling entry follows, the snapshot doesn't.
+sleep 1
+PP=$(wopt wsA @PROMPT_PANE_ID)
+sbx env TMUX_PANE="$PP" llm-remove -f 2 >/dev/null
+sbx llm-persist save >/dev/null
+assert_equals "$(nsnap)" "2" "a changed workspace gets a new snapshot"
+assert_equals "$(jq -r '[.windows[].panes[]] | length' "$(entry wsA)")" "2" "the rolling entry has 2 panes now"
+rows=$(sbx llm-dashboard --emit-saved-rows 2>/dev/null)
+assert_contains "$rows" "snap-hdr:$ts1	snaphdr	" "the Saved tab has a divider per manual save"
+assert_contains "$rows" "saved:$ts1/$idA	snapshot	" "...with its workspaces under it"
+out=$(sbx llm-persist restore --snapshot "$ts1" wsA 2>&1)
+assert_contains "$out" "as wsA-2 \(a copy: wsA is running\)" "restoring a snapshot of a running workspace makes a copy"
+assert_equals "$(wopt wsA-2 @AI_PANE_NAMES)" "alpha beta gamma" "the copy has all 3 panes of that moment"
+assert_equals "$(wopt wsA @AI_PANE_NAMES)" "alpha beta" "the live wsA is untouched"
+assert_not_equals() { if [ "$1" != "$2" ]; then ((ASSERTIONS_PASSED++)); print_pass "$3"; else print_fail "$3"; fi; }
+assert_not_equals "$(T show-option -qv -t '=wsA-2:' @lazy_llm_ws_id)" "$idA" "the copy has its own id"
+# Not running: the snapshot comes back as that workspace itself.
+T kill-session -t =wsA-2
+out=$(sbx llm-persist close wsA 2>&1)
+assert_contains "$out" "Closed workspace wsA" "close wsA before restoring its snapshot"
+out=$(sbx llm-persist restore --snapshot "$ts1/$idA" 2>&1)
+assert_contains "$out" "Restored wsA from the manual save of [0-9-]+ [0-9:]+$" "a closed workspace restores from its snapshot (not as a copy)"
+assert_equals "$(T show-option -qv -t '=wsA:' @lazy_llm_ws_id)" "$idA" "...as itself (same id)"
+assert_equals "$(wopt wsA @AI_PANE_NAMES)" "alpha beta gamma" "...with the snapshot's panes"
+sbx llm-persist forget --snapshot "$ts1/$idA" >/dev/null
+assert_file_not_exists "$SB/state/snapshots/$ts1/$idA.json" "forget --snapshot <ts>/<id> deletes one workspace from a manual save"
+sbx llm-persist forget --snapshot "$ts1" >/dev/null
+assert_file_not_exists "$SB/state/snapshots/$ts1" "forget --snapshot <ts> deletes the whole manual save"
+
+echo ""
 echo "Test 12: removing a pane keeps display names aligned..."
 PP=$(wopt wsA @PROMPT_PANE_ID)
+T set-option -w -t "=wsA:$(first_win wsA)" @AI_PANE_NAMES "alpha beta gamma"
 sbx env TMUX_PANE="$PP" llm-remove -f 1 >/dev/null
 assert_equals "$(wopt wsA @AI_PANE_NAMES)" "alpha gamma" "the removed pane's name goes with it"
 

@@ -823,11 +823,18 @@ _dashboard_build_saved_rows() {
         "$(_dashboard_pad 8 <<< "$tool")" "${pname:+$(lazy_llm_clamp_label "$pname" 24) }" "$conv" "$where"
       continue
     fi
+    if [[ "$state" == snaphdr ]]; then
+      # snaphdr <ts> <pretty date>: a manual save's divider; its workspaces follow
+      printf 'snap-hdr:%s\tsnaphdr\t\033[38;2;138;138;138m── manual save · %s %s\033[0m\n' "$id" "$name" \
+        "────────────────────────────────"
+      continue
+    fi
     parent_state="$state"
     case "$state" in
       live)       glyph="●"; color="#5fff00" ;;
       restorable) glyph="◌"; color="#ffff00" ;;
       closed)     glyph="◇"; color="#bcbcbc" ;;
+      snapshot)   glyph="◆"; color="#87afff" ;;
       *)          glyph="✕"; color="#8a8a8a" ;;
     esac
     [[ "$open" == *" $id "* ]] && fold="▾" || fold="▸"
@@ -837,13 +844,15 @@ _dashboard_build_saved_rows() {
   done < <("$HOME/.local/bin/llm-persist" "${args[@]}" 2>/dev/null || true)
 }
 
-# The entry id behind a Saved-tab row id ("saved:<id>" or
-# "saved-pane:<id>:<w>:<p>").
+# The entry key behind a Saved-tab row id: "saved:<key>" or
+# "saved-pane:<key>:<w>:<p>", where <key> is an entry id or, for a manual
+# save's entry, "<ts>/<id>"; for a divider ("snap-hdr:<ts>"), the <ts>.
 _dashboard_saved_row_entry() {
   local rid="$1"
   case "$rid" in
     saved:*) printf '%s\n' "${rid#saved:}" ;;
     saved-pane:*) rid="${rid#saved-pane:}"; printf '%s\n' "${rid%%:*}" ;;
+    snap-hdr:*) printf '%s\n' "${rid#snap-hdr:}" ;;
   esac
 }
 
@@ -863,12 +872,13 @@ render_saved_tab() {
   else
     header=""
   fi
-  [[ -n "$lines" && "$_budget" -ge 40 ]] && header+=$'\n'"● live  ◌ restorable (died)  ◇ closed (kept)  ✕ dropped"
+  [[ -n "$lines" && "$_budget" -ge 40 ]] && header+=$'\n'"● live  ◌ died  ◇ closed (kept)  ◆ manual save  ✕ dropped"
   $_dashboard_saved_dropped && header+=$'\n'"(showing dropped workspaces — d to hide)"
   [[ -n "$_dashboard_flash" ]] && header="$_dashboard_flash"${header:+$'\n'"$header"}
 
   local preview_cmd
-  preview_cmd='set -- {1}; id="${1#saved:}"; id="${id#saved-pane:}"; id="${id%%:*}"; '
+  preview_cmd='set -- {1}; case "$1" in snap-hdr:*) echo "A manual save (Prefix+C-s, s, lazy-llm save)."; echo; echo "Enter on one of its workspaces brings it back as it was then"; echo "(as a copy if that workspace is running). K here deletes the whole save."; exit 0 ;; esac; '
+  preview_cmd+='id="${1#saved:}"; id="${id#saved-pane:}"; id="${id%%:*}"; '
   preview_cmd+='"$HOME/.local/bin/llm-persist" saved -v --id "$id" 2>&1'
 
   # Modal search + --height=100% — see the matching comments on the
@@ -924,6 +934,8 @@ render_saved_tab() {
         echo "action:refresh"
       elif [[ "$chosen_state" == live ]]; then
         echo "action:saved-kill:$chosen_id"
+      elif [[ "$chosen_state" == snapshot || "$chosen_state" == snaphdr ]]; then
+        echo "action:saved-forget-snap:$chosen_id"
       else
         echo "action:saved-forget:$chosen_state:$chosen_id"
       fi
@@ -933,6 +945,10 @@ render_saved_tab() {
         echo "quit"
       elif [[ "$chosen_state" == live ]]; then
         echo "action:saved-switch:$chosen_id"
+      elif [[ "$chosen_state" == snapshot ]]; then
+        echo "action:saved-restore-snap:$chosen_id"
+      elif [[ "$chosen_state" == snaphdr ]]; then
+        echo "action:saved-hint:pick one of this manual save's workspaces to restore it"
       else
         echo "action:saved-restore:$chosen_id"
       fi
@@ -1026,6 +1042,26 @@ dispatch_action() {
       ;;
     action:saved-hint:*)
       tmux display-message "${action#action:saved-hint:}"
+      ;;
+    action:saved-restore-snap:*)
+      # Switches the client to the restored workspace (a copy of it if the
+      # original is running), which closes the popup.
+      local out
+      _dashboard_busy "restoring…"
+      out=$("$HOME/.local/bin/llm-persist" restore --snapshot "${action#action:saved-restore-snap:}" 2>&1) \
+        || tmux display-message "lazy-llm: restore failed: $(tail -1 <<< "$out")"
+      ;;
+    action:saved-forget-snap:*)
+      local skey="${action#action:saved-forget-snap:}" question confirm
+      if [[ "$skey" == */* ]]; then
+        question="Delete this workspace from the manual save?"
+      else
+        question="Delete this whole manual save?"
+      fi
+      confirm=$(printf 'no\nyes' | fzf \
+        --height=100% --reverse --border=rounded --header="$question" \
+        --prompt="confirm> " || echo no)
+      [[ "$confirm" == "yes" ]] && { "$HOME/.local/bin/llm-persist" forget --snapshot "$skey" >/dev/null 2>&1 || true; }
       ;;
     action:rename:*)
       local name="${action#action:rename:}"
@@ -1307,7 +1343,9 @@ render_help_tab() {
     " c      close a live one, keep it"
     " K      live: kill · else: drop"
     " A      restore all that died"
-    " s      save now (also Prefix+C-s)"
+    " s      save now (also Prefix+C-s);"
+    "        adds a ◆ manual save: Enter"
+    "        brings back that version"
     " d      show/hide dropped ones"
     ""
     "GLOBAL"
@@ -1662,7 +1700,8 @@ while true; do
       # Switching exits the popup (restoring one workspace switches to it
       # too); for others we re-enter the current tab
       [[ "$result" == action:switch:* || "$result" == action:switch-pane:* \
-        || "$result" == action:saved-switch:* || "$result" == action:saved-restore:* ]] && break
+        || "$result" == action:saved-switch:* || "$result" == action:saved-restore:* \
+        || "$result" == action:saved-restore-snap:* ]] && break
       ;;
     quit|"")
       break

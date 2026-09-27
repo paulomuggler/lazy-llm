@@ -27,6 +27,13 @@
 #     reboot it's still restorable;
 #   - with no server running, save does nothing at all.
 #
+# Manual saves (lazy-llm save, Prefix+C-s, the dashboard's s) also write a
+# dated snapshot, snapshots/<YYYYmmdd-HHMMSS>/<id>.json, of every workspace
+# that changed since its last one — with copies of its nvim snapshots, so an
+# old version comes back with its own editor and prompt state. Autosaves only
+# ever rewrite the rolling entry. Snapshots are kept until deleted (forget
+# --snapshot, K in the Saved tab).
+#
 # Usage: see usage() below. find-dir <dir> is plumbing for the launcher.
 
 set -euo pipefail
@@ -43,6 +50,7 @@ fi
 STATE="${LAZY_LLM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lazy-llm}"
 WS_DIR="$STATE/workspaces"
 DROPPED_DIR="$STATE/dropped"
+SNAP_DIR="$STATE/snapshots"
 LOCK="$STATE/.lock"
 PENDING="$STATE/.pending"
 GONE_GRACE=60
@@ -252,7 +260,7 @@ workspace_dir() {
   local name="$1" dir first_win prompt_pane
   dir=$(tmux show-option -qv -t "=$name:" @lazy_llm_dir 2>/dev/null || true)
   if [[ -z "$dir" ]]; then
-    first_win=$(tmux list-windows -t "=$name" -F '#{window_index}	#{@AI_PANES}' | awk -F'\t' '$2 != "" {print $1; exit}')
+    first_win=$(tmux list-windows -t "=$name" -F '#{window_index}	#{@AI_PANES}' | awk -F'\t' '$2 != "" && !f {print $1; f = 1}')
     prompt_pane=$(tmux show-option -wqv -t "=$name:$first_win" @PROMPT_PANE_ID)
     dir=$(tmux display-message -t "${prompt_pane:-=$name:$first_win}" -p '#{pane_current_path}')
     tmux set-option -t "=$name:" @lazy_llm_dir "$dir"
@@ -397,6 +405,16 @@ cmd_save() {
     rm -f "$PENDING"
     summary=$(save_pass)
   fi
+  # A manual save (not an autosave, not restore's own) also snapshots.
+  if [[ "$mode" != "--async" ]] && $SAVE_RPC && [[ -n "$(server_id)" ]]; then
+    local snap
+    snap=$(take_snapshot "$(live_workspaces)")
+    if [[ -n "$snap" ]]; then
+      summary+=" · snapshot $(pretty_ts "${snap%% *}") (${snap##* } workspace$([[ "${snap##* }" == 1 ]] || echo s))"
+    else
+      summary+=" · no changes since the last snapshot"
+    fi
+  fi
   lock_release
   case "$mode" in
     --async) ;;
@@ -405,12 +423,99 @@ cmd_save() {
   esac
 }
 
+# ── snapshots ───────────────────────────────────────────────────────────────
+
+# "20260928-001205" → "2026-09-28 00:12:05"
+pretty_ts() {
+  local t="$1"
+  printf '%s-%s-%s %s:%s:%s\n' "${t:0:4}" "${t:4:2}" "${t:6:2}" "${t:9:2}" "${t:11:2}" "${t:13:2}"
+}
+
+# Snapshot dirs, newest first.
+snapshot_dirs() {
+  [[ -d "$SNAP_DIR" ]] || return 0
+  find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*-[0-9]*' -exec basename {} \; | sort -r
+}
+
+# What a workspace looks like — not when or by which server it was saved —
+# plus its nvim snapshots' contents. Equal digests: nothing new to snapshot.
+entry_digest() {
+  local f="$1" p
+  {
+    jq -S -c 'del(.saved, .server, .gone, .closed, .order)' "$f"
+    while IFS= read -r p; do
+      if [[ -f "$p" ]]; then cksum < "$p"; else echo -; fi
+    done < <(jq -r '.windows[] | .editor_session, .prompt_session' "$f")
+  } | cksum | cut -d' ' -f1
+}
+
+# Digest of a workspace's most recent snapshot, or nothing.
+latest_snapshot_digest() {
+  local id="$1" t
+  while IFS= read -r t; do
+    if [[ -f "$SNAP_DIR/$t/$id.json" ]]; then
+      jq -r '.digest // ""' "$SNAP_DIR/$t/$id.json"
+      return 0
+    fi
+  done < <(snapshot_dirs)
+}
+
+# Snapshot every live workspace that changed since its own last snapshot.
+# Prints "<ts> <count>" when it wrote one.
+# Args: $1 live workspaces (id<TAB>name lines)
+take_snapshot() {
+  local live="$1" ts dir id name f digest n=0 es ps i snaps copy_e copy_p
+  ts=$(date +%Y%m%d-%H%M%S)
+  dir="$SNAP_DIR/$ts"
+  while IFS=$'\t' read -r id name; do
+    f="$WS_DIR/$id.json"
+    [[ -n "$id" && -f "$f" ]] || continue
+    digest=$(entry_digest "$f")
+    [[ "$digest" == "$(latest_snapshot_digest "$id")" ]] && continue
+    mkdir -p "$dir/$id"
+    snaps="[]"
+    i=0
+    while IFS=$'\x1f' read -r es ps; do
+      i=$((i + 1))
+      copy_e=""; copy_p=""
+      [[ -f "$es" ]] && { copy_e="$dir/$id/editor-$i.vim"; cp "$es" "$copy_e"; }
+      [[ -f "$ps" ]] && { copy_p="$dir/$id/prompt-$i.vim"; cp "$ps" "$copy_p"; }
+      snaps=$(jq -c --arg e "$copy_e" --arg p "$copy_p" \
+        '. + [[(if $e == "" then null else $e end), (if $p == "" then null else $p end)]]' <<< "$snaps")
+    done < <(jq -r '.windows[] | [.editor_session, .prompt_session] | join("\u001f")' "$f")
+    jq --arg ts "$ts" --arg digest "$digest" --argjson snaps "$snaps" \
+      '.snapshot = $ts | .digest = $digest | .closed = false | .gone = null |
+       .windows = [.windows | to_entries[] | .value + {snap_editor: $snaps[.key][0], snap_prompt: $snaps[.key][1]}]' \
+      "$f" | write_file "$dir/$id.json"
+    n=$((n + 1))
+  done <<< "$live"
+  [[ $n -gt 0 ]] && printf '%s %s\n' "$ts" "$n"
+  return 0
+}
+
 # ── forget ──────────────────────────────────────────────────────────────────
 
 # Drop an entry: workspaces/ → dropped/. An entry already dropped is deleted
 # for good.
 cmd_forget() {
   local id="" name="" f
+  if [[ "${1:-}" == "--snapshot" ]]; then
+    local key="${2:?usage: lazy-llm forget --snapshot <ts>[/<id>]}"
+    [[ "$key" =~ ^[0-9]{8}-[0-9]{6}(/[^/]+)?$ ]] || die "not a snapshot: $key"
+    lock_acquire wait
+    if [[ "$key" == */* ]]; then
+      [[ -f "$SNAP_DIR/$key.json" ]] || die "no such snapshot entry: $key"
+      rm -rf "${SNAP_DIR:?}/$key.json" "${SNAP_DIR:?}/$key"
+      rmdir "$SNAP_DIR/${key%%/*}" 2>/dev/null || true
+      echo "Deleted $key from the manual save of $(pretty_ts "${key%%/*}")"
+    else
+      [[ -d "$SNAP_DIR/$key" ]] || die "no such snapshot: $key"
+      rm -rf "${SNAP_DIR:?}/$key"
+      echo "Deleted the manual save of $(pretty_ts "$key")"
+    fi
+    lock_release
+    return 0
+  fi
   case "${1:-}" in
     --id) id="${2:-}"; [[ -n "$id" ]] || die "forget --id needs an id" ;;
     "") die "usage: lazy-llm forget <name> | --id <id>" ;;
@@ -530,6 +635,19 @@ saved_rows_fast() {
   done <<< "$out"
 }
 
+# The file behind a Saved-tab key: an entry id (rolling or dropped) or a
+# snapshot's "<ts>/<id>".
+entry_file_for_key() {
+  local key="$1"
+  if [[ "$key" == */* ]]; then
+    printf '%s\n' "$SNAP_DIR/$key.json"
+  elif [[ -f "$WS_DIR/$key.json" ]]; then
+    printf '%s\n' "$WS_DIR/$key.json"
+  else
+    printf '%s\n' "$DROPPED_DIR/$key.json"
+  fi
+}
+
 # The AI panes of an entry, for an expanded row in the Saved tab:
 #   pane id window pane tool name conv visible|held   (tab-separated; "-"
 #   stands in for an empty field, which a tab IFS would otherwise swallow)
@@ -577,18 +695,42 @@ cmd_saved() {
     done < <(entry_files "$WS_DIR"; entry_files "$DROPPED_DIR")
   fi
   rows=$(printf '%s' "$rows" | grep . | sort -t$'\t' -k1,1n -k2,2n | cut -f3- || true)
-  [[ -n "$only_id" ]] && rows=$(awk -F'\t' -v id="$only_id" '$2 == id' <<< "$rows")
+
+  # Manual-save snapshots, newest first: a "snaphdr <ts> <pretty>" row per
+  # snapshot, then its entries as "snapshot <ts>/<id> ..." rows (same columns
+  # as the others).
+  local t snap_rows=""
+  while IFS= read -r t; do
+    [[ -n "$t" ]] || continue
+    local -a sfiles=()
+    for f in "$SNAP_DIR/$t"/*.json; do [[ -f "$f" ]] && sfiles+=("$f"); done
+    [[ ${#sfiles[@]} -gt 0 ]] || continue
+    snap_rows+="snaphdr"$'\t'"$t"$'\t'"$(pretty_ts "$t")"$'\n'
+    snap_rows+=$(jq -r --arg t "$t" '[(.order | tostring), "snapshot", ($t + "/" + .id), .name, .dir,
+        ([.windows[].panes[]] | length | tostring),
+        ([.windows[] | (.panes | length) - 1] | add | tostring),
+        ([.windows[].panes[] | select(.conv != null)] | length | tostring),
+        (.saved | tostring)] | @tsv' "${sfiles[@]}" | sort -t$'\t' -k1,1n | cut -f2-)$'\n'
+  done < <(snapshot_dirs)
+  snap_rows=$(printf '%s' "$snap_rows" | grep . || true)
+  if [[ -n "$only_id" ]]; then
+    rows=$(awk -F'\t' -v id="$only_id" '$2 == id' <<< "$rows")
+    snap_rows=$(awk -F'\t' -v id="$only_id" '$1 != "snaphdr" && $2 == id' <<< "$snap_rows")
+  fi
+  [[ -n "$snap_rows" ]] && rows+="${rows:+$'\n'}$snap_rows"
 
   if $tsv; then
     [[ -n "$rows" ]] || return 0
     local line row_id
     while IFS= read -r line; do
+      if [[ "$line" == snaphdr$'\t'* ]]; then
+        printf '%s\n' "$line"
+        continue
+      fi
       printf '%s\t%s\n' "$line" "$(ago "${line##*$'\t'}")"
       row_id=$(cut -f2 <<< "$line")
       if [[ " $expand " == *" $row_id "* ]]; then
-        f="$WS_DIR/$row_id.json"
-        [[ -f "$f" ]] || f="$DROPPED_DIR/$row_id.json"
-        pane_rows "$f" "$row_id"
+        pane_rows "$(entry_file_for_key "$row_id")" "$row_id"
       fi
     done <<< "$rows"
     return 0
@@ -599,13 +741,16 @@ cmd_saved() {
   fi
   local id name dir panes held convs saved glyph file
   while IFS=$'\t' read -r state id name dir panes held convs saved; do
-    case "$state" in live) glyph="●" ;; restorable) glyph="◌" ;; closed) glyph="◇" ;; *) glyph="✕" ;; esac
+    if [[ "$state" == snaphdr ]]; then
+      printf '── manual save %s ──\n' "$name"
+      continue
+    fi
+    case "$state" in live) glyph="●" ;; restorable) glyph="◌" ;; closed) glyph="◇" ;; snapshot) glyph="◆" ;; *) glyph="✕" ;; esac
     printf '%s %-24s %-40s %s AI pane%s (%s held)  %s/%s conversations  saved %s\n' \
       "$glyph" "$name" "${dir/#$HOME/\~}" "$panes" "$([[ $panes -eq 1 ]] || echo s)" \
       "$held" "$convs" "$panes" "$(ago "$saved")"
     $verbose || continue
-    file="$WS_DIR/$id.json"
-    [[ -f "$file" ]] || file="$DROPPED_DIR/$id.json"
+    file=$(entry_file_for_key "$id")
     jq -r --arg home "$HOME" '
       def short: if . == null then "-" else sub("^" + $home; "~") end;
       "    id \(.id)  state '"$state"'",
@@ -747,9 +892,78 @@ restore_one() {
   printf '%s\n' "$session"
 }
 
+# Bring back a workspace as it was at a manual save. If that workspace is
+# running, the snapshot comes back as a copy next to it (new id, name-2):
+# restore never touches a live session. Otherwise it comes back as that
+# workspace, and its next save makes the snapshot its current state.
+# Args: $1 "<ts>/<id>", or "<ts>" with $2 the workspace name
+cmd_restore_snapshot() {
+  local key="$1" f
+  if [[ "$key" != */* ]]; then
+    local want="${2:?usage: lazy-llm restore --snapshot <ts> <name>}"
+    for f in "$SNAP_DIR/$key"/*.json; do
+      [[ -f "$f" && "$(jq -r .name "$f")" == "$want" ]] && { key="$key/$(jq -r .id "$f")"; break; }
+    done
+  fi
+  f="$SNAP_DIR/$key.json"
+  [[ -f "$f" ]] || die "no such snapshot entry: $key (see 'lazy-llm saved')"
+  unset CLAUDECODE
+  lock_acquire wait
+
+  local id name dir srv live_ids tmpf fork=false
+  id=$(jq -r .id "$f"); name=$(jq -r .name "$f"); dir=$(jq -r .dir "$f")
+  [[ -d "$dir" ]] || die "$dir no longer exists"
+  srv=$(server_id)
+  live_ids=""
+  [[ -n "$srv" ]] && live_ids=$(live_workspaces | cut -f1)
+  tmpf=$(mktemp "${TMPDIR:-/tmp}/lazy-llm-snapshot.XXXXXX")
+  if [[ -n "$live_ids" ]] && grep -qxF "$id" <<< "$live_ids"; then
+    # A copy: its own id, and its own nvim snapshot files in the same dir.
+    fork=true
+    local new_id
+    new_id=$(new_ws_id)
+    jq --arg id "$new_id" --arg base "$dir/.lazy-llm/sessions/$new_id" \
+      '.id = $id | .windows = [.windows | to_entries[] | .value +
+        {editor_session: ($base + "-editor-\(.key + 1).vim"), prompt_session: ($base + "-prompt-\(.key + 1).vim")}]' \
+      "$f" > "$tmpf"
+  else
+    cp "$f" "$tmpf"
+  fi
+  # Put the snapshot's nvim state where the restored nvims read it (and then
+  # keep saving it).
+  local se es sp ps
+  while IFS=$'\x1f' read -r se es sp ps; do
+    mkdir -p "$(dirname "$es")"
+    [[ -n "$se" && -f "$se" ]] && cp "$se" "$es"
+    [[ -n "$sp" && -f "$sp" ]] && cp "$sp" "$ps"
+  done < <(jq -r '.windows[] | [.snap_editor // "", .editor_session, .snap_prompt // "", .prompt_session] | join("\u001f")' "$tmpf")
+
+  local session
+  session=$(restore_one "$tmpf" | tail -1)
+  rm -f "$tmpf"
+  lock_release
+  rm -f "$PENDING"
+  "$0" save --no-rpc >/dev/null
+  if $fork; then
+    echo "Restored $name from the manual save of $(pretty_ts "${key%%/*}") as $session (a copy: $name is running)"
+  else
+    echo "Restored $name from the manual save of $(pretty_ts "${key%%/*}")$([[ "$session" == "$name" ]] || echo " as $session ('$name' is taken)")"
+  fi
+  if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]]; then
+    exec tmux attach-session -t "=$session"
+  elif [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "=$session"
+  fi
+}
+
 cmd_restore() {
   local dry_run=false
   local -a selectors=()
+  if [[ "${1:-}" == "--snapshot" ]]; then
+    shift
+    cmd_restore_snapshot "$@"
+    return
+  fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run) dry_run=true ;;
@@ -889,6 +1103,10 @@ cmd_restore() {
 }
 
 # ── close ───────────────────────────────────────────────────────────────────
+#
+# (No `awk '... {print; exit}'` on a pipeline in this file: awk exiting early
+# SIGPIPEs the writer, which pipefail + set -e turn into a silent exit —
+# found live, `close` died whenever the named workspace wasn't the last one.)
 
 # Close a running workspace but keep it: save it, mark it closed, kill its
 # session. It stays in `saved` / the Saved tab (◇) and comes back with
@@ -905,10 +1123,10 @@ cmd_close() {
   lock_acquire wait
   [[ -n "$(server_id)" ]] || die "no tmux server running"
   if [[ -n "$id" ]]; then
-    name=$(live_workspaces | awk -F'\t' -v id="$id" '$1 == id {print $2; exit}')
+    name=$(live_workspaces | awk -F'\t' -v id="$id" '$1 == id && !f {print $2; f = 1}')
     [[ -n "$name" ]] || die "no running workspace with id '$id'"
   else
-    id=$(live_workspaces | awk -F'\t' -v n="$name" '$2 == n {print $1; exit}')
+    id=$(live_workspaces | awk -F'\t' -v n="$name" '$2 == n && !f {print $1; f = 1}')
     [[ -n "$id" ]] || die "no running lazy-llm workspace named '$name'"
   fi
   save_pass >/dev/null
@@ -933,9 +1151,13 @@ Usage: lazy-llm save [--async|--notify] [--no-rpc]
                                              save every running workspace now
        lazy-llm restore [--dry-run] [--id <id>]... [name]...
                                              rebuild saved workspaces that aren't running
+       lazy-llm restore --snapshot <ts> <name> | --snapshot <ts>/<id>
+                                             bring one back as it was at a manual save
        lazy-llm saved [-v] [--dropped]       list saved workspaces
        lazy-llm close <name> | --id <id>     close a running workspace, keep it saved
        lazy-llm forget <name> | --id <id>    drop a saved workspace
+       lazy-llm forget --snapshot <ts>[/<id>]
+                                             delete a manual save (or one workspace from it)
 EOF
 }
 
