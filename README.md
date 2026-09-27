@@ -213,6 +213,12 @@ Add inline notes throughout your codebase that can be collected and sent to your
 | `<leader>nf` | **Find Notes** - Fuzzy picker for all project notes |
 | `<leader>nq` | **Quickfix Buffer** - Buffer notes to quickfix list |
 | `<leader>nQ` | **Quickfix Project** - Project notes to quickfix list |
+| `<leader>nn` | **Notification History** - LazyVim's `<leader>n`, moved here |
+
+Inside tmux, LazyVim's own `<leader>n` (Notification History) moves to `<leader>nn`
+so `<leader>n` is a plain which-key group: a key that is both a command and a
+prefix only waits `timeoutlen` for the rest, and pausing after `<leader>n` used to
+open the history instead of running the note command.
 
 **Note Format:**
 ```
@@ -236,13 +242,13 @@ class UserService:
 When you press `<leader>np` (project notes), all notes are collected and sent to the prompt pane:
 
 ```markdown
-# Notes from project
+## Notes from project
 
-- **src/services/user.py:42**
-  Should this handle empty lists differently?
+### - **src/services/user.py:42**
+[NOTE: Should this handle empty lists differently?]
 
-- **src/services/user.py:47**
-  Consider adding caching here for performance
+### - **src/services/user.py:47**
+[NOTE: Consider adding caching here for performance]
 ```
 
 **Smart Cross-Pane Collection:**
@@ -250,6 +256,8 @@ When you press `<leader>np` (project notes), all notes are collected and sent to
 The `<leader>nb` (buffer notes) command is smart about which buffer to collect from:
 - **In editor pane**: Collects notes from the current file
 - **In prompt pane**: Automatically collects notes from the file open in the editor pane
+  of the same window (tracked in the `@LAZY_LLM_EDITOR_FILE` window option; read from
+  disk, so save the file first)
 
 This allows you to stay in the prompt pane and pull notes from whatever file you're viewing in the editor without switching panes. Scatter notes throughout your codebase while working, then collect them all at once to discuss with your AI assistant.
 

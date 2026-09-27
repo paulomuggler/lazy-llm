@@ -6,7 +6,9 @@ local config = {
   marker = "[NOTE: ]", -- The marker to insert (cursor placed between : and ])
   pattern = "%[NOTE:.-]", -- Lua pattern to match markers (.- = non-greedy any)
   rg_pattern = "\\[NOTE:.*\\]", -- ripgrep pattern for project-wide search
-  editor_buffer_file = "/tmp/lazy-llm-editor-buffer", -- Track editor pane's current file
+  -- The editor pane's current file, for pulling its notes from the prompt pane.
+  -- A tmux window option, so each lazy-llm window tracks its own editor.
+  editor_file_option = "@LAZY_LLM_EDITOR_FILE",
 }
 
 -- Helper: Get workspace root (git root or cwd)
@@ -24,61 +26,35 @@ local function get_relative_path(filepath)
   return filepath
 end
 
--- Helper: Check if we're in the prompt pane (via tmux @PROMPT_PANE_ID window option)
+-- Helper: Check if we're in the prompt pane (tmux @PROMPT_PANE_ID window option)
 local function is_prompt_pane()
   local tmux_pane = vim.env.TMUX_PANE
   if not tmux_pane then
     return false
   end
-
-  -- Get session and window from current pane
-  local session = vim.trim(vim.fn.system("tmux display-message -t " .. tmux_pane .. " -p '#S' 2>/dev/null"))
-  local window = vim.trim(vim.fn.system("tmux display-message -t " .. tmux_pane .. " -p '#I' 2>/dev/null"))
-
-  if session == "" or window == "" then
-    return false
-  end
-
-  -- Use stable pane ID (@PROMPT_PANE_ID) — TMUX_PANE is already a pane ID (%N format)
-  local result = vim.fn.system("tmux show-option -wv -t " .. session .. ":" .. window .. " @PROMPT_PANE_ID 2>/dev/null")
-  local prompt_pane_id = vim.trim(result)
-
-  if prompt_pane_id ~= "" then
-    return tmux_pane == prompt_pane_id
-  end
-
-  -- Fall back to legacy @PROMPT_PANE (index-based, won't match pane ID but try anyway)
-  result = vim.fn.system("tmux show-option -wv -t " .. session .. ":" .. window .. " @PROMPT_PANE 2>/dev/null")
-  local prompt_pane = vim.trim(result)
-  return prompt_pane ~= "" and tmux_pane == prompt_pane
+  -- Formats resolve window options in the pane's context: one tmux call.
+  local result =
+    vim.fn.system({ "tmux", "display-message", "-p", "-t", tmux_pane, "#{==:#{pane_id},#{@PROMPT_PANE_ID}}" })
+  return vim.trim(result) == "1"
 end
 
 -- Helper: Track current buffer for cross-pane access (called on BufEnter)
 -- Only tracks if we're NOT in the prompt pane (to avoid overwriting editor's tracking)
 local function track_editor_buffer()
-  -- Double-check we're not in prompt pane before tracking
-  if is_prompt_pane() then
+  local bufname = vim.api.nvim_buf_get_name(0)
+  -- Only track real files (not special buffers)
+  if bufname == "" or vim.fn.filereadable(bufname) ~= 1 or is_prompt_pane() then
     return
   end
-
-  local bufname = vim.api.nvim_buf_get_name(0)
-  if bufname and bufname ~= "" then
-    -- Only track real files (not special buffers)
-    if vim.fn.filereadable(bufname) == 1 then
-      vim.fn.writefile({ bufname }, config.editor_buffer_file)
-    end
-  end
+  vim.fn.jobstart({ "tmux", "set-option", "-w", "-t", vim.env.TMUX_PANE, config.editor_file_option, bufname })
 end
 
 -- Helper: Get the editor pane's current file (for use from prompt pane)
 local function get_editor_buffer_file()
-  if vim.fn.filereadable(config.editor_buffer_file) == 1 then
-    local lines = vim.fn.readfile(config.editor_buffer_file)
-    if #lines > 0 and lines[1] ~= "" then
-      return lines[1]
-    end
-  end
-  return nil
+  local format = "#{" .. config.editor_file_option .. "}"
+  local result = vim.fn.system({ "tmux", "display-message", "-p", "-t", vim.env.TMUX_PANE, format })
+  local file = vim.trim(result)
+  return file ~= "" and file or nil
 end
 
 -- Collect notes from a specific file path
@@ -247,13 +223,7 @@ local function pull_buffer_notes()
         return
       end
     else
-      -- Debug: show tracking file status
-      local track_file = config.editor_buffer_file
-      local exists = vim.fn.filereadable(track_file) == 1
-      vim.notify(
-        string.format("No editor buffer tracked. Track file exists: %s", exists and "yes" or "no"),
-        vim.log.levels.WARN
-      )
+      vim.notify("No file tracked for this window's editor pane yet (open one there)", vim.log.levels.WARN)
       return
     end
   else
@@ -421,7 +391,7 @@ if vim.env.TMUX then
   })
 end
 
-return {
+local specs = {
   {
     "LazyVim/LazyVim",
     -- Keymaps only register when inside tmux (lazy-llm context)
@@ -486,3 +456,30 @@ return {
     } or {},
   },
 }
+
+-- LazyVim maps <leader>n itself (Notification History). A key that is both a
+-- mapping and a prefix only waits timeoutlen for the rest: pausing after
+-- <leader>n ran the history instead of the note command. It moves into the
+-- group as <leader>nn, and <leader>n becomes a plain group which-key waits on.
+if vim.env.TMUX then
+  table.insert(specs, {
+    "folke/snacks.nvim",
+    keys = {
+      { "<leader>n", false },
+      {
+        "<leader>nn",
+        function()
+          if Snacks.config.picker and Snacks.config.picker.enabled then
+            Snacks.picker.notifications()
+          else
+            Snacks.notifier.show_history()
+          end
+        end,
+        desc = "Notification History",
+      },
+    },
+  })
+  table.insert(specs, { "folke/which-key.nvim", opts = { spec = { { "<leader>n", group = "notes" } } } })
+end
+
+return specs
