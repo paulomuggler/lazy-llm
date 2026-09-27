@@ -1163,3 +1163,264 @@ lazy_llm_short_model() {
   fi
   printf '%s%s' "$m" "$suffix"
 }
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tool adapters — the ONLY place that knows how each AI tool is launched.
+# Save/restore and the manifest treat a pane's conversation id and model as
+# opaque strings; supporting resume for another tool means adding a branch
+# here (and to lazy_llm_tool_conv, its capture side).
+# ──────────────────────────────────────────────────────────────────────────
+
+# The command line typed into an AI pane's shell.
+# Args: $1 tool  $2 conversation id ("" for a fresh one)  $3 model ("" = default)
+lazy_llm_tool_launch_cmd() {
+  local tool="$1" conv="${2:-}" model="${3:-}"
+  case "$tool" in
+    claude)
+      if [[ -n "$conv" ]]; then
+        printf "claude --resume '%s'" "$conv"
+        [[ -n "$model" ]] && printf " --model '%s'" "$model"
+        printf '\n'
+      else
+        printf 'claude\n'
+      fi
+      ;;
+    *)
+      printf '%s\n' "$tool"
+      ;;
+  esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Workspace build — shared by the lazy-llm launcher and `lazy-llm restore`.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Create a new, empty prompt backing file under <dir>/.lazy-llm/prompts.
+# Stdout: its path.
+lazy_llm_create_prompt_file() {
+  local dir="$1" prompt_file
+  mkdir -p "$dir/.lazy-llm/prompts"
+  prompt_file="$dir/.lazy-llm/prompts/prompt-$(date +%Y%m%d-%H%M%S).md"
+  touch "$prompt_file"
+  printf '%s\n' "$prompt_file"
+}
+
+# Server-global hooks and key bindings. Idempotent; called whenever a
+# workspace window is built, so a fresh server gets them with its first one.
+lazy_llm_register_tmux_integration() {
+  # Global hook: keep @AI_PANE_IDX pointing at the AI pane last given real
+  # focus, even after focus later moves to the editor/prompt pane — see
+  # llm-pane-focus-track's own header comment for why tmux's own
+  # #{pane_active} alone isn't enough here. Set globally (fires for every
+  # pane-focus change in every window) rather than per-window, since a
+  # per-window hook would need re-registering on every new lazy-llm
+  # workspace; the script itself no-ops instantly for any non-lazy-llm
+  # window (one cheap show-option call).
+  #
+  # after-select-pane, NOT pane-focus-in: the tmux manual documents
+  # pane-focus-in/pane-focus-out, but they don't actually exist as
+  # registerable hooks in tmux 3.7c (`tmux set-hook -g pane-focus-in ...`
+  # exits 0 and silently never fires — confirmed live; `show-hooks -g`'s
+  # own reference list doesn't include them, only client-focus-in/out,
+  # which are client-level, not per-pane). after-select-pane is the real,
+  # firing hook for "the active pane in a window changed" — confirmed live
+  # across mouse-click-equivalent and prefix-arrow-equivalent transitions.
+  # No -b (backgrounding run-shell): tried first, but produced a real
+  # non-deterministic race — sometimes the update lagged behind the very
+  # next select-pane and got missed. This script is a couple of cheap
+  # show-option/set-option calls; foreground is fast enough not to matter
+  # and removes the race entirely (also confirmed live, repeatedly).
+  tmux set-hook -g after-select-pane \
+    "run-shell '$HOME/.local/bin/llm-pane-focus-track #{pane_id} #{session_name} #{window_index}'"
+
+  # Register keybindings — scoped to lazy-llm windows via if-shell check.
+  # In non-lazy-llm windows, C-n/C-p fall back to next/previous-window;
+  # other bindings are no-ops.
+  tmux bind-key -N "Next AI pane (next window elsewhere)" -T prefix C-n if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell '$HOME/.local/bin/llm-cycle next'" \
+    "next-window"
+  tmux bind-key -N "Previous AI pane (previous window elsewhere)" -T prefix C-p if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell '$HOME/.local/bin/llm-cycle prev'" \
+    "previous-window"
+  tmux bind-key -N "Remove current AI pane" -T prefix C-x if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "confirm-before -p 'Remove current AI pane? (y/n)' \"run-shell '$HOME/.local/bin/llm-remove current'\""
+  tmux bind-key -N "Add AI pane" -T prefix A if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "display-menu -T 'Add AI Pane' \
+      claude '' \"run-shell '$HOME/.local/bin/llm-add -t claude'\" \
+      gemini '' \"run-shell '$HOME/.local/bin/llm-add -t gemini'\" \
+      codex  '' \"run-shell '$HOME/.local/bin/llm-add -t codex'\" \
+      grok   '' \"run-shell '$HOME/.local/bin/llm-add -t grok'\" \
+      aider  '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
+  tmux bind-key -N "lazy-llm dashboard" -T prefix S if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell '$HOME/.local/bin/llm-dashboard-open'"
+  # Prefix+L retired — its surface (Panes tab) lives inside llm-dashboard now,
+  # reachable from any tab via the '3' key.
+}
+
+# Turn an existing (single-pane) window into a lazy-llm workspace window:
+# AI pane (top-left) | editor (top-right) | prompt buffer (bottom).
+# Args: $1 session  $2 window index  $3 dir  $4 tool  $5 AI pane launch command
+#       $6 prompt file to open when there's no prompt snapshot ("" = new file)
+#       $7 "restore" to also restore the editor's snapshot (workspace restore)
+#
+# nvim snapshots (nvim-session-plugin): one rolling file per nvim in
+# <dir>/.lazy-llm/sessions/, keyed by this window's position among the
+# session's lazy-llm windows, so a fresh launch in the same dir finds the
+# prompt pane's last state. Paths already set on the window (restore sets
+# the saved ones) are kept. The prompt pane restores its snapshot whenever
+# one exists; the editor only on workspace restore.
+lazy_llm_build_window() {
+  local session="$1" win_idx="$2" target_dir="$3" ai_tool="$4" launch_cmd="$5"
+  local prompt_file="${6:-}" restore_editor="${7:-}"
+  local lazy_dir="$target_dir/.lazy-llm"
+  mkdir -p "$lazy_dir/prompts" "$lazy_dir/swap" "$lazy_dir/undo" "$lazy_dir/sessions"
+
+  local editor_session prompt_session
+  editor_session=$(tmux show-option -wqv -t "$session:$win_idx" @lazy_llm_editor_session)
+  prompt_session=$(tmux show-option -wqv -t "$session:$win_idx" @lazy_llm_prompt_session)
+  if [[ -z "$editor_session" || -z "$prompt_session" ]]; then
+    # Counted before this window gets @AI_PANES.
+    local nth suffix=""
+    nth=$(tmux list-windows -t "$session" -F '#{@AI_PANES}' | grep -c . || true)
+    [[ "$nth" -gt 0 ]] && suffix="-$((nth + 1))"
+    editor_session="$lazy_dir/sessions/editor${suffix}.vim"
+    prompt_session="$lazy_dir/sessions/prompt${suffix}.vim"
+  fi
+
+  # Get tmux base indexes
+  local pane_base_index
+  pane_base_index=$(tmux show-options -gw | grep pane-base-index | awk '{print $2}')
+
+  # Define pane variables
+  local ai_pane=$pane_base_index
+  local neovim_pane=$((pane_base_index + 1))
+  local prompt_pane=$((pane_base_index + 2))
+
+  # Split horizontally first (left/right)
+  # Use -l percentage syntax for tmux 3.4+ compatibility (replaces -p)
+  tmux split-window -h -l 50% -t "$session:$win_idx" -c "$target_dir"
+
+  # Split vertically with -f flag to create full-width bottom pane
+  tmux split-window -v -f -l 25% -t "$session:$win_idx.$ai_pane" -c "$target_dir"
+
+  # Clear CLAUDECODE env var in the AI pane to prevent nested session detection
+  # (when lazy-llm is invoked from within a Claude Code session)
+  tmux send-keys -t "$session:$win_idx.$ai_pane" "unset CLAUDECODE" C-m
+  tmux send-keys -t "$session:$win_idx.$ai_pane" "$launch_cmd" C-m
+
+  # Configure Neovim pane (top-right)
+  local editor_env="LAZY_LLM_NVIM_ROLE=editor LAZY_LLM_NVIM_SESSION='${editor_session}'"
+  [[ "$restore_editor" == "restore" && -f "$editor_session" ]] && editor_env+=" LAZY_LLM_NVIM_RESTORE=1"
+  tmux send-keys -t "$session:$win_idx.$neovim_pane" "${editor_env} nvim" C-m
+
+  # Configure Prompt Buffer pane (bottom) with swap and undo persistence.
+  # Explicitly cd to target directory to ensure shell and nvim are in sync
+  local prompt_env="LAZY_LLM_NVIM_ROLE=prompt LAZY_LLM_NVIM_SESSION='${prompt_session}'"
+  local prompt_arg=""
+  if [[ -f "$prompt_session" ]]; then
+    prompt_env+=" LAZY_LLM_NVIM_RESTORE=1"
+    prompt_file=""
+  else
+    [[ -n "$prompt_file" && -f "$prompt_file" ]] || prompt_file=$(lazy_llm_create_prompt_file "$target_dir")
+    prompt_arg=" '${prompt_file}'"
+  fi
+  tmux send-keys -t "$session:$win_idx.$prompt_pane" "cd '${target_dir}' && ${prompt_env} nvim --cmd 'set directory=${lazy_dir}/swap// | set undodir=${lazy_dir}/undo// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert'${prompt_arg}" C-m
+
+  # Set pane titles if supported
+  tmux select-pane -t "$session:$win_idx.$ai_pane" -T "AI: $ai_tool"
+  tmux select-pane -t "$session:$win_idx.$neovim_pane" -T "Editor"
+  tmux select-pane -t "$session:$win_idx.$prompt_pane" -T "Prompt"
+
+  # Capture stable pane IDs (survive swap-pane, unlike indices)
+  local ai_pane_id prompt_pane_id
+  ai_pane_id=$(tmux display-message -t "$session:$win_idx.$ai_pane" -p '#{pane_id}')
+  prompt_pane_id=$(tmux display-message -t "$session:$win_idx.$prompt_pane" -p '#{pane_id}')
+
+  # Set pane ID options (preferred by llm-send/llm-pull/llm-append)
+  tmux set-option -w -t "$session:$win_idx" @AI_PANE_ID "$ai_pane_id"
+  tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE_ID "$prompt_pane_id"
+
+  # Initialize multi-pane state (single-element lists)
+  tmux set-option -w -t "$session:$win_idx" @AI_PANES "$ai_pane_id"
+  tmux set-option -w -t "$session:$win_idx" @AI_TOOLS "$ai_tool"
+  tmux set-option -w -t "$session:$win_idx" @AI_PANE_IDX "0"
+
+  # nvim snapshot paths and the prompt file this window started on
+  tmux set-option -w -t "$session:$win_idx" @lazy_llm_editor_session "$editor_session"
+  tmux set-option -w -t "$session:$win_idx" @lazy_llm_prompt_session "$prompt_session"
+  tmux set-option -w -t "$session:$win_idx" @lazy_llm_prompt_file "$prompt_file"
+
+  # Keep legacy index-based options for backward compatibility
+  tmux set-option -w -t "$session:$win_idx" @AI_PANE "$session:$win_idx.$ai_pane"
+  tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE "$session:$win_idx.$prompt_pane"
+  tmux set-option -w -t "$session:$win_idx" @AI_TOOL "$ai_tool"
+
+  # Per-pane status on each pane's own border — window-scoped (-w), so this
+  # only affects lazy-llm windows, nothing else in the user's tmux setup.
+  # The AI pane's border shows tool+glyph+workspace-summary (llm-pane-border
+  # — deliberately separate from llm-status: a pane border is much narrower
+  # than the full status-right segment). The prompt/editor panes get a
+  # plain label. Every branch sets an EXPLICIT fg color (#e4e4e4, this
+  # theme's default text color) — a pane border otherwise inherits
+  # pane-border-style/pane-active-border-style, which dims un-styled text
+  # for an unfocused pane to the point of being barely readable (confirmed
+  # live, user-reported).
+  tmux set-option -w -t "$session:$win_idx" pane-border-status top
+  tmux set-option -w -t "$session:$win_idx" pane-border-format \
+    "#{?#{==:#{pane_id},#{@AI_PANE_ID}},#($HOME/.local/bin/llm-pane-border #{pane_id} #{@AI_TOOL}),#{?#{==:#{pane_id},#{@PROMPT_PANE_ID}},#[fg=#e4e4e4] prompt #[default],#[fg=#e4e4e4] #{pane_current_command} #[default]}}"
+
+  # Mark session as lazy-llm managed and enable mouse
+  tmux set-option -t "$session" @lazy_llm 1
+  tmux set-option -t "$session" mouse on
+
+  lazy_llm_register_tmux_integration
+
+  # Set initial focus to prompt buffer pane
+  tmux select-pane -t "$session:$win_idx.$prompt_pane"
+}
+
+# Add an AI pane to <session:window>'s pane list, parked in the window's
+# hidden holding window (created on first use). Doesn't cycle it into view.
+# Args: $1 session  $2 window index  $3 dir  $4 tool  $5 launch command
+# Stdout: the new pane's id
+lazy_llm_add_ai_pane() {
+  local session="$1" window="$2" target_dir="$3" tool="$4" launch_cmd="$5"
+  local hold_win panes tools names new_pane_id
+  hold_win=$(tmux show-option -wqv -t "$session:$window" @AI_HOLD_WIN)
+  if [[ -n "$hold_win" ]] && ! tmux display-message -t "$hold_win" -p '#{window_id}' &>/dev/null; then
+    hold_win=""
+  fi
+  if [[ -z "$hold_win" ]]; then
+    hold_win=$(tmux new-window -d -t "$session" -n "_hold_${window}" -c "$target_dir" -P -F '#{window_id}')
+    tmux set-option -w -t "$session:$window" @AI_HOLD_WIN "$hold_win"
+    tmux set-option -w -t "$hold_win" @lazy_llm_hold "1"
+  fi
+
+  # -d: don't steal focus; -P -F prints the new pane's id
+  new_pane_id=$(tmux split-window -d -t "$hold_win" -c "$target_dir" -P -F '#{pane_id}')
+  tmux send-keys -t "$new_pane_id" "$launch_cmd" C-m
+  # select-pane -T also makes it the hold window's active pane; that window
+  # is never displayed, so nothing visible changes.
+  tmux select-pane -t "$new_pane_id" -T "AI: $tool"
+
+  panes=$(tmux show-option -wqv -t "$session:$window" @AI_PANES)
+  tools=$(tmux show-option -wqv -t "$session:$window" @AI_TOOLS)
+  names=$(tmux show-option -wqv -t "$session:$window" @AI_PANE_NAMES)
+  tmux set-option -w -t "$session:$window" @AI_PANES "$panes $new_pane_id"
+  tmux set-option -w -t "$session:$window" @AI_TOOLS "$tools $tool"
+  # @AI_PANE_NAMES is parallel to @AI_PANES by position ("_" = no override):
+  # pad it to the old pane count before appending the new pane's slot.
+  if [[ -n "$names" ]]; then
+    local -a pane_arr name_arr
+    read -ra pane_arr <<< "$panes"
+    read -ra name_arr <<< "$names"
+    while [[ ${#name_arr[@]} -lt ${#pane_arr[@]} ]]; do name_arr+=("_"); done
+    tmux set-option -w -t "$session:$window" @AI_PANE_NAMES "${name_arr[*]:0:${#pane_arr[@]}} _"
+  fi
+  printf '%s\n' "$new_pane_id"
+}
