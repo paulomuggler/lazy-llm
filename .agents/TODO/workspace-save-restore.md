@@ -2,9 +2,10 @@
 slug: workspace-save-restore
 title: Save lazy-llm workspaces to a manifest and rebuild them after the tmux server dies (lazy-llm restore)
 priority: P1
-status: pending
+status: in-progress
+owner: homelab-zrh-dev-2038098
 created: 2026-09-25_20:44
-updated: 2026-09-27_15:30
+updated: 2026-09-27_15:35
 depends-on: []
 tags: [resilience, restore, tmux, dashboard, nvim, design]
 model: inline
