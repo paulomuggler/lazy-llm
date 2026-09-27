@@ -4,12 +4,12 @@ title: Save lazy-llm workspaces to a manifest and rebuild them after the tmux se
 priority: P1
 status: done
 created: 2026-09-25_20:44
-updated: 2026-09-27_16:12
+updated: 2026-09-27_23:30
 depends-on: []
 tags: [resilience, restore, tmux, dashboard, nvim, design]
 model: inline
 human-validation: pending
-commits: [f270f0b, 4650079, 8a06a8e, ff0c194, 3cff276, eb172ce, 6d855a7, a7fae2d, db6abc3, 374d08d, 828c977, 8feb94e]
+commits: [4ba9132, 587fcc4, c6fb3b1, f270f0b, 4650079, 8a06a8e, ff0c194, 3cff276, eb172ce, 6d855a7, a7fae2d, db6abc3, 374d08d, 828c977, 8feb94e]
 ---
 
 # Workspace save/restore
@@ -299,6 +299,26 @@ dev-env's `frameworks/tmux-fzf.md`. Every change was tested on isolated tmux ser
 
 **Not done (human):** save right before rebooting, and the post-reboot restore. See Human Validation.
 
+### Round 2 (2026-09-27 23:20, after first use)
+
+The user's feedback: there was no way to close a workspace without it dropping out of the Saved
+list, and `s` in the Saved tab seemed not to re-render.
+
+- Closing now keeps a workspace (spec revision 5, `4ba9132`):
+  - A new `closed` state (◇), set by `lazy-llm close`, `c` in the Saved tab, the Workspaces tab's `K`
+    (which asks close or kill), or a tmux-level close after the grace period.
+  - Closed entries restore only on demand.
+  - Kill and forget drop an entry (`dropped/`, formerly `closed/`). The user's two dropped entries
+    were moved by hand.
+- `s` did re-render, but a ~2s save over an already-fresh list looked like nothing had happened. It
+  now shows "saving…" and then the summary in the header. Checked in a real fzf popup on a sandbox
+  server, along with the close/kill menu and ◇ in the Saved tab.
+- `tests/test-runner.sh` now isolates `LAZY_LLM_STATE_DIR` (`587fcc4`). Another session had had
+  sandbox workspaces land in the real Saved list.
+- Scenario 20: 69/69. The suite is otherwise unchanged: 09–21 pass, 01–08 hit the known backlog issue.
+- Note: another session's commit `4a7f63b` swept up this task's staged `git mv` (done/ → root, for
+  the reopen). It's already pushed and harmless, so it was left as is.
+
 ## Human Validation
 
 - [ ] Right before rebooting, press Prefix+C-s (or run `lazy-llm save`). It should report 3 workspaces, 6/6 conversations.
@@ -309,3 +329,6 @@ dev-env's `frameworks/tmux-fzf.md`. Every change was tested on isolated tmux ser
 - [ ] Prefix+S → `3` shows the Saved tab with three ● rows. `s` there saves, and the preview shows each pane.
 - [ ] Later, in the prompt pane: open a second prompt with `<leader>fn`, quit that nvim, run `lazy-llm` in the same dir (new workspace). Both prompts should come back.
 - [ ] On the Mac: `brew install jq`, run lazy-llm's `install.sh`, then `lazy-llm save` and `lazy-llm saved -v`.
+- [ ] Prefix+S, then `K` on a workspace → "close": it disappears from the Workspaces tab and shows as ◇ in the Saved tab (`3`). Enter on it brings it back with its panes and conversations.
+- [ ] `lazy-llm saved` lists live, restorable (◌) and closed (◇) entries; `lazy-llm saved --dropped` also shows the dropped old `ai-dev-workflow` and `dev-env-2`.
+- [ ] `s` in the Saved tab shows "saving…", then "lazy-llm: saved … (hh:mm:ss)" in the header.

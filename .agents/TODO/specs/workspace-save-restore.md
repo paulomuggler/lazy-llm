@@ -33,6 +33,17 @@ Revision 4 (2026-09-27 15:18), correcting revision 3 after checking the live nvi
   restored on **every** open.
 - Retention no longer deletes prompt files that a snapshot still references (§5.2).
 
+Revision 5 (2026-09-27 23:20, after first use): **closing a workspace keeps it.** The user closed
+workspaces and they vanished from the Saved tab. The vocabulary is now the user's: *close* keeps an
+entry, *kill* and *forget* drop it.
+- A new `closed` state (◇): kept, restored on demand only.
+- The old hidden "closed" state is renamed `dropped` (✕), and `closed/` becomes `dropped/`.
+- A workspace that vanishes under the same server becomes `closed` after the grace period, instead of
+  being moved out.
+- `lazy-llm close <name>`, `c` in the Saved tab, and a close-or-kill choice on the Workspaces tab's `K`.
+- The dashboard's `s` shows "saving…" and then the summary in the tab header, not just a toast.
+- The test runner isolates `LAZY_LLM_STATE_DIR`. Sections 2, 7.3, 8 and 9.3 below are updated to match.
+
 ---
 
 ## 1. Goal and scope
@@ -82,7 +93,8 @@ window to the current session. The manifest saves every lazy-llm window, in inde
 |---|---|
 | `live` | Its `id` is the `@lazy_llm_ws_id` of a running session. |
 | `restorable` | Not live, and its `server` is not the current server: it died with an earlier one. With no server running, every non-live entry is restorable. |
-| `closed` | Not live, with `server` equal to the current server (it was closed during this server's lifetime, marked `gone`), **or** moved to `closed/`. It can be restored when asked for explicitly. |
+| `closed` | Not live, and closed on purpose: `closed: true` in the entry, set by `lazy-llm close` / the dashboard, or by a save 60s after the workspace vanished under the same server. The state also covers the grace period itself (same server, `gone` set). Kept indefinitely, and restored only on demand: by name, with Enter in the Saved tab, or through the launcher's prompt. |
+| `dropped` | In `dropped/`: killed (`lazy-llm kill`, the dashboard's kill) or forgotten. Hidden unless asked for (`saved --dropped`, `d`). Still restorable by name. Deleted after 30 days. |
 
 ## 3. What gets saved, and where each field comes from
 
@@ -295,7 +307,7 @@ autosave to that dir's `prompt.vim`/`editor.vim`, and the last writer wins.
 ```
 lazy-llm/
   workspaces/<ws_id>.json  one file per saved workspace
-  closed/<ws_id>.json      entries dropped by a deliberate close or a forget (pruned after 30 days)
+  dropped/<ws_id>.json     entries dropped by a kill or a forget (pruned after 30 days)
   .lock/                   save/restore mutex (holds a pid file)
   .pending                 "another save was requested while locked"
 ```
@@ -394,15 +406,15 @@ The grace period in §7.3 is the second line of defense against the same scenari
    - If its `server` is not `$srv`, **leave the file exactly as it is**: it's `restorable`.
    - If its `server` is `$srv`:
      - With `gone == null`, set `gone = now`.
-     - With `gone` at least 60s old, move the file to `closed/`.
+     - With `gone` at least 60s old, set `closed: true`. The entry stays in `workspaces/`.
 
      The grace means a save racing a dying server can only *mark* entries, never drop them.
-5. Delete `closed/*.json` older than 30 days. The nvim snapshots are workspace-local and are
+5. Delete `dropped/*.json` older than 30 days. The nvim snapshots are workspace-local and are
    left alone: the next launch in that dir still wants `prompt.vim`.
 6. Release the lock. If `.pending` exists, remove it and go back to step 1 (at most once more).
 
-**forget** (`--id <id>` or a name): move `workspaces/<id>.json` to `closed/`. With a name, it
-matches non-live entries; an ambiguous match errors and asks for `--id`. **forget on a `closed/`
+**forget** (`--id <id>` or a name): move `workspaces/<id>.json` to `dropped/`. With a name, it
+matches non-live entries; an ambiguous match errors and asks for `--id`. **forget on a `dropped/`
 entry** (dashboard `K` in the closed view) deletes it for good, after confirmation.
 
 Known edge, accepted: if the last lazy-llm session is closed with plain `tmux kill-session`,
@@ -437,7 +449,7 @@ died) are untouched. Concretely:
 ### 8.1 Algorithm
 
 1. Candidates are the `restorable` entries, sorted by `order`. Names or `--id` pick entries
-   explicitly from `restorable` or `closed` (a `closed/` entry is moved back to `workspaces/`
+   explicitly from `restorable` or `closed` (a `dropped/` entry is moved back to `workspaces/`
    first). Each selector must match exactly one entry, or the command errors. `live` entries
    are never candidates.
 2. `--dry-run`: for each candidate, print the name, dir, each pane's tool, name, visibility,
@@ -651,8 +663,8 @@ server.
 6. **Idempotent.** A second restore restores nothing, and the session count is unchanged.
 7. **Deliberate close.** `kill-session -t wsA`, then save → `gone` is set. Restore skips it
    ("closed"), and `--emit-saved-rows --closed` shows it as `✕`. Backdate `gone` by 61s and
-   save → the file moves to `closed/`. `restore wsA` brings it back (explicit), with the same ID.
-8. **Explicit kill.** `llm-sessions --kill wsB` → the file is in `closed/`.
+   save → the entry gets `closed: true` and stays in `workspaces/`. `restore wsA` brings it back (explicit), with the same ID.
+8. **Close vs kill.** `llm-persist close wsK` keeps it (◇, skipped by a plain restore, back by name); `llm-sessions --kill wsB` → the file is in `dropped/`.
 9. **Collision.** Copy an entry into `workspaces/` with a foreign `server`, and create a live
    session with the same name and a different ID. Restore → `<name>-2` exists with the saved ID,
    and the live one is untouched.
