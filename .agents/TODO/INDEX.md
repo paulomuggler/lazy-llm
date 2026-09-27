@@ -3,8 +3,9 @@
 
 ## Pending (0)
 
-## Done (7)
+## Done (8)
 
+- [x] [dashboard-early-input-quits](done/dashboard-early-input-quits.md) - Fix a key pressed before the dashboard list loads closing the dashboard
 - [x] [workspace-save-restore](done/workspace-save-restore.md) - Save lazy-llm workspaces to a manifest and rebuild them after the tmux server dies (lazy-llm restore)
 - [x] [pane-border-identity-suffixes](done/pane-border-identity-suffixes.md) - AI pane border shows workspace - pane name - harness - model; Claude hooks moved into lazy-llm's own plugin
 - [x] [dashboard-escape-abort-killswitch](done/dashboard-escape-abort-killswitch.md) - Fix Esc-during-subprompt silently killing the whole dashboard
