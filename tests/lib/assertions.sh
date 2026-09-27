@@ -16,7 +16,11 @@ print_pass() {
     echo -e "${GREEN}✓${NC} $1"
 }
 
+# Counts toward ASSERTIONS_FAILED itself: scenarios call print_fail directly
+# for hand-rolled checks, and a failure printed without being counted let a
+# scenario report "Failed: 0" and exit 0 with a ✗ in its output.
 print_fail() {
+    ASSERTIONS_FAILED=$((ASSERTIONS_FAILED + 1))
     echo -e "${RED}✗${NC} $1"
 }
 
@@ -35,7 +39,6 @@ assert_equals() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         echo "  Expected: '$expected'"
         echo "  Actual:   '$actual'"
@@ -54,7 +57,6 @@ assert_contains() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         echo "  Looking for: '$needle'"
         echo "  In text: '${haystack:0:200}...'"
@@ -73,7 +75,6 @@ assert_not_contains() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         echo "  Should not contain: '$needle'"
         echo "  But found it in: '${haystack:0:200}...'"
@@ -108,7 +109,6 @@ assert_line_count() {
         print_pass "$message (actual: $actual_count)"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message (actual: $actual_count)"
         return 1
     fi
@@ -125,7 +125,6 @@ assert_pattern() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         echo "  Pattern: '$pattern'"
         echo "  Text: '${text:0:200}...'"
@@ -143,7 +142,6 @@ assert_file_exists() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         return 1
     fi
@@ -159,7 +157,6 @@ assert_file_not_exists() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         return 1
     fi
@@ -175,7 +172,6 @@ assert_dir_exists() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         return 1
     fi
@@ -191,7 +187,6 @@ assert_success() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         return 1
     fi
@@ -207,7 +202,6 @@ assert_fails() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         return 1
     fi
@@ -223,7 +217,6 @@ assert_empty() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         echo "  But got: '$value'"
         return 1
@@ -240,7 +233,6 @@ assert_not_empty() {
         print_pass "$message"
         return 0
     else
-        ((ASSERTIONS_FAILED++))
         print_fail "$message"
         return 1
     fi
