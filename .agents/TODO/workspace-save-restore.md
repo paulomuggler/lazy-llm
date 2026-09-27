@@ -4,9 +4,9 @@ title: Save lazy-llm workspaces to a manifest and rebuild them after the tmux se
 priority: P1
 status: pending
 created: 2026-09-25_20:44
-updated: 2026-09-27_13:00
+updated: 2026-09-27_14:40
 depends-on: []
-tags: [resilience, restore, tmux, dashboard, design]
+tags: [resilience, restore, tmux, dashboard, nvim, design]
 model: inline
 commits: []
 ---
@@ -51,53 +51,78 @@ not tmux user options or pane IDs. That is exactly where lazy-llm keeps its stat
 Restoring a snapshot while same-named sessions are live also makes resurrect **merge** into
 them, which mangles the live workspaces.
 
+
 ### What planning found (2026-09-27; details in the spec)
 
 - `claude --resume <uuid>` exists, and every hook payload carries `session_id`, so the hook
   can track the current conversation, `/clear` included.
 - Claude Code keeps `~/.claude/sessions/<pid>.json` with `sessionId`. It resolved all 6 live
   panes. It becomes the fallback for panes that were already running before this change.
-- No jq dependency and macOS portability → the manifest is TSV parsed in bash, one file per
-  workspace.
+- All per-tool knowledge sits behind two adapter functions (`lazy_llm_tool_conv` and
+  `lazy_llm_tool_launch_cmd`). Only Claude has a branch today; adding a tool means adding a
+  branch to each.
+- The manifest is one JSON file per workspace, handled with jq (the user approved jq as a
+  dependency).
+- Editor state goes through LazyVim's persistence.nvim. **A bug that exists today:** the
+  prompt nvim loads persistence too and overwrites the editor's session on exit
+  (`…%microdots.digital.vim` holds only prompt files). The fix: a role env var, with
+  persistence disabled in the prompt nvim and autosaving in the editor nvim. For nvims
+  already running, `lazy-llm save` saves the editor session and stops the prompt nvim's
+  persistence over nvim's RPC socket (confirmed live on 0.12: the socket belongs to the
+  `--embed` child).
 - A pre-existing bug: `llm-remove` and `lazy_llm_prune_stale_panes` never drop the
   `@AI_PANE_NAMES` slot, so names shift onto the wrong panes. It's live now (`dev-env`: 4
-  names, 3 panes). It's fixed here, because names are saved by position.
+  names, 3 panes).
 - A hazard caught in design: a `session-closed` hook would fire during shutdown while the
   server is still up, and drop the very entries the reboot needs. So there's no such hook, a
   60s grace period applies before a same-server drop, and restore takes entries from dead
   servers.
+- Hot restore (restoring while other workspaces are running) is the normal path. Restore only
+  creates sessions, and the launcher offers to restore when you open a dir that has a saved
+  entry (spec §8).
+- User surface: automatic saves, Prefix+C-s, dashboard `s`, a new **Saved** tab (`3`) with
+  restore, forget, restore-all and a closed view, and `lazy-llm save|restore|saved|forget`.
 
 ## Key Files
 
 - `llm-send-bin/.local/bin/lazy-llm-lib.sh`: gains `lazy_llm_build_window` and
-  `lazy_llm_add_ai_pane` (moved in from the launcher and `llm-add`),
-  `lazy_llm_tool_launch_cmd`, a conversation store (`lazy_llm_set_pane_conv` /
-  `lazy_llm_pane_conv`), a Claude registry reader, a raw model reader,
-  `lazy_llm_save_async`, and the names fix in `lazy_llm_prune_stale_panes` (`:356-407`).
+  `lazy_llm_add_ai_pane` (moved in from the launcher and `llm-add`), the tool adapters, a
+  conversation store (`lazy_llm_set_pane_conv` / `lazy_llm_pane_conv`), a raw model reader,
+  `lazy_llm_save_async`, `lazy_llm_with_timeout`, and the names fix in
+  `lazy_llm_prune_stale_panes` (`:356-407`).
 - `lazy-llm-bin/.local/bin/lazy-llm`: `create_workspace_window` (`:157-313`) moves to the
-  lib. It gains the `save|restore|saved|forget` dispatch (`:67-71`) and help text.
+  lib. It gains the `save|restore|saved|forget` dispatch (`:67-71`), help text, and the
+  "restore instead?" prompt (spec §8.2).
 - `lazy-llm-bin/.local/bin/llm-persist`: **new**, holding `save`, `restore`, `saved`,
-  `forget`.
+  `forget` and `find-dir`.
+- `lazy-llm-bin/.local/bin/llm-dashboard`: the Saved tab plus `--emit-saved-rows`; `s` and
+  the restorable-count header on the Workspaces tab; save calls after rename, rename-pane
+  (`dispatch_action`, `:763-818`), `--fold-transform` and `--reorder-transform`
+  (`:1128-1260`); the Help tab; `--tab saved`.
+- `nvim-session-plugin/.config/nvim/lua/lazy_llm/session.lua` and
+  `…/lua/plugins/lazy-llm-session.lua`: **new** stow package (spec §5.2).
+- `install.sh`: jq in `DEPS`, and `nvim-session-plugin` in `STOW_PACKAGES`.
 - `llm-add-bin/.local/bin/llm-add`: calls the lib add-pane function, then save.
 - `llm-remove-bin/.local/bin/llm-remove`: names slot fix (`:190-198`), then save.
 - `llm-cycle-bin/.local/bin/llm-cycle`: save after a cycle.
-- `lazy-llm-bin/.local/bin/llm-dashboard`: save after rename and rename-pane
-  (`dispatch_action`, `:763-818`) and in `--fold-transform` / `--reorder-transform`
-  (`:1128-1260`).
 - `lazy-llm-bin/.local/bin/llm-sessions`: `cmd_kill` (`:52-85`) calls `forget` before
   `kill-session`.
 - `llm-status-bin/.local/bin/llm-claude-hook`: records `session_id` on every event and saves
   on a change.
-- `tests/scenarios/20-workspace-save-restore-unit.sh`: **new**.
-- `tests/scenarios/19-claude-hook-unit.sh`: extended.
-- `docs/USAGE.md`, `README.md`: document the commands.
+- `tests/scenarios/20-workspace-save-restore-unit.sh` and `21-nvim-session-unit.sh`:
+  **new**. `19-claude-hook-unit.sh`: extended.
+- `docs/USAGE.md`, `README.md`: document the commands, the keys and the Saved tab.
 
 ## Read first
 
-- `specs/workspace-save-restore.md`: the whole design. §6.3 (retention) and §7 (restore) are
-  the load-bearing parts.
-- `tests/scenarios/19-claude-hook-unit.sh`: the isolation pattern the new test copies
+- `specs/workspace-save-restore.md`: the whole design. The load-bearing parts are §5
+  (editor), §7.3 (retention) and §8 (restore and hot restore).
+- `tests/scenarios/19-claude-hook-unit.sh`: the isolation pattern the new tests copy
   (sandbox `TMUX_TMPDIR` plus `HOME`).
+- `lazy-llm-bin/.local/bin/llm-dashboard` `render_worktrees_tab` (`:621-715`): the model for
+  the Saved tab.
+- `~/.local/share/nvim/lazy/persistence.nvim/lua/persistence/init.lua`: the API the nvim
+  module wraps.
 - `~/Projects/dev-env/.claude/coding-standards/frameworks/tmux-fzf.md`: `set -e` with
   fzf/tmux, and the testing notes (never send keys into a pane you haven't verified as a
   sandbox pane).
@@ -107,73 +132,99 @@ them, which mangles the live workspaces.
 ## Constraints
 
 - **Never touch the user's live tmux server during development or testing.** Every test and
-  experiment runs under a sandbox `TMUX_TMPDIR` with `TMUX` unset. The live server gets exactly
-  one mutating command before the reboot: `lazy-llm save` (spec §11), plus the read-only
-  `saved` and `--dry-run`. Of those, only `save` writes, and it writes only
-  `@lazy_llm_ws_id`, `@lazy_llm_dir` and `@lazy_llm_prompt_file` options through adoption.
-- No new dependencies (no jq, no flock). Everything must run on macOS bash and BSD userland as
-  well as Linux.
-- `lazy_llm_save_async` redirects every fd (spec §6.1), or fzf `transform()` stalls.
+  experiment runs under a sandbox `TMUX_TMPDIR` with `TMUX` unset, and nvim experiments use
+  `--clean` or a sandboxed `XDG_STATE_HOME`. Before the reboot, the live server gets only
+  `lazy-llm save` (writes adoption options and runs the editor save and prompt stop over RPC),
+  `saved`, `--dry-run`, and Prefix+C-s.
+- jq is the only new dependency (no flock). Everything must run on macOS bash and BSD
+  userland as well as Linux (no `timeout`: use `lazy_llm_with_timeout`).
+- `lazy_llm_save_async` redirects every fd (spec §7.1), or fzf `transform()` stalls. The
+  dashboard's row rendering never runs RPC or save (spec §10).
 - `llm-claude-hook` must always exit 0 and must not add latency to Claude's flow. The save it
   triggers is async, and only fires when the recorded conversation ID changes.
-- Restore never merges into an existing session and never attaches without a tty.
-- The refactor in spec §9.1 must not change behavior for `lazy-llm` or `llm-add`. Scenarios
-  01–19 stay green.
-- Out of scope: everything in spec §13. File those as backlog tasks when this lands.
+- Restore never modifies an existing session.
+- Any nvim that lazy-llm didn't start (no `LAZY_LLM_NVIM_ROLE`) keeps today's persistence
+  behavior exactly.
+- The refactor in spec §11.1 must not change behavior for `lazy-llm` or `llm-add`, apart from
+  the new role env vars. Scenarios 01–19 stay green.
+- Out of scope: everything in spec §15. File those as backlog tasks when this lands.
 
 ## Commit plan (code commits, in order)
 
-1. `@AI_PANE_NAMES` slot fix in `llm-remove` and `lazy_llm_prune_stale_panes` (spec §9.2).
-2. Move the build and add-pane code into the lib, and add the launch-command helper. No
-   behavior change (spec §9.1).
-3. Conversation capture: conversation store, hook recording, registry fallback, raw model
-   reader (spec §4).
-4. `llm-persist save`, `lazy_llm_save_async`, the triggers, the new tmux options, and forget
-   in `llm-sessions --kill` (spec §6).
-5. `llm-persist restore | saved | forget`, plus the `lazy-llm` dispatch and help (spec §7–8).
-6. Tests: scenario 20, plus the scenario 19 extension (spec §10).
-7. Docs: `USAGE.md` and `README.md`.
+1. `@AI_PANE_NAMES` slot fix in `llm-remove` and `lazy_llm_prune_stale_panes` (spec §11.2).
+2. `nvim-session-plugin` (module plus spec), the role env vars on the launcher's two nvims,
+   and `install.sh` stowing the new package: this fixes the prompt nvim overwriting the editor
+   session (§5, §11.3). Include scenario 21.
+3. Move the build and add-pane code into the lib, and add the tool adapters. No other
+   behavior change (§11.1, §4).
+4. Conversation capture: conversation store, hook recording, registry fallback, raw model
+   reader, and the scenario 19 extension (§4).
+5. `llm-persist save`, jq in `DEPS`, `lazy_llm_save_async`, the triggers, Prefix+C-s, editor
+   save and prompt stop over RPC, the new tmux options, and forget in `llm-sessions --kill`
+   (§7).
+6. `llm-persist restore | saved | forget | find-dir`, the `lazy-llm` dispatch and help, and
+   the launcher's "restore instead?" prompt (§8, §9.1).
+7. Dashboard: the Saved tab, `s`, the header count, and the Help tab (§9.2–9.3).
+8. Scenario 20 (§12).
+9. Docs: `USAGE.md` and `README.md`.
 
-Before each commit: `bash -n` and `shellcheck` on the changed scripts (the repo has no
-formatter; match the surrounding style).
+Before each commit: `bash -n` and `shellcheck` on the changed scripts, and `stylua --check`
+on the Lua if stylua is present (the repo has no formatter otherwise; match the surrounding
+style).
 
 ## Verification recipe
 
-1. `cd tests && ./test-runner.sh`: everything passes, including 20.
-2. Spec §12 V1–V3 in a sandbox server (real `claude`, no prompt sent). Record the outcomes in
-   the Work Report.
-3. `./install.sh`, then `ls -l ~/.local/bin/llm-persist`.
-4. On the live server: `lazy-llm save`, then `lazy-llm saved -v`. Expect 3 workspaces and 6
-   panes, 6 of 6 with conversation IDs; `dev-env` names that match the dashboard; held panes
-   present; order `ai-dev-workflow microdots_digital dev-env`.
-   `lazy-llm restore --dry-run` → nothing to restore.
-5. Rehearse with a scratch state dir (spec §11 step 4). The launch commands must read
-   `claude --resume <id>` with the right cwd.
+1. `cd tests && ./test-runner.sh`: everything passes, including 20 and 21.
+2. Run spec §14 V1–V3 in sandboxes (real `claude` with no prompt sent, and the real LazyVim
+   config under a sandboxed `XDG_STATE_HOME`). Record the outcomes in the Work Report.
+3. `./install.sh`, then check that `~/.local/bin/llm-persist` and
+   `~/.config/nvim/lua/lazy_llm/session.lua` exist.
+4. On the live server, run `lazy-llm save`, then `lazy-llm saved -v`. Expect:
+   - 3 workspaces and 6 panes, 6 of 6 with conversation IDs.
+   - `dev-env` names that match the dashboard.
+   - Held panes present.
+   - Order `ai-dev-workflow microdots_digital dev-env`.
+   - An `editor_session` for each editor that has files open, and `…microdots.digital.vim`
+     holding the editor's buffers again.
+
+   Then `lazy-llm restore --dry-run` → nothing to restore. In the dashboard, `3` shows three
+   `●` rows, and Prefix+C-s shows the save message.
+5. Rehearse with a scratch state dir (spec §13 step 4). The launch commands must read
+   `claude --resume <id>` with the right cwd, and the editor must get
+   `LAZY_LLM_NVIM_SESSION`.
 6. After the reboot (human): `lazy-llm restore`. All three workspaces come back with the same
-   names, panes, held panes, names, order and folds, and each pane is on its old conversation.
+   names, panes, held panes, names, order, folds and editor buffers, and each pane is on its
+   old conversation.
 
 ## Acceptance Criteria
 
 - [ ] `@AI_PANE_NAMES` stays in line with `@AI_PANES` after `llm-remove` and after pruning.
-- [ ] `lazy-llm` and `llm-add` build through the lib functions, with unchanged behavior
-      (scenarios 01–19 green).
+- [ ] The prompt nvim no longer loads persistence. The editor nvim autosaves its session, and
+      restores it from `LAZY_LLM_NVIM_SESSION`. Nvims lazy-llm didn't start are unchanged.
+- [ ] `lazy-llm` and `llm-add` build through the lib functions. Per-tool behavior sits only in
+      the two adapter functions. Scenarios 01–19 are green.
 - [ ] The Claude hook records `session_id` per pane on every event and saves only on a change.
       The registry fallback resolves panes that have no hook record.
-- [ ] `lazy-llm save` writes one manifest file per live workspace in the spec §5 format,
-      adopting pre-feature workspaces.
+- [ ] `lazy-llm save` writes one JSON file per live workspace in the spec §6 format, adopting
+      pre-feature workspaces, saving editor sessions and stopping prompt persistence over RPC.
 - [ ] Save never drops or alters an entry from another server. With no server running it's a
       no-op. A same-server close is marked `gone` and dropped only after 60s.
       `lazy-llm kill` and the dashboard's kill forget the entry immediately.
-- [ ] `lazy-llm restore` rebuilds every workspace from a dead server: session name (de-duped on
-      a collision), workspace ID, AI panes in order with tools and names, held panes in a hold
-      window, visible pane, `claude --resume <id>` per pane (cd'd into its cwd), prompt file
-      reopened with swap/undo flags, folds and dashboard order. It's idempotent.
-- [ ] `lazy-llm restore --dry-run`, `lazy-llm saved [-v]` and `lazy-llm forget <name>` work as
-      specified, and `lazy-llm -h` lists them.
-- [ ] Scenario 20 covers spec §10 steps 1–9, scenario 19 covers the conversation ID, and the
-      full suite passes.
-- [ ] `docs/USAGE.md` and `README.md` document save and restore, including when saves happen
-      and the forget edge case.
-- [ ] The pre-reboot runbook (spec §11 steps 2–5) has run on this machine, with its output in
+- [ ] `lazy-llm restore` rebuilds every restorable workspace while other workspaces are
+      running: session name (de-duped on a collision), workspace ID, AI panes in order with
+      tools and names, held panes in a hold window, the visible pane, `claude --resume <id>`
+      per pane (cd'd into its cwd), the prompt file with swap/undo flags, the editor session,
+      folds and dashboard order. It's idempotent, and it never modifies a live session.
+- [ ] Explicit restore of `closed` entries, `--dry-run`, `saved [-v] [--closed]`,
+      `forget <name>` and `find-dir` work as specified. `lazy-llm -h` lists the commands, and
+      the launcher offers to restore a saved workspace for the dir it's opening.
+- [ ] Prefix+C-s and dashboard `s` save now, with feedback. The Saved tab shows live,
+      restorable and closed entries with a detail preview and supports Enter, `A`, `K`, `c`
+      and `R` as in spec §9.3. The Workspaces tab header shows the restorable count.
+- [ ] Scenarios 20 (§12 steps 1–12) and 21 are added, scenario 19 covers the conversation ID,
+      and the full suite passes.
+- [ ] `docs/USAGE.md`, `README.md` and the dashboard Help tab document save, restore, the keys,
+      the Saved tab, when saves happen, and the forget edge case.
+- [ ] The pre-reboot runbook (spec §13 steps 2–5) has run on this machine, with its output in
       the Work Report.
-- [ ] Spec §13 follow-ups are filed as backlog tasks.
+- [ ] Spec §15 follow-ups are filed as backlog tasks.
