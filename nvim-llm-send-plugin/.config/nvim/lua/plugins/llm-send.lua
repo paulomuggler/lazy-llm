@@ -35,19 +35,6 @@ local function is_prompt_pane()
 	return prompt_pane ~= "" and tmux_pane == prompt_pane
 end
 
--- Helper: create a new prompt backing file (same convention as
--- lazy-llm-bin's create_prompt_file()) and open it in the current window.
-local function open_new_prompt_file()
-	local prompts_dir = vim.fn.getcwd() .. "/.lazy-llm/prompts"
-	vim.fn.mkdir(prompts_dir, "p")
-
-	local path = prompts_dir .. "/prompt-" .. os.date("%Y%m%d-%H%M%S") .. ".md"
-	if vim.fn.filereadable(path) == 0 then
-		vim.fn.writefile({}, path)
-	end
-
-	vim.cmd("edit " .. vim.fn.fnameescape(path))
-end
 
 -- Helper function to get tmux pane_base_index
 local function get_pane_base_index()
@@ -716,7 +703,8 @@ return {
 					vim.schedule(function()
 						vim.keymap.set("n", "<leader>fn", function()
 							if is_prompt_pane() then
-								open_new_prompt_file()
+								-- Shared with session restore (nvim-session-plugin).
+								require("lazy_llm.session").open_new_prompt_file()
 							else
 								vim.cmd("enew")
 							end

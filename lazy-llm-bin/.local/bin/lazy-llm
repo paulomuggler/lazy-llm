@@ -44,8 +44,16 @@ init_state_dirs() {
 
 # Cleanup old files based on retention policy
 cleanup_old_files() {
-  # Clean up old prompt files (older than PROMPT_RETENTION_DAYS)
-  find "$PROMPTS_DIR" -name "prompt-*.md" -type f -mtime +${PROMPT_RETENTION_DAYS} -delete 2>/dev/null
+  # Clean up old prompt files (older than PROMPT_RETENTION_DAYS), except ones
+  # a prompt-pane session snapshot still has open: the prompt pane restores
+  # them on every launch, so an untouched-for-a-week prompt isn't abandoned.
+  local keep="" snap old
+  for snap in "$STATE_DIR"/sessions/prompt*.vim; do
+    [[ -f "$snap" ]] && keep+=$(grep -oE 'prompt-[0-9]{8}-[0-9]{6}\.md' "$snap")$'\n'
+  done
+  while IFS= read -r old; do
+    grep -qxF "$(basename "$old")" <<< "$keep" || rm -f "$old"
+  done < <(find "$PROMPTS_DIR" -name "prompt-*.md" -type f -mtime +${PROMPT_RETENTION_DAYS} 2>/dev/null)
 
   # Clean up old undo files (older than UNDO_RETENTION_DAYS)
   find "$UNDO_DIR" -type f -mtime +${UNDO_RETENTION_DAYS} -delete 2>/dev/null
@@ -153,13 +161,23 @@ if [ -z "$SESSION_NAME" ]; then
 fi
 
 # Function to create a new window with 3-pane layout
-# Args: session_name, window_index, target_dir, ai_tool, prompt_file
+# Args: session_name, window_index, target_dir, ai_tool
 create_workspace_window() {
   local session=$1
   local win_idx=$2
   local target_dir=$3
   local ai_tool=$4
-  local prompt_file=$5
+  local prompt_file=""
+
+  # Rolling nvim session snapshots (nvim-session-plugin): one file per nvim,
+  # keyed by the dir and this window's position among the session's lazy-llm
+  # windows, so a fresh launch in the same dir finds the prompt pane's last
+  # state. Counted before this window gets @AI_PANES.
+  local nth suffix=""
+  nth=$(tmux list-windows -t "$session" -F '#{@AI_PANES}' | grep -c . || true)
+  [ "$nth" -gt 0 ] && suffix="-$((nth + 1))"
+  local editor_session="${STATE_DIR}/sessions/editor${suffix}.vim"
+  local prompt_session="${STATE_DIR}/sessions/prompt${suffix}.vim"
 
   # Get tmux base indexes
   local base_index=$(tmux show-options -g | grep base-index | awk '{print $2}')
@@ -204,12 +222,23 @@ create_workspace_window() {
     ;;
   esac
 
-  # Configure Neovim pane (top-right)
-  tmux send-keys -t "$session:$win_idx.$neovim_pane" "nvim" C-m
+  # Configure Neovim pane (top-right). Its snapshot is only restored by
+  # `lazy-llm restore`; a plain launch opens a bare editor, as always.
+  tmux send-keys -t "$session:$win_idx.$neovim_pane" "LAZY_LLM_NVIM_ROLE=editor LAZY_LLM_NVIM_SESSION='${editor_session}' nvim" C-m
 
-  # Configure Prompt Buffer pane (bottom) with swap and undo persistence
+  # Configure Prompt Buffer pane (bottom) with swap and undo persistence.
+  # The prompt pane comes back as it was left (all its prompt files, layout)
+  # whenever its snapshot exists; otherwise it starts on a new prompt file.
   # Explicitly cd to target directory to ensure shell and nvim are in sync
-  tmux send-keys -t "$session:$win_idx.$prompt_pane" "cd '${target_dir}' && nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert' '${prompt_file}'" C-m
+  local prompt_env="LAZY_LLM_NVIM_ROLE=prompt LAZY_LLM_NVIM_SESSION='${prompt_session}'"
+  local prompt_arg=""
+  if [ -f "$prompt_session" ]; then
+    prompt_env+=" LAZY_LLM_NVIM_RESTORE=1"
+  else
+    prompt_file=$(create_prompt_file)
+    prompt_arg=" '${prompt_file}'"
+  fi
+  tmux send-keys -t "$session:$win_idx.$prompt_pane" "cd '${target_dir}' && ${prompt_env} nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert'${prompt_arg}" C-m
 
   # Set pane titles if supported
   tmux select-pane -t "$session:$win_idx.$ai_pane" -T "AI: $ai_tool"
@@ -230,6 +259,11 @@ create_workspace_window() {
   tmux set-option -w -t "$session:$win_idx" @AI_PANES "$ai_pane_id"
   tmux set-option -w -t "$session:$win_idx" @AI_TOOLS "$ai_tool"
   tmux set-option -w -t "$session:$win_idx" @AI_PANE_IDX "0"
+
+  # nvim snapshot paths and the prompt file this window started on
+  tmux set-option -w -t "$session:$win_idx" @lazy_llm_editor_session "$editor_session"
+  tmux set-option -w -t "$session:$win_idx" @lazy_llm_prompt_session "$prompt_session"
+  tmux set-option -w -t "$session:$win_idx" @lazy_llm_prompt_file "$prompt_file"
 
   # Keep legacy index-based options for backward compatibility
   tmux set-option -w -t "$session:$win_idx" @AI_PANE "$session:$win_idx.$ai_pane"
@@ -354,11 +388,8 @@ if [ "$NEW_WINDOW" = true ] || [ "$IN_TMUX" = true ]; then
     # Create new window
     tmux new-window -t "$TARGET_SESSION:$NEXT_WIN" -n "dev" -c "$TARGET_DIR"
 
-    # Create prompt file (nvim handles swap recovery natively)
-    PROMPT_FILE=$(create_prompt_file)
-
     # Set up the 3-pane layout
-    create_workspace_window "$TARGET_SESSION" "$NEXT_WIN" "$TARGET_DIR" "$AI_TOOL" "$PROMPT_FILE"
+    create_workspace_window "$TARGET_SESSION" "$NEXT_WIN" "$TARGET_DIR" "$AI_TOOL"
 
     # Switch to the new window
     tmux select-window -t "$TARGET_SESSION:$NEXT_WIN"
@@ -393,9 +424,6 @@ echo "Creating session: $SESSION_NAME"
 echo "Directory: $TARGET_DIR"
 echo "AI Tool: $AI_TOOL"
 
-# Create prompt file (nvim handles swap recovery natively)
-PROMPT_FILE=$(create_prompt_file)
-
 # Create new tmux session
 tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
 
@@ -403,7 +431,7 @@ tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
 WIN_INDEX=$(tmux show-options -g | grep base-index | awk '{print $2}')
 
 # Set up the 3-pane layout using shared function
-create_workspace_window "$SESSION_NAME" "$WIN_INDEX" "$TARGET_DIR" "$AI_TOOL" "$PROMPT_FILE"
+create_workspace_window "$SESSION_NAME" "$WIN_INDEX" "$TARGET_DIR" "$AI_TOOL"
 
 # Attach to the session
 tmux attach-session -t "$SESSION_NAME"
