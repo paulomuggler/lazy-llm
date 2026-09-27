@@ -3,8 +3,9 @@
 
 ## Pending (0)
 
-## Done (8)
+## Done (9)
 
+- [x] [status-transitions-and-dashboard-latency](done/status-transitions-and-dashboard-latency.md) - Fix stuck working/unread glyphs; cut dashboard fold/reorder latency to ~100ms
 - [x] [dashboard-early-input-quits](done/dashboard-early-input-quits.md) - Fix a key pressed before the dashboard list loads closing the dashboard
 - [x] [workspace-save-restore](done/workspace-save-restore.md) - Save lazy-llm workspaces to a manifest and rebuild them after the tmux server dies (lazy-llm restore)
 - [x] [pane-border-identity-suffixes](done/pane-border-identity-suffixes.md) - AI pane border shows workspace - pane name - harness - model; Claude hooks moved into lazy-llm's own plugin
