@@ -23,7 +23,7 @@ command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not installed"; exit 0; }
 
 # Short path: tmux socket paths are limited to ~108 bytes.
 SB=$(mktemp -d /tmp/lazy-llm-test-persist-XXXXXX)
-mkdir -p "$SB/home/.local/bin" "$SB/fake" "$SB/state" "$SB/a" "$SB/b"
+mkdir -p "$SB/home/.local/bin" "$SB/fake" "$SB/state" "$SB/a" "$SB/b" "$SB/k"
 for f in "$REPO_ROOT"/*-bin/.local/bin/*; do ln -s "$f" "$SB/home/.local/bin/"; done
 for t in claude nvim; do
     cat > "$SB/fake/$t" <<EOF
@@ -153,33 +153,51 @@ assert_contains "$log" "nvim  ROLE=editor SESSION=[^ ]* RESTORE= " "...but not t
 T kill-session -t =wsC
 
 echo ""
-echo "Test 7: closing a workspace in the same server..."
+echo "Test 7: a workspace that vanishes in the same server is closed, not dropped..."
 sbx llm-persist save >/dev/null
 T kill-session -t =wsA
 sbx llm-persist save >/dev/null
 fA=$(entry wsA)
-assert_not_empty "$(jq -r '.gone // empty' "$fA")" "a same-server close is only marked gone"
+assert_not_empty "$(jq -r '.gone // empty' "$fA")" "first it's only marked gone"
 out=$(sbx llm-persist restore 2>&1)
-assert_contains "$out" "skipped wsA \(closed in this tmux server" "default restore skips it"
-assert_contains "$(sbx llm-dashboard --emit-saved-rows --closed 2>/dev/null)" "closed.*wsA" "Saved tab's closed view lists it"
+assert_contains "$out" "skipped wsA \(closed; restore it by name" "default restore skips it"
+assert_contains "$(sbx llm-dashboard --emit-saved-rows 2>/dev/null)" "closed.*wsA" "the Saved tab lists it as closed"
 jq '.gone -= 61' "$fA" > "$fA.x" && mv "$fA.x" "$fA"
 sbx llm-persist save >/dev/null
-assert_file_exists "$SB/state/closed/$(basename "$fA")" "closed for good once the grace has passed"
+assert_equals "$(jq -r .closed "$fA")" "true" "once the grace has passed it's closed (kept)"
+assert_file_exists "$fA" "...and still in workspaces/, not dropped"
 out=$(sbx llm-persist restore wsA 2>&1)
 assert_contains "$out" "Restored wsA" "an explicit restore brings a closed entry back"
 assert_equals "$(T show-option -qv -t '=wsA:' @lazy_llm_ws_id)" "$(jq -r .id "$(entry wsA)")" "...with the same id"
+assert_equals "$(jq -r .closed "$(entry wsA)")" "false" "...and it's no longer closed"
 
 echo ""
-echo "Test 8: lazy-llm kill forgets immediately..."
+echo "Test 8: lazy-llm close keeps it, lazy-llm kill drops it..."
+sbx lazy-llm -s wsK -d "$SB/k" -t claude >/dev/null 2>&1
+sleep 1
+out=$(sbx llm-persist close wsK 2>&1)
+assert_contains "$out" "Closed workspace wsK \(kept" "close reports it kept the workspace"
+assert_fails "T has-session -t =wsK" "the session is gone"
+fK=$(entry wsK)
+assert_equals "$(jq -r .closed "$fK")" "true" "its entry is marked closed"
+assert_contains "$(sbx llm-persist saved)" "◇ wsK" "saved lists it as closed"
+assert_contains "$(sbx llm-persist find-dir "$SB/k")" "wsK" "the launcher would offer to restore it"
+out=$(sbx llm-persist restore --dry-run 2>&1)
+assert_equals "$(grep -c '^wsK  (' <<< "$out")" "0" "a plain restore leaves it alone"
+assert_contains "$out" "skipped wsK \(closed" "...and says so"
+out=$(sbx llm-persist restore wsK 2>&1)
+assert_contains "$out" "Restored wsK" "restore by name reopens it"
 idB=$(T show-option -qv -t '=wsB:' @lazy_llm_ws_id)
 sbx llm-sessions --kill wsB >/dev/null
-assert_file_exists "$SB/state/closed/$idB.json" "killed workspace moved to closed/"
+assert_file_exists "$SB/state/dropped/$idB.json" "a killed workspace is dropped"
 assert_file_not_exists "$SB/state/workspaces/$idB.json" "...and out of workspaces/"
+assert_not_contains "$(sbx llm-persist saved)" "wsB" "saved hides dropped entries"
+assert_contains "$(sbx llm-persist saved --dropped)" "✕ wsB" "...unless asked with --dropped"
 
 echo ""
 echo "Test 9: a name collision never merges..."
 foreign="$SB/state/workspaces/foreign-id.json"
-jq '.id = "foreign-id" | .server = "1-1" | .gone = null' "$SB/state/closed/$idB.json" > "$foreign"
+jq '.id = "foreign-id" | .server = "1-1" | .gone = null' "$SB/state/dropped/$idB.json" > "$foreign"
 T new-session -d -s wsB -c "$SB/b"
 out=$(sbx llm-persist restore 2>&1)
 assert_contains "$out" "Restored wsB as wsB-2" "restored under a de-duplicated name"
@@ -195,10 +213,11 @@ assert_empty "$(sbx llm-persist find-dir "$SB/a")" "nothing for a dir whose work
 
 echo ""
 echo "Test 11: the Saved tab's rows..."
-rows=$(sbx llm-dashboard --emit-saved-rows --closed 2>/dev/null)
+rows=$(sbx llm-dashboard --emit-saved-rows --dropped 2>/dev/null)
 assert_contains "$(head -1 <<< "$rows")" "^saved:[^	]*	live" "live entries first"
-assert_contains "$rows" "restorable.*wsB" "restorable entry listed"
-assert_contains "$rows" "closed" "closed entries listed in the closed view"
+assert_contains "$rows" "restorable.*wsB-2" "restorable entry listed"
+assert_contains "$rows" "dropped.*wsB" "dropped entries listed in the dropped view"
+assert_not_contains "$(sbx llm-dashboard --emit-saved-rows 2>/dev/null)" "	dropped	" "...and only there"
 
 echo ""
 echo "Test 12: removing a pane keeps display names aligned..."

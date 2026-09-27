@@ -12,6 +12,15 @@ source "$LIB_DIR/assertions.sh"
 source "$LIB_DIR/tmux-helpers.sh"
 source "$LIB_DIR/setup-teardown.sh"
 
+# lazy-llm saves a manifest of every workspace it launches (llm-persist). A
+# test's throwaway workspaces must never land in the user's real one, where
+# they'd show up as restorable once the test's tmux server is gone.
+if [ -z "${LAZY_LLM_STATE_DIR:-}" ]; then
+    LAZY_LLM_STATE_DIR=$(mktemp -d /tmp/lazy-llm-test-state-XXXXXX)
+    export LAZY_LLM_STATE_DIR
+    trap 'rm -rf "$LAZY_LLM_STATE_DIR"' EXIT
+fi
+
 # Test tracking
 TESTS_PASSED=0
 TESTS_FAILED=0
