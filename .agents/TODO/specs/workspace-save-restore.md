@@ -44,6 +44,35 @@ entry, *kill* and *forget* drop it.
 - The dashboard's `s` shows "saving…" and then the summary in the tab header, not just a toast.
 - The test runner isolates `LAZY_LLM_STATE_DIR`. Sections 2, 7.3, 8 and 9.3 below are updated to match.
 
+Revision 6 (2026-09-28 00:00, after the first real reboot and restore). This supersedes §7.1–7.3,
+§9.2 and §9.3 below where they differ:
+- **Manual saves are dated snapshots.** Autosave keeps rewriting the rolling entry. A manual save
+  (`save` with no `--async` or `--no-rpc`, `--notify` included) also writes
+  `snapshots/<YYYYmmdd-HHMMSS>/<id>.json` for each workspace whose digest changed since its last
+  snapshot. The digest covers the entry minus save metadata, plus its nvim snapshots' contents. The
+  snapshot also copies the nvim snapshots, as `<id>/{editor,prompt}-N.vim` (`snap_editor` and
+  `snap_prompt` in the JSON).
+- `restore --snapshot <ts>/<id>` (or `<ts> <name>`) restores a snapshot:
+  - If the workspace is running, it comes back as a copy: a new id, `name-N`, and its own nvim
+    files `<dir>/.lazy-llm/sessions/<newid>-{editor,prompt}-N.vim`.
+  - Otherwise it comes back as that workspace. The copies are written over its rolling nvim files
+    first.
+- `forget --snapshot <ts>[/<id>]` deletes a snapshot or one entry of it. There's no automatic
+  pruning.
+- **Saved tab:**
+  - Rolling rows come first.
+  - Then, newest first, a `snap-hdr:<ts>` divider per manual save, followed by `saved:<ts>/<id>`
+    rows (◆).
+  - `z` expands any entry into `saved-pane:<key>:<w>:<p>` rows, folded by default. The open set is
+    kept in `@lazy_llm_saved_open`.
+- **Prefix+S** is no longer guarded to lazy-llm windows. `llm-tmux-init`, run from tmux.conf at
+  server start, registers the bindings in a fresh server. Without `--tab`, the dashboard opens on
+  Saved when no workspace is running.
+- **Restore speed** (4.9s → 1.6s with real nvims):
+  - The final save runs with `--no-rpc`, with the pending async save cleared, and behind the attach.
+  - Entries are read in one jq pass.
+  - RPC snapshots run in parallel in every save.
+
 ---
 
 ## 1. Goal and scope

@@ -4,12 +4,12 @@ title: Save lazy-llm workspaces to a manifest and rebuild them after the tmux se
 priority: P1
 status: done
 created: 2026-09-25_20:44
-updated: 2026-09-27_23:30
+updated: 2026-09-28_00:18
 depends-on: []
 tags: [resilience, restore, tmux, dashboard, nvim, design]
 model: inline
 human-validation: pending
-commits: [4ba9132, 587fcc4, c6fb3b1, f270f0b, 4650079, 8a06a8e, ff0c194, 3cff276, eb172ce, 6d855a7, a7fae2d, db6abc3, 374d08d, 828c977, 8feb94e]
+commits: [0b02455, ec56e45, 7f92eea, 306b75f, 0dd17c6, 4ba9132, 587fcc4, c6fb3b1, f270f0b, 4650079, 8a06a8e, ff0c194, 3cff276, eb172ce, 6d855a7, a7fae2d, db6abc3, 374d08d, 828c977, 8feb94e]
 ---
 
 # Workspace save/restore
@@ -319,6 +319,30 @@ list, and `s` in the Saved tab seemed not to re-render.
 - Note: another session's commit `4a7f63b` swept up this task's staged `git mv` (done/ → root, for
   the reopen). It's already pushed and harmless, so it was left as is.
 
+### Round 3 (2026-09-28, after the first real reboot, where restore worked)
+
+The user's feedback, and what changed:
+- **Restore took >10s.** Fixed in `0b02455`: 4.9s → 1.6s with real nvims (3 workspaces, 7 panes).
+  - The final save ran nvim RPC serially (2s timeout each) into nvims that were just starting. It
+    now uses `--no-rpc`, runs behind the attach, and no longer runs twice (the queued pending save
+    is cleared).
+  - Entries are parsed in one jq pass instead of ~10 jq calls per pane.
+  - Every save's RPC now runs in parallel.
+  - What's left is 7 claudes and 6 nvims starting at once, which restore no longer waits for.
+- **Prefix+S needed a running workspace.** Fixed in `ec56e45`, plus dev-env `ce8b0ff`: the binding
+  is unguarded, and `llm-tmux-init` registers the bindings from tmux.conf at server start. With no
+  workspace running, the dashboard opens on the Saved tab.
+- **See a saved workspace's panes.** `7f92eea`: `z` in the Saved tab, folded by default.
+- **Closed panes couldn't be recovered.** `306b75f`: manual saves write dated snapshots (deduped
+  per workspace, with nvim copies), shown under dated dividers. A snapshot restores as a copy when
+  its workspace is running, and as itself otherwise.
+- Found along the way: `lazy-llm close` exited silently unless the named workspace was the last one
+  listed (awk `exit` → SIGPIPE → pipefail + `set -e`). Fixed.
+- Coordinated with a concurrent session (dev-env-e1), which committed its dashboard/status perf work
+  (`c8c4e6a`, `984d630`) before this round touched the same files, and later fixed scenarios 13/16
+  plus the `print_fail` counting (`d5de780`).
+- Scenario 20: 94/94. Scenarios 09–21 pass; 01–08 are the known backlog item.
+
 ## Human Validation
 
 - [ ] Right before rebooting, press Prefix+C-s (or run `lazy-llm save`). It should report 3 workspaces, 6/6 conversations.
@@ -332,3 +356,7 @@ list, and `s` in the Saved tab seemed not to re-render.
 - [ ] Prefix+S, then `K` on a workspace → "close": it disappears from the Workspaces tab and shows as ◇ in the Saved tab (`3`). Enter on it brings it back with its panes and conversations.
 - [ ] `lazy-llm saved` lists live, restorable (◌) and closed (◇) entries; `lazy-llm saved --dropped` also shows the dropped old `ai-dev-workflow` and `dev-env-2`.
 - [ ] `s` in the Saved tab shows "saving…", then "lazy-llm: saved … (hh:mm:ss)" in the header.
+- [ ] Reboot (or `tmux kill-server`), open a terminal, run `tmux`, press Prefix+S: the dashboard opens on the Saved tab. Enter/A restores.
+- [ ] Restore-all feels quick: sessions appear within about 2 seconds (panes then finish starting on their own).
+- [ ] In the Saved tab, `z` on a workspace lists its panes; `z` again folds it.
+- [ ] Prefix+C-s, close a pane, Prefix+C-s again: two dated dividers. Enter on the older ◆ entry brings that workspace back as `name-2` with the closed pane.
