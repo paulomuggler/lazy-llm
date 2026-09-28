@@ -313,8 +313,10 @@ window_json() {
       --arg conv "$(lazy_llm_tool_conv "$tool" "$p")" \
       --arg model "$(lazy_llm_pane_model_raw "$p")" \
       --arg cwd "$(tmux display-message -t "$p" -p '#{pane_current_path}')" \
+      --argjson worktree "$(pane_worktree_json "$p")" \
       'def n: if . == "" then null else . end;
-       {tool: $tool, name: ($name|n), conv: ($conv|n), model: ($model|n), cwd: $cwd}')")
+       {tool: $tool, name: ($name|n), conv: ($conv|n), model: ($model|n), cwd: $cwd}
+       + (if $worktree == null then {} else {worktree: $worktree} end)')")
     kept=$((kept + 1))
   done
   [[ $kept -gt 0 ]] || return 0
@@ -816,12 +818,58 @@ free_session_name() {
   printf '%s\n' "$name"
 }
 
+# An isolated pane's worktree, as manifest JSON ({path, branch}), or null.
+# Base branch and main directory aren't saved: they live in the branch's git
+# config, which is also what restore needs to recreate the worktree.
+pane_worktree_json() {
+  local wt branch
+  wt=$(tmux show-option -pqv -t "$1" @lazy_llm_wt 2>/dev/null) || wt=""
+  [[ -n "$wt" ]] || { echo null; return 0; }
+  branch=$(git -C "$wt" branch --show-current 2>/dev/null) || branch=""
+  jq -nc --arg path "$wt" --arg branch "$branch" '{path: $path, branch: ($branch | if . == "" then null else . end)}'
+}
+
+# Make sure a saved isolated pane's worktree exists: as it is, else
+# recreated from its branch at the same path (and re-bootstrapped). Prints
+# the path, or nothing when the branch is gone too (the pane then comes back
+# shared, in the workspace dir).
+# Args: $1 worktree path  $2 branch  $3 workspace dir
+restore_pane_worktree() {
+  local path="$1" branch="$2" dir="$3" primary
+  if [[ "$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)" == "$path" ]]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  if [[ -n "$branch" ]] && git -C "$dir" show-ref --verify --quiet "refs/heads/$branch"; then
+    primary=$(git -C "$dir" config "branch.$branch.lazyLlmPrimary" 2>/dev/null) || primary="$dir"
+    if (cd "$primary" && lazy_llm_setup_worktree "$branch" "$(dirname "$path")") >/dev/null 2>&1 \
+      && [[ -d "$path" ]]; then
+      "$(llm_wt)" bootstrap "$path" >/dev/null 2>&1 || true
+      echo "llm-persist: recreated worktree $path from branch $branch" >&2
+      printf '%s\n' "$path"
+      return 0
+    fi
+  fi
+  echo "llm-persist: worktree $path and its branch are gone; that pane comes back shared" >&2
+  return 0
+}
+
+llm_wt() {
+  local sib
+  sib="$(dirname "$0")/llm-wt"
+  [[ -x "$sib" ]] && { printf '%s\n' "$sib"; return; }
+  printf '%s\n' "$HOME/.local/bin/llm-wt"
+}
+
 # The command typed into an AI pane: the tool adapter's launch command, run
 # from the pane's own cwd when that differs from the workspace dir (claude
-# looks conversations up under the project dir).
+# looks conversations up under the project dir). An isolated pane's tool
+# gets the worktree env (lazy_llm_wt_launch_cmd) — on the tool, not the cd.
+# Args: tool conv model cwd dir [wt_base wt_primary]
 pane_launch_cmd() {
-  local tool="$1" conv="$2" model="$3" cwd="$4" dir="$5" cmd
+  local tool="$1" conv="$2" model="$3" cwd="$4" dir="$5" wt_base="${6:-}" wt_primary="${7:-}" cmd
   cmd=$(lazy_llm_tool_launch_cmd "$tool" "$conv" "$model")
+  [[ -n "$wt_base" ]] && cmd=$(lazy_llm_wt_launch_cmd "$cmd" "$wt_base" "$wt_primary")
   if [[ -n "$cwd" && "$cwd" != "$dir" && -d "$cwd" ]]; then
     cmd="cd '${cwd//\'/\'\\\'\'}' && $cmd"
   fi
@@ -830,10 +878,12 @@ pane_launch_cmd() {
 
 # The same, from a pane's manifest JSON (for --dry-run).
 pane_launch_cmd_json() {
-  local fields
-  fields=$(jq -r '[.tool, .conv // "", .model // "", .cwd // ""] | join("\u001f")' <<< "$1")
-  IFS=$'\x1f' read -r tool conv model cwd <<< "$fields"
-  pane_launch_cmd "$tool" "$conv" "$model" "$cwd" "$2"
+  local fields tool conv model cwd wt_branch wt_base=""
+  fields=$(jq -r '[.tool, .conv // "", .model // "", .cwd // "", .worktree.branch // ""] | join("\u001f")' <<< "$1")
+  IFS=$'\x1f' read -r tool conv model cwd wt_branch <<< "$fields"
+  [[ -n "$wt_branch" ]] && wt_base=$(git -C "$2" config "branch.$wt_branch.lazyLlmBase" 2>/dev/null || true)
+  pane_launch_cmd "$tool" "$conv" "$model" "$cwd" "$2" "$wt_base" \
+    "$(git -C "$2" config "branch.$wt_branch.lazyLlmPrimary" 2>/dev/null || true)"
 }
 
 # Record a restored pane's conversation and model against its new pane id.
@@ -852,11 +902,11 @@ seed_pane() {
 # would collapse the empty fields a pane with no conversation has):
 #   E name dir id collapsed
 #   W editor_session prompt_session prompt_file visible names   (per window)
-#   P tool conv model cwd                                        (per pane)
+#   P tool conv model cwd wt_path wt_branch                      (per pane)
 # Per-field jq calls were most of restore's time (~0.6s per workspace).
 # Args: $1 entry file
 restore_one() {
-  local f="$1" name="" dir="" id="" collapsed="" session="" win="" kind a b c d e
+  local f="$1" name="" dir="" id="" collapsed="" session="" win="" kind a b c d e g
   local w_count=0 p_count=0 w_prompt="" w_visible=0 w_names=""
   finish_window() {
     [[ -n "$win" ]] || return 0
@@ -864,7 +914,7 @@ restore_one() {
     [[ "$w_visible" -gt 0 ]] && lazy_llm_cycle_to_index "$session" "$win" "$w_visible"
     return 0
   }
-  while IFS=$'\x1f' read -r kind a b c d e; do
+  while IFS=$'\x1f' read -r kind a b c d e g; do
     case "$kind" in
       E)
         name="$a"; dir="$b"; id="$c"; collapsed="$d"
@@ -886,14 +936,28 @@ restore_one() {
         w_prompt="$c"; w_visible="${d:-0}"; w_names="$e"
         ;;
       P)
-        local cmd
-        cmd=$(pane_launch_cmd "$a" "$b" "$c" "$d" "$dir")
+        # e/g: an isolated pane's worktree path and branch (spec §11).
+        local cmd new_pane pane_wt="" wt_base="" wt_primary="" conv="$b" cwd="$d"
+        if [[ -n "$e" ]]; then
+          pane_wt=$(restore_pane_worktree "$e" "$g" "$dir")
+          if [[ -n "$pane_wt" ]]; then
+            wt_base=$(git -C "$pane_wt" config "branch.$g.lazyLlmBase" 2>/dev/null) || wt_base=""
+            wt_primary=$(git -C "$pane_wt" config "branch.$g.lazyLlmPrimary" 2>/dev/null) || wt_primary="$dir"
+          else
+            # Back in the workspace dir: its conversation was keyed by the
+            # worktree's path, so it can't be resumed from here.
+            conv=""; cwd=""
+          fi
+        fi
+        cmd=$(pane_launch_cmd "$a" "$conv" "$c" "$cwd" "$dir" "$wt_base" "$wt_primary")
         if [[ $p_count -eq 0 ]]; then
           lazy_llm_build_window "$session" "$win" "$dir" "$a" "$cmd" "$w_prompt" restore
-          seed_pane "$(tmux show-option -wqv -t "=$session:$win" @AI_PANE_ID)" "$b" "$c"
+          new_pane=$(tmux show-option -wqv -t "=$session:$win" @AI_PANE_ID)
         else
-          seed_pane "$(lazy_llm_add_ai_pane "$session" "$win" "$dir" "$a" "$cmd")" "$b" "$c"
+          new_pane=$(lazy_llm_add_ai_pane "$session" "$win" "$dir" "$a" "$cmd")
         fi
+        seed_pane "$new_pane" "$conv" "$c"
+        [[ -n "$pane_wt" ]] && tmux set-option -p -t "$new_pane" @lazy_llm_wt "$pane_wt"
         p_count=$((p_count + 1))
         ;;
     esac
@@ -903,7 +967,8 @@ restore_one() {
       (.windows[] |
         (["W", .editor_session, .prompt_session, (.prompt_file | s), (.visible // 0 | s),
           ([.panes[] | .name // "_"] | join(" "))] | map(s) | join("\u001f")),
-        (.panes[] | ["P", .tool, (.conv | s), (.model | s), (.cwd | s)] | join("\u001f")))' "$f")
+        (.panes[] | ["P", .tool, (.conv | s), (.model | s), (.cwd | s),
+          (.worktree.path | s), (.worktree.branch | s)] | join("\u001f")))' "$f")
   finish_window
   [[ "$collapsed" == "true" ]] && tmux set-option -t "=$session:" @lazy_llm_collapsed 1
   tmux select-window -t "=$session:$(tmux list-windows -t "=$session" -F '#{window_index}' | head -1)"

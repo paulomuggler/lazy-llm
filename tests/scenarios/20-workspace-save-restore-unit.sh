@@ -28,7 +28,7 @@ for f in "$REPO_ROOT"/*-bin/.local/bin/*; do ln -s "$f" "$SB/home/.local/bin/"; 
 for t in claude nvim; do
     cat > "$SB/fake/$t" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "$t \$* ROLE=\${LAZY_LLM_NVIM_ROLE:-} SESSION=\${LAZY_LLM_NVIM_SESSION:-} RESTORE=\${LAZY_LLM_NVIM_RESTORE:-} PWD=\$PWD" >> "$SB/argv.log"
+printf '%s\n' "$t \$* ROLE=\${LAZY_LLM_NVIM_ROLE:-} SESSION=\${LAZY_LLM_NVIM_SESSION:-} RESTORE=\${LAZY_LLM_NVIM_RESTORE:-} PWD=\$PWD WT=\${LAZY_LLM_WORKTREE:-}" >> "$SB/argv.log"
 exec sleep 600
 EOF
     chmod +x "$SB/fake/$t"
@@ -309,6 +309,55 @@ echo 'badd +1 .lazy-llm/prompts/prompt-20200101-000001.md' > "$SB/r/.lazy-llm/se
 sbx lazy-llm -s wsR -d "$SB/r" -t claude >/dev/null 2>&1
 assert_file_exists "$SB/r/.lazy-llm/prompts/prompt-20200101-000001.md" "referenced old prompt file kept"
 assert_file_not_exists "$SB/r/.lazy-llm/prompts/prompt-20200101-000002.md" "unreferenced old prompt file removed"
+
+echo ""
+echo "Test 14: an isolated pane's worktree is saved and restored (worktree-concurrency-mode)..."
+G="$SB/g"; mkdir -p "$G"
+gitq() { sbx git -c user.name=t -c user.email=t@t "$@"; }
+gitq -C "$G" init -q -b main; echo x > "$G/f"; gitq -C "$G" add f; gitq -C "$G" commit -qm init
+sbx lazy-llm -s wsG -d "$G" -t claude >/dev/null 2>&1
+sleep 1
+sbx env TMUX_PANE="$(wopt wsG @PROMPT_PANE_ID)" llm-add -t claude -i >/dev/null 2>&1
+sleep 0.5
+WTG="$G/.worktrees/.panes/lazy-wsG-claude-2"
+read -ra Gp <<< "$(wopt wsG @AI_PANES)"
+assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "$WTG" "setup: an isolated pane"
+printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"conv-g1"}' \
+    | sbx env TMUX_PANE="${Gp[1]}" llm-claude-hook
+sbx llm-persist save >/dev/null
+assert_equals "$(jq -c '.windows[0].panes[1].worktree' "$(entry wsG)")" "{\"path\":\"$WTG\",\"branch\":\"lazy/wsG/claude-2\"}" "the manifest records the pane's worktree"
+assert_equals "$(jq -c '.windows[0].panes[0].worktree' "$(entry wsG)")" "null" "a shared pane has none"
+reopen_g() {
+    sbx llm-persist restore wsG >/dev/null 2>&1
+    sleep 1
+    read -ra Gp <<< "$(wopt wsG @AI_PANES)"
+}
+last_g1() { grep "conv-g1\|^claude  " "$SB/argv.log" | tail -1; }
+sbx llm-persist close wsG >/dev/null 2>&1
+reopen_g
+assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "$WTG" "restored: the pane is tagged with its worktree"
+assert_contains "$(last_g1)" "claude --resume conv-g1 .* PWD=$WTG WT=1" "...resumes its conversation there, with the worktree env"
+
+gsnap=$(find "$SB/state/snapshots" -mindepth 1 -maxdepth 1 -type d -exec basename {} ';' | sort | tail -1)
+out=$(sbx llm-persist restore --snapshot "$gsnap" wsG 2>&1)
+assert_contains "$out" "as wsG-2 \(a copy: wsG is running\)" "a snapshot of the running workspace comes back as a copy"
+read -ra G2 <<< "$(wopt wsG-2 @AI_PANES)"
+assert_equals "$(T show-option -pqv -t "${G2[1]}" @lazy_llm_wt)" "$WTG" "...whose isolated pane joins the same worktree"
+T kill-session -t =wsG-2
+
+sbx llm-persist close wsG >/dev/null 2>&1
+sbx git -C "$G" worktree remove --force "$WTG"
+reopen_g
+[ -d "$WTG" ] && r="yes" || r="no"
+assert_equals "$r" "yes" "worktree deleted, branch kept: recreated on restore"
+assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "$WTG" "...and the pane is back in it"
+
+sbx llm-persist close wsG >/dev/null 2>&1
+sbx git -C "$G" worktree remove --force "$WTG"
+sbx git -C "$G" branch -qD lazy/wsG/claude-2
+reopen_g
+assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "" "worktree and branch gone: the pane comes back shared"
+assert_contains "$(grep "^claude " "$SB/argv.log" | tail -1)" "PWD=$G WT=$" "...fresh, in the workspace dir (its conversation can't resume elsewhere)"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
