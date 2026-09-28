@@ -4,7 +4,7 @@ title: Save lazy-llm workspaces to a manifest and rebuild them after the tmux se
 priority: P1
 status: done
 created: 2026-09-25_20:44
-updated: 2026-09-28_00:41
+updated: 2026-09-28_14:48
 depends-on: []
 tags: [resilience, restore, tmux, dashboard, nvim, design]
 model: inline
@@ -355,6 +355,15 @@ The user's feedback, and what changed:
   other session. Covered by scenario 20 test 8b with a real pty client.
 - Scenario 20: 97/97. Scenario 21: 23/23.
 
+### Round 5 (2026-09-28 14:45)
+
+- **`A` in the Saved tab is scoped to the highlighted section.** On a manual save, it restores that
+  save's workspaces, with running ones as copies (`restore --snapshot <ts>` with no name). Elsewhere
+  it restores the rolling entries that died. The confirmation names the scope.
+- **Test scenarios refuse to run outside `tests/test-runner.sh`** (`1498fe5`). This came after
+  another session's standalone scenario run killed the user's tmux server.
+- Scenario 20: 111/111.
+
 ## Human Validation
 
 - [ ] Right before rebooting, press Prefix+C-s (or run `lazy-llm save`). It should report 3 workspaces, 6/6 conversations.
@@ -374,3 +383,4 @@ The user's feedback, and what changed:
 - [ ] Prefix+C-s, close a pane, Prefix+C-s again: two dated dividers. Enter on the older ◆ entry brings that workspace back as `name-2` with the closed pane.
 - [ ] In the workspace you're attached to, Prefix+S → `K` → close: you land in another workspace, not out of tmux.
 - [ ] Prefix+C-s takes about a second.
+- [ ] Saved tab: `A` on a dated manual save asks to restore that save's N workspaces; `A` on a rolling row asks about the ones that died.
