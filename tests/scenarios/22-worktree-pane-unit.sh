@@ -486,6 +486,34 @@ assert_contains "$nv" "back=$R/src/x.lua" "toggle again goes back to the main co
 assert_contains "$nv" "mark-main=nil" "main buffers aren't marked"
 
 echo ""
+echo "Test 15: SessionStart hook injects the worktree guidance only in isolated panes (spec §6)..."
+ln -sf "$REPO_ROOT/llm-status-bin/.local/bin/llm-claude-hook" "$HOME_BIN/llm-claude-hook"
+mkdir -p "$HOME/.local/share"
+ln -sfn "$REPO_ROOT/llm-status-bin/.local/share/lazy-llm" "$HOME/.local/share/lazy-llm"
+R="$sandbox/r15"; mk_repo "$R"
+wt=$("$LLMWT" create "$R" claude ws 2>/dev/null)
+payload='{"hook_event_name":"SessionStart","source":"startup","session_id":"s1","model":"claude-opus-5-5"}'
+output=$(TMUX_TMPDIR="$sandbox/tmux" bash <<EOF
+unset TMUX
+tmux -f /dev/null new-session -d -s hws -c "$wt" "exec sleep 60"
+export TMUX_PANE=\$(tmux display -t hws -p '#{pane_id}')
+cd "$wt"
+echo "iso=\$(printf '%s' '$payload' | LAZY_LLM_WORKTREE=1 LAZY_LLM_PRIMARY_DIR="$R" LAZY_LLM_BASE_BRANCH=main "$HOME_BIN/llm-claude-hook")"
+echo "shared=<\$(printf '%s' '$payload' | "$HOME_BIN/llm-claude-hook")>"
+tmux kill-server 2>/dev/null
+EOF
+)
+json=$(printf '%s\n' "$output" | sed -n 's/^iso=//p')
+ctx=$(printf '%s' "$json" | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null)
+assert_equals "$(printf '%s' "$json" | jq -r '.hookSpecificOutput.hookEventName' 2>/dev/null)" "SessionStart" "valid hook JSON"
+assert_contains "$ctx" "own worktree, \`$wt\`, on branch \`lazy/ws/claude-2\`" "guidance names the worktree and branch"
+assert_contains "$ctx" "split from \`main\` in the main directory \`$R\`" "...and the base branch and main directory"
+assert_contains "$ctx" "| 7 | The main directory has uncommitted changes" "...and carries the integrate exit codes"
+[[ "$ctx" == *"{{"* ]] && r="left" || r="none"
+assert_equals "$r" "none" "no placeholder left"
+assert_contains "$output" "shared=<>" "a shared pane's session gets nothing"
+
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

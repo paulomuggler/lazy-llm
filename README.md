@@ -127,6 +127,34 @@ Actions:
 - `K` — atomic cleanup with safety prompts: shows warnings for dirty / ahead-of-default / no-upstream / attached-workspace / open-PR, asks separately whether to also delete the branch
 - `R` — refresh; `?` — help; `q`/`Esc` — close
 
+### Isolated AI panes (per-pane worktrees)
+
+Several agents in one workspace normally share its working tree, so their checkouts, staging and commits can collide. An **isolated** pane runs in a git worktree of its own instead, and merges its work back into the branch the workspace is on. It's opt-in per pane; plain `a` / `llm-add` behave exactly as before.
+
+- **Add one:** `Prefix+S` → `A`, or `llm-add -i [-t tool]`. The pane gets branch `lazy/<workspace>/<tool>-<n>` from the main directory's current branch, in `.worktrees/.panes/` (ignored through `.git/info/exclude`, never your `.gitignore`). Its tree row and border show `⎇`.
+- **Add another pane to the same worktree:** `a` while an isolated pane is in view asks whether the new pane joins that worktree or the main directory; `llm-add -w <path>` from the shell.
+- **Merging back is the agent's job.** Claude sessions in an isolated pane are told where they are at session start (and after resume and compaction): commit in logical units and run `llm-wt integrate` for each one. It rebases in the worktree, then fast-forwards the main directory's branch, and never forces, stashes or resets. Distinct exit codes tell the agent to commit first, resolve a conflict, or stop and ask you.
+- **See it from the editor:** `<leader>llmw` flips the current file between the main copy and the visible AI pane's worktree copy (same line, editable; the winbar shows `⎇ <branch>`). Code references and notes from a worktree buffer carry the path the agent sees.
+- **Closing:** removing the last pane in a worktree always asks: keep the worktree, remove it and its branch, or cancel. It lists anything that would be lost first: uncommitted or untracked files, commits not yet integrated, changed copies. Kept and orphaned worktrees show in the Worktrees tab tagged `⎇`, where `Enter` puts a pane back in one and `K` cleans it up.
+- **Save/restore:** isolated panes come back in their worktrees. A deleted worktree whose branch survives is recreated.
+
+`llm-wt status | sync | integrate` is the agent's (and your) view of a pane worktree; `llm-wt --help` has the rest.
+
+**Untracked files.** A fresh worktree has tracked files only. The files listed in `~/.config/lazy-llm/worktree-files` (global) and `<repo>/.lazy-llm/worktree-files` (per repo, added after the global list) are linked into it from the main directory, or copied:
+
+```gitignore
+.env*                          # no prefix = link (shared with the main directory)
+.claude/settings.local.json
+copy: config/local.yml         # a copy of its own; changes are offered back on close
+!.env.production               # exclude matches of this glob from the entries above
+```
+
+With neither file, the default list is `.env*`, `.claude/settings.local.json` and `.agents/TODO/.work-state`, all linked. Tracked files are never shadowed. Then `<repo>/.lazy-llm/worktree-init` runs in the new worktree if it's executable, for things like `npm ci`.
+
+### AI pane border
+
+Every AI pane's border ends with its git state: branch, `*` when tracked files changed, short commit, upstream, and `↑ahead ↓behind`, e.g. `main* 1b3dafc origin ↑2↓1`. An isolated pane shows `⎇ claude-2→main 1b3dafc ↑3`, counted against the branch it merges into. `tmux set -g @lazy_llm_border_git off` hides it.
+
 ### Keymaps
 
 All keymaps are under the `<leader>llm` prefix:
@@ -140,6 +168,7 @@ All keymaps are under the `<leader>llm` prefix:
 | `<leader>llmk` | n | **Keypress** - Forward next keypress to AI pane |
 | `<leader>llmr` | n/v | **Reference** - Add inline code reference (raw) |
 | `<leader>llmR` | n/v | **Reference** - Add code reference (wrapped) |
+| `<leader>llmw` | n | **Worktree** - Toggle file ⇄ the visible AI pane's worktree copy |
 | `<leader>llmp` | n | **Pull** - Pull latest AI response into buffer |
 | `<leader>llm]` | n | **Next AI** - Cycle to next AI pane |
 | `<leader>llm[` | n | **Prev AI** - Cycle to previous AI pane |
@@ -295,7 +324,8 @@ Inactive AI panes are held in a hidden tmux window. `tmux swap-pane` atomically 
 
 | Command | Description |
 |---------|-------------|
-| `llm-add [-t tool]` | Add a new AI pane (default: claude) |
+| `llm-add [-t tool] [-i \| -w path]` | Add a new AI pane (default: claude); `-i` in its own worktree, `-w` into an existing pane worktree |
+| `llm-wt status\|sync\|integrate` | An isolated pane's worktree: what's pending, pull in integrated work, merge back (see [Isolated AI panes](#isolated-ai-panes-per-pane-worktrees)) |
 | `llm-cycle [next\|prev\|N]` | Cycle between AI panes |
 | `llm-remove [-f] [current\|N]` | Remove an AI pane (`-f` skips confirmation) |
 | `llm-status` | Status line output for tmux (e.g. `[claude●] gemini◐` — glyphs reflect AI pane state) |

@@ -54,6 +54,14 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Tear down a worktree (atomic)            │ Prefix+S → 2 → highlight → K — kills attached workspace, removes worktree, optionally branch     │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Run an AI pane in its own worktree       │ Prefix+S → A, or llm-add -i — own branch lazy/<ws>/<tool>-<n>; ⎇ in the tree and border          │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Merge an isolated pane's work back       │ the agent runs llm-wt integrate per unit (rebase, fast-forward); llm-wt status shows what's left │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Edit a file's copy in a pane worktree    │ <leader>llmw toggles the main copy ⇄ the visible AI pane's worktree copy (editable)              │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Close an isolated pane                   │ K on its row / llm-remove; the last pane in a worktree asks: keep / remove / cancel              │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Pipe text into the prompt buffer         │ echo "add tests" | llm-append or llm-append "some context" from any shell                        │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Clear the prompt buffer                  │ <leader>llmd                                                                                     │
