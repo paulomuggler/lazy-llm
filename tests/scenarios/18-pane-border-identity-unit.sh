@@ -44,6 +44,9 @@ P=\$(tmux display -t myws -p '#{pane_id}')
 tmux set-option -t myws @lazy_llm 1
 tmux set-option -w -t myws @AI_PANES "\$P"
 tmux set-option -w -t myws @AI_TOOLS claude
+# Identity only: the git segment (covered by scenario 22) would follow the
+# glyph, since this pane's cwd is inside the lazy-llm repo.
+tmux set-option -g @lazy_llm_border_git off
 
 echo "store-empty=<\$(lazy_llm_pane_model "\$P")>"
 lazy_llm_set_pane_model "\$P" claude-sonnet-5

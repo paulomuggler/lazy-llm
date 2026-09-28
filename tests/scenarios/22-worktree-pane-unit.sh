@@ -229,6 +229,52 @@ assert_equals "$rc" "2" "the main directory itself -> 2"
 assert_equals "$rc" "2" "not a git repo -> 2"
 
 echo ""
+echo "Test 9: git segment for the AI pane border (spec §12.1)..."
+seg() { lazy_llm_git_segment "$1" T D | sed 's/#\[[^]]*\]//g'; }
+R="$sandbox/r9"; mk_repo "$R"
+sha() { git -C "$1" rev-parse --short=7 HEAD; }
+assert_equals "$(seg "$R")" "main $(sha "$R") local" "main tree, no upstream"
+git clone -q "$R" "$sandbox/r9c"
+C="$sandbox/r9c"
+assert_equals "$(seg "$C")" "main $(sha "$C") origin" "upstream in sync: just the remote"
+commit_file "$C" x.txt 1; commit_file "$C" y.txt 2
+commit_file "$R" z.txt 3; git -C "$C" fetch -q
+printf 'd\n' >> "$C/a.txt"
+assert_equals "$(seg "$C")" "main* $(sha "$C") origin ↑2↓1" "dirty, ahead and behind"
+git -C "$C" checkout -q -- a.txt
+git -C "$C" checkout -qb other
+git -C "$C" branch -q --set-upstream-to=origin/main
+assert_equals "$(seg "$C")" "other $(sha "$C") origin/main ↑2↓1" "upstream with another name is spelled out"
+wt=$("$LLMWT" create "$R" claude ws 2>/dev/null)
+commit_file "$wt" p.txt 1; commit_file "$R" q.txt 2
+assert_equals "$(seg "$wt")" "⎇ claude-2→main $(sha "$wt") ↑1↓1" "pane worktree: counts against base"
+twt=$(cd "$R" && lazy_llm_setup_worktree feat/x 2>/dev/null)
+assert_equals "$(seg "$twt")" "⎇ feat-x feat/x $(sha "$twt") local" "task worktree: dir name, then branch"
+git -C "$C" checkout -q --detach
+assert_equals "$(seg "$C")" "(detached) $(sha "$C")" "detached HEAD"
+assert_equals "$(seg "$sandbox")" "" "not a git repo: nothing"
+
+echo ""
+echo "Test 10: llm-pane-border shows the segment, and @lazy_llm_border_git off drops it..."
+ln -sf "$LIB_FILE" "$sandbox/bin/lazy-llm-lib.sh"
+ln -sf "$REPO_ROOT/lazy-llm-bin/.local/bin/llm-pane-border" "$sandbox/bin/llm-pane-border"
+output=$(TMUX_TMPDIR="$sandbox/tmux" bash <<EOF
+unset TMUX TMUX_PANE
+tmux -f /dev/null new-session -d -s bws -c "$wt" -x 200 -y 20 "exec sleep 60"
+P=\$(tmux display -t bws -p '#{pane_id}')
+tmux set-option -t bws @lazy_llm 1
+tmux set-option -w -t bws @AI_PANES "\$P"
+tmux set-option -w -t bws @AI_TOOLS claude
+echo "on=<\$("$sandbox/bin/llm-pane-border" "\$P" claude | sed 's/#\[[^]]*\]//g')>"
+tmux set-option -g @lazy_llm_border_git off
+echo "off=<\$("$sandbox/bin/llm-pane-border" "\$P" claude | sed 's/#\[[^]]*\]//g')>"
+tmux kill-server 2>/dev/null
+EOF
+)
+assert_contains "$output" "│ ⎇ claude-2→main $(sha "$wt") ↑1↓1 >" "border ends with the git segment"
+assert_not_contains "$(printf '%s\n' "$output" | grep '^off=')" "⎇" "off switch drops it"
+
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

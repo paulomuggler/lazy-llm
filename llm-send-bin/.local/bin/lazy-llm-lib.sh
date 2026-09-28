@@ -1159,6 +1159,79 @@ lazy_llm_clamp_label() {
   printf '%s…' "${label:0:$((max - 1))}"
 }
 
+# Git segment for an AI pane's border (llm-pane-border): branch, short
+# commit, upstream, ahead/behind, dirty (tracked files only), and which
+# worktree the pane is in. Prints nothing outside a git repo.
+#   main tree        main* 1b3dafc origin ↑2↓1   (no upstream: "local")
+#   pane worktree    ⎇ claude-2→main* 1b3dafc ↑3↓1   (counts vs the base branch)
+#   task worktree    ⎇ feat-x feat/x 1b3dafc origin ↑1
+#   detached HEAD    (detached) 1b3dafc
+# GIT_OPTIONAL_LOCKS=0: a border refresh must never take index.lock while an
+# agent in that tree is committing.
+# Args: $1 dir  $2 text color  $3 dim color
+lazy_llm_git_segment() {
+  local dir="$1" c_text="$2" c_dim="$3"
+  local c_wt="#5fafff" c_ahead="#87d787" c_warn="#ffaf00"
+  local out top gitdir common line oid="" head="" upstream="" ab="" dirty=""
+  local ahead=0 behind=0 base="" seg=""
+  [[ -n "$dir" && -d "$dir" ]] || return 0
+  out=$(GIT_OPTIONAL_LOCKS=0 git -C "$dir" rev-parse --path-format=absolute \
+    --show-toplevel --git-dir --git-common-dir 2>/dev/null) || return 0
+  { read -r top; read -r gitdir; read -r common; } <<< "$out"
+  while IFS= read -r line; do
+    case "$line" in
+      "# branch.oid "*) oid="${line#\# branch.oid }" ;;
+      "# branch.head "*) head="${line#\# branch.head }" ;;
+      "# branch.upstream "*) upstream="${line#\# branch.upstream }" ;;
+      "# branch.ab "*) ab="${line#\# branch.ab }" ;;
+      "#"*) ;;
+      *) dirty="*" ;;
+    esac
+  done < <(GIT_OPTIONAL_LOCKS=0 git -C "$dir" status --porcelain=v2 --branch -uno 2>/dev/null)
+  [[ "$oid" == "(initial)" ]] && oid=""
+  oid="${oid:0:7}"
+
+  if [[ "$head" == "(detached)" || -z "$head" ]]; then
+    printf '#[fg=%s](detached) %s' "$c_dim" "$oid"
+    return 0
+  fi
+  if [[ "$gitdir" != "$common" ]]; then
+    base=$(GIT_OPTIONAL_LOCKS=0 git -C "$dir" config "branch.$head.lazyLlmBase" 2>/dev/null) || base=""
+  fi
+
+  local dirty_s=""
+  [[ -n "$dirty" ]] && dirty_s="#[fg=${c_warn}]*"
+  if [[ -n "$base" ]]; then
+    # Pane worktree: named by its branch's last part, counted against base.
+    local counts
+    counts=$(GIT_OPTIONAL_LOCKS=0 git -C "$dir" rev-list --left-right --count "$base...HEAD" 2>/dev/null) || counts="0 0"
+    read -r behind ahead <<< "$counts"
+    seg="#[fg=${c_wt}]⎇ $(lazy_llm_clamp_label "${head##*/}" 24)#[fg=${c_dim}]→#[fg=${c_text}]$(lazy_llm_clamp_label "$base" 24)${dirty_s}"
+    [[ -n "$oid" ]] && seg+=" #[fg=${c_dim}]${oid}"
+  else
+    if [[ "$gitdir" != "$common" ]]; then
+      seg="#[fg=${c_wt}]⎇ $(lazy_llm_clamp_label "${top##*/}" 24) "
+    fi
+    seg+="#[fg=${c_text}]$(lazy_llm_clamp_label "$head" 24)${dirty_s}"
+    [[ -n "$oid" ]] && seg+=" #[fg=${c_dim}]${oid}"
+    if [[ -n "$upstream" ]]; then
+      local remote="${upstream%%/*}" ubranch="${upstream#*/}"
+      [[ "$ubranch" == "$head" ]] && seg+=" #[fg=${c_dim}]${remote}" || seg+=" #[fg=${c_dim}]${upstream}"
+      if [[ "$ab" =~ ^\+([0-9]+)\ -([0-9]+)$ ]]; then
+        ahead="${BASH_REMATCH[1]}"; behind="${BASH_REMATCH[2]}"
+      fi
+    else
+      seg+=" #[fg=${c_dim}]local"
+    fi
+  fi
+  if [[ "$ahead" -gt 0 || "$behind" -gt 0 ]]; then
+    seg+=" "
+    [[ "$ahead" -gt 0 ]] && seg+="#[fg=${c_ahead}]↑${ahead}"
+    [[ "$behind" -gt 0 ]] && seg+="#[fg=${c_warn}]↓${behind}"
+  fi
+  printf '%s' "$seg"
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 # Per-pane model — which model an agent pane is running right now, for the
 # AI pane's border (llm-pane-border). Fed by the harness itself, never
