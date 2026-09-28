@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # llm-add - Add a new AI pane to the lazy-llm workspace
-# Usage: llm-add [-t tool_name] [-i | -w worktree_path]
+# Usage: llm-add [-t tool_name] [-i [-n name] | -w worktree_path]
 #
 # Creates a new AI pane in a hidden holding window and swaps it into view.
 # The holding window stores inactive AI panes for swap-pane cycling.
-# -i runs the pane in a new worktree of its own (llm-wt create); -w adds it
-# to an existing pane worktree. Without either, the pane shares the
+# -i runs the pane in a new worktree of its own (llm-wt create), named -n
+# or <repo>-wt-<n>; that name is also the pane's label. -w adds the pane to
+# an existing pane worktree. Without either, the pane shares the
 # workspace's directory, as always.
 
 set -euo pipefail
@@ -14,6 +15,7 @@ set -euo pipefail
 AI_TOOL="claude"
 ISOLATE=false
 JOIN_WT=""
+WT_NAME=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -30,14 +32,19 @@ while [[ $# -gt 0 ]]; do
       JOIN_WT="$2"
       shift 2
       ;;
+    -n|--name)
+      WT_NAME="$2"
+      shift 2
+      ;;
     -h|--help)
-      echo "Usage: llm-add [-t tool_name] [-i | -w worktree_path]"
+      echo "Usage: llm-add [-t tool_name] [-i [-n name] | -w worktree_path]"
       echo ""
       echo "Options:"
       echo "  -t, --tool      AI tool to launch (default: claude)"
       echo "                  Supported: claude, gemini, codex, grok, aider"
-      echo "  -i, --isolate   Run the pane in a new git worktree of its own, on"
-      echo "                  branch lazy/<workspace>/<tool>-<n> (see llm-wt)"
+      echo "  -i, --isolate   Run the pane in a new git worktree of its own (see llm-wt)"
+      echo "  -n, --name      With -i: the worktree's name, for its directory, its branch"
+      echo "                  (lazy/<name>) and the pane's label (default <repo>-wt-<n>)"
       echo "  -w, --worktree  Add the pane to an existing pane worktree"
       exit 0
       ;;
@@ -50,6 +57,10 @@ done
 
 if $ISOLATE && [[ -n "$JOIN_WT" ]]; then
   echo "Error: --isolate and --worktree are mutually exclusive" >&2
+  exit 1
+fi
+if [[ -n "$WT_NAME" ]] && ! $ISOLATE; then
+  echo "Error: --name goes with --isolate" >&2
   exit 1
 fi
 
@@ -82,7 +93,7 @@ wt=""
 if $ISOLATE || [[ -n "$JOIN_WT" ]]; then
   llm_wt="$(dirname "$0")/llm-wt"
   if $ISOLATE; then
-    wt=$("$llm_wt" create "$target_dir" "$NEW_AI_TOOL" "$_SESSION") || exit 1
+    wt=$("$llm_wt" create "$target_dir" ${WT_NAME:+"$WT_NAME"}) || exit 1
   else
     wt="$JOIN_WT"
   fi
@@ -104,6 +115,15 @@ new_pane_id=$(lazy_llm_add_ai_pane "$_SESSION" "$_WINDOW" "$pane_dir" "$NEW_AI_T
 # Pane-scoped, so it follows the pane through swaps in and out of the hold
 # window. The border, the dashboard, llm-remove and llm-persist read it.
 [[ -n "$wt" ]] && tmux set-option -p -t "$new_pane_id" @lazy_llm_wt "$wt"
+# A new worktree's pane is labelled with the worktree's name (its slot in
+# @AI_PANE_NAMES, which lazy_llm_add_ai_pane just appended or padded).
+if $ISOLATE; then
+  read -ra label_panes <<< "$(tmux show-option -wqv -t "$_SESSION:$_WINDOW" @AI_PANES)"
+  read -ra label_names <<< "$(tmux show-option -wqv -t "$_SESSION:$_WINDOW" @AI_PANE_NAMES)"
+  while [[ ${#label_names[@]} -lt ${#label_panes[@]} ]]; do label_names+=("_"); done
+  label_names[${#label_panes[@]} - 1]="${wt##*/}"
+  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_NAMES "${label_names[*]:0:${#label_panes[@]}}"
+fi
 # select-pane -T inside lazy_llm_add_ai_pane selects the new pane; restore focus
 tmux select-pane -t "$original_pane"
 AI_PANES="$AI_PANES $new_pane_id"

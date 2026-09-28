@@ -519,11 +519,12 @@ lazy_llm_find_session_for_path() {
 # - Worktree base path: $2, else $LAZY_LLM_WORKTREE_DIR, else "$repo_root/.worktrees"
 # - When using the in-repo default, ensure .worktrees/ is in .gitignore
 # - A new branch starts at $3 when given, else at HEAD
-# Args: $1 branch_name  $2 base_dir (optional)  $3 start_point (optional)
+# - The worktree's directory is named $4 when given, else after the branch
+# Args: $1 branch_name  $2 base_dir (optional)  $3 start_point (optional)  $4 dir_name (optional)
 # Stdout: absolute worktree path on success
 # Exit: 0 success, non-zero failure (with message on stderr)
 lazy_llm_setup_worktree() {
-  local branch="$1" base_dir="${2:-}" start_point="${3:-}"
+  local branch="$1" base_dir="${2:-}" start_point="${3:-}" dir_name="${4:-}"
   [[ -z "$branch" ]] && { echo "Error: branch name required" >&2; return 2; }
 
   local repo
@@ -532,7 +533,7 @@ lazy_llm_setup_worktree() {
 
   local sanitized="${branch//\//-}"
   local base="${base_dir:-${LAZY_LLM_WORKTREE_DIR:-$repo/.worktrees}}"
-  local wt="$base/$sanitized"
+  local wt="$base/${dir_name:-$sanitized}"
 
   # If the default in-repo path is in use, make sure .worktrees/ is gitignored
   if [[ "$base" == "$repo/.worktrees" ]]; then

@@ -842,7 +842,8 @@ restore_pane_worktree() {
   fi
   if [[ -n "$branch" ]] && git -C "$dir" show-ref --verify --quiet "refs/heads/$branch"; then
     primary=$(git -C "$dir" config "branch.$branch.lazyLlmPrimary" 2>/dev/null) || primary="$dir"
-    if (cd "$primary" && lazy_llm_setup_worktree "$branch" "$(dirname "$path")") >/dev/null 2>&1 \
+    # Same directory name as before (it isn't derived from the branch).
+    if (cd "$primary" && lazy_llm_setup_worktree "$branch" "$(dirname "$path")" "" "$(basename "$path")") >/dev/null 2>&1 \
       && [[ -d "$path" ]]; then
       "$(llm_wt)" bootstrap "$path" >/dev/null 2>&1 || true
       echo "llm-persist: recreated worktree $path from branch $branch" >&2

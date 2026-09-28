@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # llm-wt - per-pane git worktrees for lazy-llm AI panes
 #
-# An isolated AI pane runs in its own worktree, on its own branch
-# (lazy/<ws>/<tool>-<n>), and merges its work back into the branch the
-# workspace's main directory is on. Ownership lives in git config, so this
+# An isolated AI pane runs in its own worktree, named once when it's created
+# (default <repo>-wt-<n>): directory .worktrees/.panes/<name>, branch
+# lazy/<name>. It merges its work back into the branch the workspace's main
+# directory is on. Nothing renames it later: a pane rename is only a label. Ownership lives in git config, so this
 # works from inside the worktree with no tmux state:
 #   branch.<branch>.lazyLlmBase     the branch to integrate into
 #   branch.<branch>.lazyLlmPrimary  the main directory (repo toplevel)
@@ -13,7 +14,8 @@
 #   llm-wt status [path] [--porcelain]  what closing this worktree would lose
 #   llm-wt sync [path]                  rebase onto the base branch
 #   llm-wt integrate [path]             rebase, then fast-forward the base branch
-#   llm-wt create <dir> <tool> <ws>     new pane worktree for workspace dir <dir>
+#   llm-wt create <dir> [name]          new pane worktree for workspace dir <dir>
+#   llm-wt default-name <dir>           the name create would pick: <repo>-wt-<n>
 #   llm-wt bootstrap <path>             (re)link/copy untracked files, run init hook
 #   llm-wt close <path> [--default]     ask what to do with a worktree whose last
 #                                       pane is closing; prints remove|keep|cancel
@@ -228,35 +230,61 @@ run_init_hook() {
 
 # ── create ───────────────────────────────────────────────────────────────
 
-safe_name() { local s="${1//[^A-Za-z0-9._-]/-}"; s="${s#.}"; printf '%s\n' "${s:-ws}"; }
+# A name usable as both a directory and a branch component: anything outside
+# [A-Za-z0-9._-] becomes "-", with no leading dot or dash.
+safe_name() {
+  local s="${1//[^A-Za-z0-9._-]/-}"
+  while [[ "$s" == [.-]* ]]; do s="${s:1}"; done
+  printf '%s\n' "$s"
+}
+
+pane_base_dir() { printf '%s\n' "${LAZY_LLM_WORKTREE_DIR:-$1/.worktrees}/.panes"; }
+
+# True when <name> is free in <repo>: no lazy/<name> branch, no directory.
+name_free() {
+  ! git -C "$1" show-ref --verify --quiet "refs/heads/lazy/$2" && [[ ! -e "$(pane_base_dir "$1")/$2" ]]
+}
+
+# <repo>-wt-<n>, the first n that's free.
+default_name() {
+  local repo="$1" root n=1
+  root=$(safe_name "$(basename "$repo")")
+  while ! name_free "$repo" "${root}-wt-$n"; do n=$((n + 1)); done
+  printf '%s\n' "${root}-wt-$n"
+}
+
+cmd_default_name() {
+  local repo
+  repo=$(git -C "${1:-$PWD}" rev-parse --show-toplevel 2>/dev/null) || die 1 "${1:-$PWD} is not in a git repository"
+  default_name "$repo"
+}
 
 cmd_create() {
-  [[ $# -eq 3 ]] || die 1 "usage: llm-wt create <dir> <tool> <ws>"
-  local dir="$1" tool ws repo base n branch wt pane_base
-  tool=$(safe_name "$2"); ws=$(safe_name "$3")
+  [[ $# -ge 1 && $# -le 2 ]] || die 1 "usage: llm-wt create <dir> [name]"
+  local dir="$1" name="${2:-}" repo base branch wt pane_base
   repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || die 1 "$dir is not in a git repository"
+  if [[ -n "$name" ]]; then
+    local asked="$name"
+    name=$(safe_name "$name")
+    [[ -n "$name" ]] || die 1 "'$asked' has nothing usable as a name"
+    name_free "$repo" "$name" || die 1 "the name '$name' is taken (branch lazy/$name or its directory exists)"
+  else
+    name=$(default_name "$repo")
+  fi
+  branch="lazy/$name"
   base=$(git -C "$repo" branch --show-current)
   [[ -n "$base" ]] || die 1 "$repo has a detached HEAD; check out a branch first"
   if [[ -n "$(git -C "$repo" status --porcelain -uno)" ]]; then
     warn "the main directory has uncommitted changes; the isolated pane starts from '$base' HEAD and won't see them"
   fi
 
-  pane_base="${LAZY_LLM_WORKTREE_DIR:-$repo/.worktrees}/.panes"
-  n=2
-  while :; do
-    branch="lazy/$ws/$tool-$n"
-    if ! git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" \
-      && [[ ! -e "$pane_base/${branch//\//-}" ]]; then
-      break
-    fi
-    n=$((n + 1))
-  done
+  pane_base=$(pane_base_dir "$repo")
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || die 1 "invalid branch name: $branch"
 
   # Ignore .worktrees/ via info/exclude rather than the tracked .gitignore:
   # creating a pane must not leave an uncommitted change in the main directory.
   [[ "$pane_base" == "$repo/.worktrees/"* ]] && add_exclude "$repo" "/.worktrees/"
-  wt=$(cd "$repo" && lazy_llm_setup_worktree "$branch" "$pane_base" "$base") || die 1 "could not create the worktree"
+  wt=$(cd "$repo" && lazy_llm_setup_worktree "$branch" "$pane_base" "$base" "$name") || die 1 "could not create the worktree"
   git -C "$repo" config "branch.$branch.lazyLlmBase" "$base"
   git -C "$repo" config "branch.$branch.lazyLlmPrimary" "$repo"
 
@@ -539,6 +567,7 @@ case "$cmd" in
   sync) cmd_sync "$@" ;;
   integrate) cmd_integrate "$@" ;;
   create) cmd_create "$@" ;;
+  default-name) cmd_default_name "$@" ;;
   bootstrap) cmd_bootstrap "$@" ;;
   close) cmd_close "$@" ;;
   remove) cmd_remove "$@" ;;

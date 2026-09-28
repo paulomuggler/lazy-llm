@@ -54,7 +54,7 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Tear down a worktree (atomic)            │ Prefix+S → 2 → highlight → K — kills attached workspace, removes worktree, optionally branch     │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ Run an AI pane in its own worktree       │ Prefix+S → A, or llm-add -i — own branch lazy/<ws>/<tool>-<n>; ⎇ in the tree and border          │
+  │ Run an AI pane in its own worktree       │ Prefix+S → A (asks a name; default <repo>-wt-<n>), or llm-add -i [-n name]; branch lazy/<name>   │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Merge an isolated pane's work back       │ the agent runs llm-wt integrate per unit (rebase, fast-forward); llm-wt status shows what's left │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤

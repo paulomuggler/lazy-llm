@@ -131,7 +131,7 @@ Actions:
 
 Several agents in one workspace normally share its working tree, so their checkouts, staging and commits can collide. An **isolated** pane runs in a git worktree of its own instead, and merges its work back into the branch the workspace is on. It's opt-in per pane; plain `a` / `llm-add` behave exactly as before.
 
-- **Add one:** `Prefix+S` → `A`, or `llm-add -i [-t tool]`. The pane gets branch `lazy/<workspace>/<tool>-<n>` from the main directory's current branch, in `.worktrees/.panes/` (ignored through `.git/info/exclude`, never your `.gitignore`). Its tree row and border show `⎇`.
+- **Add one:** `Prefix+S` → `A`, or `llm-add -i [-n name] [-t tool]`. `A` asks for a name, pre-filled with `<repo>-wt-<n>` (e.g. `dev-env-wt-1`), and that one name is the worktree's directory (`.worktrees/.panes/<name>`), its branch (`lazy/<name>`, from the main directory's current branch) and the pane's label. It's set once: renaming the pane later changes only the label. `.worktrees/` is ignored through `.git/info/exclude`, never your `.gitignore`. The tree row and border show `⎇`.
 - **Add another pane to the same worktree:** `a` while an isolated pane is in view asks whether the new pane joins that worktree or the main directory; `llm-add -w <path>` from the shell.
 - **Merging back is the agent's job.** Claude sessions in an isolated pane are told where they are at session start (and after resume and compaction): commit in logical units and run `llm-wt integrate` for each one. It rebases in the worktree, then fast-forwards the main directory's branch, and never forces, stashes or resets. Distinct exit codes tell the agent to commit first, resolve a conflict, or stop and ask you.
 - **See it from the editor:** `<leader>llmw` flips the current file between the main copy and the visible AI pane's worktree copy (same line, editable; the winbar shows `⎇ <branch>`). Code references and notes from a worktree buffer carry the path the agent sees.
@@ -153,7 +153,7 @@ With neither file, the default list is `.env*`, `.claude/settings.local.json` an
 
 ### AI pane border
 
-Every AI pane's border ends with its git state: branch, `*` when tracked files changed, short commit, upstream, and `↑ahead ↓behind`, e.g. `main* 1b3dafc origin ↑2↓1`. An isolated pane shows `⎇ claude-2→main 1b3dafc ↑3`, counted against the branch it merges into. `tmux set -g @lazy_llm_border_git off` hides it.
+Every AI pane's border ends with its git state: branch, `*` when tracked files changed, short commit, upstream, and `↑ahead ↓behind`, e.g. `main* 1b3dafc origin ↑2↓1`. An isolated pane shows `⎇ dev-env-wt-1→main 1b3dafc ↑3`, counted against the branch it merges into. `tmux set -g @lazy_llm_border_git off` hides it.
 
 ### Keymaps
 

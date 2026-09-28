@@ -328,12 +328,16 @@ _dashboard_build_rows() {
         [[ "$display_label" == "_" ]] && display_label="$tool"
         local pane_display
         printf -v pane_display '    ↳ %-12s %s' "$display_label" "${glyph[${st_arr[$i]}]:-${glyph[unknown]}}"
-        # Isolated pane: ⎇ + its worktree's <tool>-<n> (the dir is
-        # lazy-<ws>-<tool>-<n>). Plain ANSI, like the bold below.
+        # Isolated pane: ⎇, plus the worktree's name (its directory) when
+        # the pane's label isn't already that name. Plain ANSI, like the
+        # bold below.
         if [[ -n "${pane_wt[$pid]:-}" ]]; then
-          local wt_sfx="${pane_wt[$pid]##*/}"
-          [[ "$wt_sfx" =~ ([^-]+-[0-9]+)$ ]] && wt_sfx="${BASH_REMATCH[1]}"
-          pane_display+=$' \033[38;5;75m⎇ '"${wt_sfx}"$'\033[0m'
+          local wt_name="${pane_wt[$pid]##*/}"
+          if [[ "$display_label" == "$wt_name" ]]; then
+            pane_display+=$' \033[38;5;75m⎇\033[0m'
+          else
+            pane_display+=$' \033[38;5;75m⎇ '"${wt_name}"$'\033[0m'
+          fi
         fi
         # Bold instead of an "(active)" text tag — real ANSI codes (not
         # tmux's #[..] syntax), since this is plain fzf row text rendered
@@ -1251,7 +1255,19 @@ dispatch_action() {
         --no-info || true)
       [[ -n "$tool" ]] || return 0
       if [[ "$action" == action:pane-add-isolated ]]; then
-        "$HOME/.local/bin/llm-add" -t "$tool" -i >&2 || true
+        # One name for the worktree's directory, branch (lazy/<name>) and the
+        # pane's label, set now and never renamed; Enter keeps the default.
+        local ws_dir default_name wt_name add_out
+        ws_dir=$(lazy_llm_workspace_dir "$(tmux display-message -p '#S')")
+        default_name=$("$HOME/.local/bin/llm-wt" default-name "$ws_dir" 2>/dev/null) || default_name=""
+        wt_name=$(echo "" | fzf --print-query --query="$default_name" --height=100% --reverse \
+          --border=rounded --prompt="name> " --no-info --bind 'enter:accept-non-empty' \
+          --header="Name the new worktree (its directory, branch lazy/<name> and the pane's label). Esc cancels." \
+          | head -1 || true)
+        [[ -n "$wt_name" ]] || return 0
+        if ! add_out=$("$HOME/.local/bin/llm-add" -t "$tool" -i -n "$wt_name" 2>&1); then
+          tmux display-message "$(tail -1 <<< "$add_out")"
+        fi
         return 0
       fi
       # Spec §3.1: with an isolated pane in view, offer to add into ITS
@@ -1451,7 +1467,8 @@ render_help_tab() {
     " a      add AI pane (asks where"
     "        if the one in view is ⎇)"
     " A      add isolated pane: own"
-    "        worktree + branch (⎇)"
+    "        worktree + branch, named"
+    "        once (default <repo>-wt-N)"
     " ]  [   cycle next/prev pane"
   )
   local -a right=(

@@ -329,13 +329,13 @@ sbx lazy-llm -s wsG -d "$G" -t claude >/dev/null 2>&1
 sleep 1
 sbx env TMUX_PANE="$(wopt wsG @PROMPT_PANE_ID)" llm-add -t claude -i >/dev/null 2>&1
 sleep 0.5
-WTG="$G/.worktrees/.panes/lazy-wsG-claude-2"
+WTG="$G/.worktrees/.panes/g-wt-1"
 read -ra Gp <<< "$(wopt wsG @AI_PANES)"
 assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "$WTG" "setup: an isolated pane"
 printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"conv-g1"}' \
     | sbx env TMUX_PANE="${Gp[1]}" llm-claude-hook
 sbx llm-persist save >/dev/null
-assert_equals "$(jq -c '.windows[0].panes[1].worktree' "$(entry wsG)")" "{\"path\":\"$WTG\",\"branch\":\"lazy/wsG/claude-2\"}" "the manifest records the pane's worktree"
+assert_equals "$(jq -c '.windows[0].panes[1].worktree' "$(entry wsG)")" "{\"path\":\"$WTG\",\"branch\":\"lazy/g-wt-1\"}" "the manifest records the pane's worktree"
 assert_equals "$(jq -c '.windows[0].panes[0].worktree' "$(entry wsG)")" "null" "a shared pane has none"
 reopen_g() {
     sbx llm-persist restore wsG >/dev/null 2>&1
@@ -364,7 +364,7 @@ assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "$WTG" "...and 
 
 sbx llm-persist close wsG >/dev/null 2>&1
 sbx git -C "$G" worktree remove --force "$WTG"
-sbx git -C "$G" branch -qD lazy/wsG/claude-2
+sbx git -C "$G" branch -qD lazy/g-wt-1
 reopen_g
 assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "" "worktree and branch gone: the pane comes back shared"
 assert_contains "$(grep "^claude " "$SB/argv.log" | tail -1)" "PWD=$G WT=$" "...fresh, in the workspace dir (its conversation can't resume elsewhere)"
