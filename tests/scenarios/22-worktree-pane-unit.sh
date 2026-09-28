@@ -467,6 +467,11 @@ assert_contains "$output" "owner-live=pane:dws:$N" "gather_worktrees: owner is t
 assert_contains "$output" "owner-task=<>" "task worktree has no owner"
 assert_contains "$output" "owner-main=<>" "main checkout has no owner"
 assert_contains "$output" "owner-orphan=orphaned" "pane gone: orphaned"
+# Free-text prompts: Enter must print the query. accept-non-empty over an
+# empty list never fires once there's a query (the name prompt was stuck).
+DASH="$REPO_ROOT/lazy-llm-bin/.local/bin/llm-dashboard"
+assert_equals "$(grep -c "enter:print-query" "$DASH")" "2" "the name and new-branch prompts accept on Enter"
+assert_equals "$(grep "enter:accept-non-empty" "$DASH" | wc -l | tr -d ' ')" "$(grep -c -- "--expect=enter" "$DASH")" "every accept-non-empty prompt also has --expect=enter"
 
 echo ""
 echo "Test 14: nvim — counterpart toggle, reference paths, buffer marks (spec §10)..."

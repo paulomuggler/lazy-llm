@@ -1260,10 +1260,12 @@ dispatch_action() {
         local ws_dir default_name wt_name add_out
         ws_dir=$(lazy_llm_workspace_dir "$(tmux display-message -p '#S')")
         default_name=$("$HOME/.local/bin/llm-wt" default-name "$ws_dir" 2>/dev/null) || default_name=""
-        wt_name=$(echo "" | fzf --print-query --query="$default_name" --height=100% --reverse \
-          --border=rounded --prompt="name> " --no-info --bind 'enter:accept-non-empty' \
+        # A free-text prompt: Enter prints the query and exits. (accept-non-empty
+        # over an empty list never fires once the query is non-empty.)
+        wt_name=$(fzf --query="$default_name" --height=100% --reverse \
+          --border=rounded --prompt="name> " --no-info --bind 'enter:print-query' \
           --header="Name the new worktree (its directory, branch lazy/<name> and the pane's label). Esc cancels." \
-          | head -1 || true)
+          < /dev/null || true)
         [[ -n "$wt_name" ]] || return 0
         if ! add_out=$("$HOME/.local/bin/llm-add" -t "$tool" -i -n "$wt_name" 2>&1); then
           tmux display-message "$(tail -1 <<< "$add_out")"
@@ -1348,10 +1350,10 @@ dispatch_action() {
       local new_branch
       # Same errexit hazard as action:pane-add above — `|| true` needed or
       # Esc here kills the whole dashboard.
-      new_branch=$(echo "" | fzf --print-query --height=100% --reverse --border=rounded \
+      new_branch=$(fzf --height=100% --reverse --border=rounded \
         --header="New worktree — branch name (will be created from HEAD if it doesn't exist):" \
         --prompt="branch> " --no-info \
-        --bind 'enter:accept-non-empty' | head -1 || true)
+        --bind 'enter:print-query' < /dev/null || true)
       if [[ -n "$new_branch" ]]; then
         "$HOME/.local/bin/lazy-llm" -W "$new_branch" >&2 || true
       fi
