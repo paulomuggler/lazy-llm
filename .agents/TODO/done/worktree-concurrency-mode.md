@@ -8,7 +8,7 @@ updated: 2026-09-28_21:45
 depends-on: []
 tags: [worktree, concurrency, dashboard, design]
 spec: ../specs/worktree-concurrency-mode.md
-commits: [e30c8bb, 955279d, 46cac75, d7eec68, b4fc01c, 6984da5, d94ef23, 4b7799a, 893d88b, 010be85, 54afac7, d63eedc]
+commits: [e30c8bb, 955279d, 46cac75, d7eec68, b4fc01c, 6984da5, d94ef23, 4b7799a, 893d88b, 010be85, 54afac7, d63eedc, 52519e5]
 ---
 
 # Optional per-pane worktree isolation for concurrent AI panes
@@ -163,3 +163,11 @@ Interactive flows the unit tests can't drive (fzf dialogs, real Claude sessions)
 - **Close dialog** (`d63eedc`): what would be lost is in bold red and yellow. Status no longer
   counts bootstrapped links' parent directories as extra ignored paths.
 - The `a` check above needs re-running now that adds can't fail silently.
+- **Naming** (`52519e5`, spec revision 3): one name, chosen once, for the directory, the branch
+  `lazy/<name>` and the label; default `<repo>-wt-<n>`. Restore recreates a deleted worktree
+  under its old directory name (it no longer derives from the branch).
+- **Incident.** While this was in progress, a scenario-22 run with a failing `create` left `$wt`
+  empty, and `git -C "$wt" reset --hard main` reset the lazy-llm checkout itself. It wiped the
+  uncommitted naming work (redone) and the user's uncommitted REVIEW-QUEUE.md notes. Those were
+  recovered from a dangling blob, possibly one edit behind. Scenario 22 now `cd`s into its
+  sandbox first, and a safety stash holds that recovered state.

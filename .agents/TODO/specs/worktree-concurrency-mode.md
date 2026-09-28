@@ -55,6 +55,20 @@ Implementation notes (2026-09-28, `e30c8bb`..`010be85`). Where the code differs 
     verified**. The close flow catches a replaced link either way (§5.4).
   - dropbar custom source: implemented, but the winbar rendering is untested headless.
 
+Revision 3 (2026-09-28 evening, with the user): **naming.** This replaces the naming in §4
+steps 3–4 and in §3.
+- `A` asks for a name, pre-filled with `<repo>-wt-<n>`, where `<repo>` is the basename of the
+  workspace's repo root. `llm-add -i [-n name]` works the same way.
+- That one name is the worktree's directory (`.worktrees/.panes/<name>`), its branch
+  (`lazy/<name>`) and the pane's label.
+- It's set once. A pane rename changes only the label: the branch stays a stable identifier,
+  and a running agent's directory never moves. Moving it would break its cwd, Claude's resume
+  lookup and the saved state.
+- A name that's already taken is refused, not suffixed.
+- The name carries no tool or commit hash. A hash is stale after the first sync; the base
+  branch lives in git config and shows on the border.
+- Existing `lazy-<ws>-<tool>-<n>` worktrees keep their names.
+
 ## 1. Goal and scope
 
 Two or more agents in one workspace currently share one working tree, so their checkouts,
