@@ -7,11 +7,6 @@ TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCENARIOS_DIR="$TESTS_DIR/scenarios"
 LIB_DIR="$TESTS_DIR/lib"
 
-# Source helper libraries
-source "$LIB_DIR/assertions.sh"
-source "$LIB_DIR/tmux-helpers.sh"
-source "$LIB_DIR/setup-teardown.sh"
-
 # lazy-llm saves a manifest of every workspace it launches (llm-persist). A
 # test's throwaway workspaces must never land in the user's real one, where
 # they'd show up as restorable once the test's tmux server is gone.
@@ -37,6 +32,15 @@ tmux set-option -g default-size 220x80
 # Where tests' throwaway workspace dirs go; removed with the run.
 LAZY_LLM_TEST_WORKROOT=$(mktemp -d /tmp/lazy-llm-test-work-XXXXXX)
 export LAZY_LLM_TEST_WORKROOT
+
+# Scenarios check for this (tests/lib/assertions.sh) and refuse to run
+# without it: only a run isolated as above is safe for them.
+export LAZY_LLM_TEST_RUNNER=$$
+
+# Source helper libraries
+source "$LIB_DIR/assertions.sh"
+source "$LIB_DIR/tmux-helpers.sh"
+source "$LIB_DIR/setup-teardown.sh"
 
 cleanup_run() {
     if [ -n "${DEBUG:-}" ]; then

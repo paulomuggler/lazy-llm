@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 # Assertion helpers for lazy-llm tests
 
+# Every scenario sources this first, so this is where they refuse to run
+# outside tests/test-runner.sh. Scenarios create, kill and kill-server tmux
+# sessions; run standalone from inside tmux, those calls go to the user's
+# own server, because $TMUX overrides TMUX_TMPDIR. That happened: a standalone
+# run's cleanup killed the user's tmux server and every workspace in it. The
+# runner isolates a run first (private tmux server, manifest dir and work
+# dirs, TMUX unset) and then sets LAZY_LLM_TEST_RUNNER.
+if [ -z "${LAZY_LLM_TEST_RUNNER:-}" ] || [ -n "${TMUX:-}" ]; then
+    echo "Refusing to run: lazy-llm scenarios only run under the test runner, which isolates tmux." >&2
+    echo "  Run: tests/test-runner.sh $(basename "${BASH_SOURCE[1]:-$0}" .sh)" >&2
+    exit 2
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
