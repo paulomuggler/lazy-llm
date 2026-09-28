@@ -10,8 +10,9 @@
 # Usage: llm-claude-hook [<state>]   (hook payload JSON on stdin)
 #
 # What each event does, dispatched on the payload's hook_event_name:
-#   Notification  <state> is "waiting" (matcher permission_prompt — a tool call
-#                 is genuinely blocked on your decision) or "idle" (matcher
+#   Notification  <state> is "waiting" (matchers permission_prompt,
+#                 elicitation_dialog, elicitation_url_dialog, agent_needs_input
+#                 — Claude is genuinely blocked on you) or "idle" (matcher
 #                 idle_prompt). Writes the fresh-status file read by
 #                 _lazy_llm_read_hook_status; a transition INTO waiting also
 #                 fires a desktop notification naming the conversation (its
@@ -21,8 +22,12 @@
 #                 mark: you just answered it. Without this, a prompt typed within
 #                 30s of the last Stop read as idle/unread until that aged out.
 #   Stop          status "idle"; marks the pane unread (◉ — finished, not looked
-#                 at yet; lazy_llm_mark_unread skips a pane you're focused on);
-#                 records the model from the transcript if none is recorded yet.
+#                 at yet; lazy_llm_mark_unread skips a pane you're focused on)
+#                 and, on the same condition, fires a "finished" notification
+#                 with the reply's opening line; records the model from the
+#                 transcript if none is recorded yet.
+#   Clicking either notification runs llm-focus-pane: tmux switches to the
+#   pane and the terminal window holding it is focused.
 #   SessionStart  records the payload's `model` (documented as not always
 #                 present — hence the Stop fallback). In an isolated pane
 #                 (LAZY_LLM_WORKTREE=1, set by llm-add -i), also prints the
@@ -104,8 +109,9 @@ reverse_lines() {
   if command -v tac >/dev/null 2>&1; then tac "$1"; else tail -r "$1"; fi
 }
 
+# Desktop notification whose click brings this pane to the front.
 notify() {
-  local title="$1" body="$2"
+  local title="$1" body="$2" focus socket argv
   if command -v notify-send >/dev/null 2>&1; then
     # The body is markup to most daemons (Quickshell, mako): a command like
     # `a && b` would otherwise render wrong or not at all. The title is plain.
@@ -113,7 +119,19 @@ notify() {
     body=${body//&/"&amp;"}
     body=${body//</"&lt;"}
     body=${body//>/"&gt;"}
-    timeout 2s notify-send -a lazy-llm -u normal "$title" "$body" -t 8000 2>/dev/null &
+    # Click action, two ways. Omarchy's shell runs the omarchy-exec-argv hint
+    # itself, which keeps working from its notification history. Other
+    # daemons invoke the "default" action, which only reaches a notify-send
+    # still waiting on it — hence --wait, capped so none lingers.
+    focus="$(cd "$(dirname "$0")" && pwd)/llm-focus-pane"
+    socket=$(tmux display-message -p '#{socket_path}' 2>/dev/null)
+    argv="[\"$(json_escape "$focus")\",\"$(json_escape "$PANE_ID")\",\"$(json_escape "$socket")\"]"
+    (
+      action=$(timeout 10m notify-send -a lazy-llm -u normal -t 8000 \
+        -h "string:omarchy-exec-argv:$argv" --action=default=Focus --wait \
+        "$title" "$body" 2>/dev/null)
+      [ "$action" = default ] && "$focus" "$PANE_ID" "$socket"
+    ) &
   elif command -v osascript >/dev/null 2>&1; then
     title=${title//\\/\\\\}
     title=${title//\"/\\\"}
@@ -175,23 +193,64 @@ pending_tool_detail() {
   done
 }
 
-# "Claude: <conversation>" over what it's asking, the pending command, and
-# where: tmux session:window, pane name, directory.
-notify_waiting() {
-  local transcript title detail where label cwd body
-  transcript=$(field transcript_path)
-  title=$(session_title "$transcript")
+# Where the pane is: tmux session:window, pane name, directory.
+pane_where() {
+  local where label cwd
   where=$(tmux display-message -t "$PANE_ID" -p '#S:#I' 2>/dev/null)
   where=${where:-$PANE_ID}
   label=$(pane_label)
   [ -n "$label" ] && where="$where · $label"
   cwd=$(field cwd)
   [ -n "$cwd" ] && where="$where · ${cwd/#$HOME/\~}"
+  printf '%s' "$where"
+}
+
+# Notification title: the conversation's name, else its directory's.
+notify_title() {
+  local title cwd
+  title=$(session_title "$(field transcript_path)")
+  cwd=$(field cwd)
+  printf '%s' "${title:-${cwd##*/}}"
+}
+
+# The opening line of the turn's final reply, markdown stripped: usually its
+# headline, or the question it ends on. jq reads the payload's string in full;
+# without it, field() stops at the first escaped quote, which still leaves a
+# usable opening.
+reply_headline() {
+  local text line
+  if command -v jq >/dev/null 2>&1; then
+    text=$(printf '%s' "$HOOK_INPUT" | jq -r '.last_assistant_message // empty' 2>/dev/null)
+  else
+    text=$(field last_assistant_message)
+    text=${text//\\n/$'\n'}
+  fi
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*([#>*-]+[[:space:]]*)+//; s/\*\*|`//g')
+    if [ -n "${line//[[:space:]]/}" ]; then
+      [ "${#line}" -gt 160 ] && line="${line:0:159}…"
+      printf '%s' "$line"
+      return 0
+    fi
+  done <<<"$text"
+}
+
+# "Claude: <conversation>" over what it's asking, the pending command, and
+# where it is.
+notify_waiting() {
+  local body detail
   body=$(field message)
   body=${body:-Claude needs your input}
-  detail=$(pending_tool_detail "$transcript")
+  detail=$(pending_tool_detail "$(field transcript_path)")
   [ -n "$detail" ] && body="$body"$'\n'"$detail"
-  notify "Claude: ${title:-${cwd##*/}}" "$body"$'\n'"$where"
+  notify "Claude: $(notify_title)" "$body"$'\n'"$(pane_where)"
+}
+
+# "Claude finished: <conversation>" over the reply's opening line and where.
+notify_finished() {
+  local headline
+  headline=$(reply_headline)
+  notify "Claude finished: $(notify_title)" "${headline:-Done}"$'\n'"$(pane_where)"
 }
 
 # Record the last response's model from the transcript. Retries for a few
@@ -279,6 +338,10 @@ case "$(field hook_event_name)" in
   Stop)
     write_status idle
     lazy_llm_mark_unread "$PANE_ID"
+    # Finished while you weren't looking (the unread test): say so. Detached.
+    if ! lazy_llm_pane_is_focused "$PANE_ID"; then
+      notify_finished </dev/null >/dev/null 2>&1 &
+    fi
     if [ -z "$(lazy_llm_pane_model "$PANE_ID")" ]; then
       # Detached, fds closed, so Claude doesn't wait on the retries.
       model_from_transcript "$(field transcript_path)" </dev/null >/dev/null 2>&1 &
