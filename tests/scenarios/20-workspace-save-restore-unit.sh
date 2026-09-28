@@ -47,6 +47,8 @@ entry() { grep -l "\"name\": \"$1\"" "$SB"/state/workspaces/*.json 2>/dev/null |
 
 cleanup() {
     T kill-server 2>/dev/null
+    # Background saves (save --async) still running would recreate $SB/state.
+    sleep 1
     rm -rf "$SB"
 }
 trap cleanup EXIT

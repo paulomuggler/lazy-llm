@@ -43,11 +43,11 @@ assert_contains "$AI_OUTPUT" "### PROMPT" "PROMPT marker should exist"
 assert_contains "$AI_OUTPUT" "### END PROMPT" "END PROMPT marker should exist"
 
 # 2. PROMPT marker should be on its own line with timestamp
-if echo "$AI_OUTPUT" | grep -E "^### PROMPT [0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}:[0-9]{2}:[0-9]{2}$" > /dev/null; then
+if echo "$AI_OUTPUT" | grep -E "^### PROMPT [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$" > /dev/null; then
     assert_success "true" "PROMPT marker has correct format with timestamp"
 else
     assert_fails "true" "PROMPT marker should be on its own line with timestamp"
-    echo "  Looking for: ^### PROMPT YYYY-MM-DD-HH:MM:SS$"
+    echo "  Looking for: ^### PROMPT YYYY-MM-DD HH:MM:SS$"
 fi
 
 # 3. END PROMPT marker should be on its own line (no timestamp)

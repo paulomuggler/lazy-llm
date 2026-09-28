@@ -13,21 +13,27 @@ This test suite provides:
 ## Quick Start
 
 ```bash
-# From repository root
-cd tests
+# From the repository root (the runner looks for tests/mock-ai-tool)
 
 # Run all tests
-./test-runner.sh
+tests/test-runner.sh
 
 # Run specific test
-./test-runner.sh 01-simple-send.sh
+tests/test-runner.sh 01-simple-send.sh
 
 # Run tests matching pattern
-./test-runner.sh send
+tests/test-runner.sh send
 
-# Run with debug mode (keeps sessions alive)
-./test-runner.sh -d 02-multiline-send.sh
+# Run with debug mode (keeps sessions alive; prints how to attach)
+tests/test-runner.sh -d 02-multiline-send.sh
 ```
+
+Each run gets its own tmux server (a private `TMUX_TMPDIR`), its own lazy-llm
+manifest dir (`LAZY_LLM_STATE_DIR`) and throwaway workspace dirs, so it's safe
+to run from inside your own tmux: nothing lands next to your workspaces or in
+your Saved list. The send tests type nvim's real `<leader>` (read from your nvim
+config, e.g. Space under LazyVim) and find panes by the ids lazy-llm records,
+so they don't depend on your leader key or tmux `base-index`.
 
 ## Prerequisites
 

@@ -15,11 +15,43 @@ source "$LIB_DIR/setup-teardown.sh"
 # lazy-llm saves a manifest of every workspace it launches (llm-persist). A
 # test's throwaway workspaces must never land in the user's real one, where
 # they'd show up as restorable once the test's tmux server is gone.
+OWN_STATE_DIR=""
 if [ -z "${LAZY_LLM_STATE_DIR:-}" ]; then
     LAZY_LLM_STATE_DIR=$(mktemp -d /tmp/lazy-llm-test-state-XXXXXX)
+    OWN_STATE_DIR=$LAZY_LLM_STATE_DIR
     export LAZY_LLM_STATE_DIR
-    trap 'rm -rf "$LAZY_LLM_STATE_DIR"' EXIT
 fi
+
+# A private tmux server for the whole run. Tests create and kill sessions,
+# which must never happen on the user's own server (run from inside tmux,
+# they used to land next to the user's workspaces). Short /tmp path: tmux
+# socket paths are limited to ~108 bytes.
+TEST_TMUX_TMPDIR=$(mktemp -d /tmp/lazy-llm-test-tmux-XXXXXX)
+export TMUX_TMPDIR="$TEST_TMUX_TMPDIR"
+unset TMUX TMUX_PANE
+# Keep that server up for the whole run, and give detached test sessions a
+# roomy size: at tmux's default 80x24 the prompt pane is ~5 rows, too short
+# to see what a test puts in it (e.g. a pulled multi-line response).
+tmux new-session -d -s _test-runner
+tmux set-option -g default-size 220x80
+# Where tests' throwaway workspace dirs go; removed with the run.
+LAZY_LLM_TEST_WORKROOT=$(mktemp -d /tmp/lazy-llm-test-work-XXXXXX)
+export LAZY_LLM_TEST_WORKROOT
+
+cleanup_run() {
+    if [ -n "${DEBUG:-}" ]; then
+        echo "Test tmux server kept (DEBUG): TMUX_TMPDIR=$TEST_TMUX_TMPDIR tmux attach"
+    else
+        tmux kill-server 2>/dev/null || true
+        # The killed nvims write their session snapshot on the way out (and
+        # mkdir -p would recreate the dirs): let them finish first.
+        sleep 1
+        rm -rf "$TEST_TMUX_TMPDIR" "$LAZY_LLM_TEST_WORKROOT"
+    fi
+    [ -n "$OWN_STATE_DIR" ] && rm -rf "$OWN_STATE_DIR"
+    return 0
+}
+trap cleanup_run EXIT
 
 # Test tracking
 TESTS_PASSED=0

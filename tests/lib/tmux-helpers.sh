@@ -7,15 +7,53 @@ AI_PANE=""
 EDITOR_PANE=""
 PROMPT_PANE=""
 
-# Start a lazy-llm session for testing
+# nvim's <leader>, as the user's own config sets it (LazyVim: Space). The
+# send/pull/keypress helpers type it before the llm* keymaps; it used to be
+# hard-coded as backslash, so under LazyVim the keymaps never fired.
+nvim_leader() {
+    if [ -z "${NVIM_LEADER+x}" ]; then
+        local out
+        out=$(cd /tmp && nvim --headless -c 'lua io.stdout:write("<LEADER:" .. (vim.g.mapleader or "\\") .. ">")' -c 'qa!' 2>/dev/null)
+        out="${out#*<LEADER:}"
+        NVIM_LEADER="${out%>*}"
+        [ -n "$NVIM_LEADER" ] || NVIM_LEADER='\'
+    fi
+    printf '%s' "$NVIM_LEADER"
+}
+
+# Set AI_PANE / EDITOR_PANE / PROMPT_PANE from the workspace lazy-llm built,
+# via the pane ids it records in its window options — not from window ":0"
+# and fixed pane indexes, which break under a base-index 1 tmux.conf.
+# Args: $1 session
+resolve_test_panes() {
+    local session=$1 win p
+    win=$(tmux list-windows -t "=$session" -F '#{window_index}' | head -1)
+    AI_PANE=$(tmux show-option -wqv -t "=$session:$win" @AI_PANE_ID)
+    PROMPT_PANE=$(tmux show-option -wqv -t "=$session:$win" @PROMPT_PANE_ID)
+    EDITOR_PANE=""
+    for p in $(tmux list-panes -t "=$session:$win" -F '#{pane_id}'); do
+        [ "$p" != "$AI_PANE" ] && [ "$p" != "$PROMPT_PANE" ] && EDITOR_PANE=$p
+    done
+    export AI_PANE EDITOR_PANE PROMPT_PANE
+}
+
+# Start a lazy-llm session for testing. With no working dir, each session
+# gets a fresh one: a shared dir would carry the prompt pane's session
+# snapshot (.lazy-llm/sessions/prompt.vim) from one test into the next.
 start_lazy_llm_session() {
     local session_name=$1
     local ai_tool=${2:-"tests/mock-ai-tool"}
-    local working_dir=${3:-"$PWD"}
+    local working_dir=${3:-$(mktemp -d "${LAZY_LLM_TEST_WORKROOT:-/tmp}/lazy-llm-test-ws-XXXXXX")}
 
+    nvim_leader >/dev/null  # resolve once, in this shell, so it's cached for the helpers
     # Export mock AI configuration
     export MOCK_AI_MODE=${MOCK_AI_MODE:-multiline}
     export MOCK_AI_LOG="/tmp/test-${session_name}-mock-ai.log"
+    # Pane shells take their environment from the tmux SERVER, not from this
+    # process — with the runner's server already up, the mock would otherwise
+    # start in whatever mode (if any) the server was started with.
+    tmux set-environment -g MOCK_AI_MODE "$MOCK_AI_MODE" 2>/dev/null || true
+    tmux set-environment -g MOCK_AI_LOG "$MOCK_AI_LOG" 2>/dev/null || true
 
     # Use absolute path for mock-ai-tool if it's relative
     if [[ "$ai_tool" == "tests/mock-ai-tool" ]]; then
@@ -56,10 +94,7 @@ start_lazy_llm_session() {
     # Wait a bit more for panes to be fully initialized
     sleep 1
 
-    # Get pane IDs from tmux window
-    export AI_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^0:' | cut -d: -f2)
-    export EDITOR_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^1:' | cut -d: -f2)
-    export PROMPT_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^2:' | cut -d: -f2)
+    resolve_test_panes "$TEST_SESSION"
 
     # Verify panes exist
     if [ -z "$AI_PANE" ] || [ -z "$EDITOR_PANE" ] || [ -z "$PROMPT_PANE" ]; then
@@ -163,8 +198,8 @@ tmux_send_keys_to_nvim() {
         return 1
     fi
 
-    # Convert \\ to actual backslash for leader key
-    keys="${keys//\\\\/\\}"
+    # A literal "<leader>" in keys stands for nvim's leader (see nvim_leader)
+    keys="${keys//<leader>/$(nvim_leader)}"
 
     tmux send-keys -t "$EDITOR_PANE" "$keys"
     sleep 0.2
@@ -190,8 +225,7 @@ trigger_llm_send() {
     sleep 0.2
 
     # Send the <leader>llms keymap
-    # Assuming <leader> is \
-    tmux send-keys -t "$PROMPT_PANE" '\' 'llms'
+    tmux send-keys -t "$PROMPT_PANE" "$(nvim_leader)" 'llms'
     sleep 0.5  # Wait for send to complete
 }
 
@@ -203,7 +237,7 @@ trigger_llm_keypress() {
     sleep 0.1
 
     # Send <leader>llmk followed by the key
-    tmux send-keys -t "$PROMPT_PANE" '\' 'llmk' "$key"
+    tmux send-keys -t "$PROMPT_PANE" "$(nvim_leader)" 'llmk' "$key"
     sleep 0.3
 }
 
@@ -212,7 +246,7 @@ trigger_llm_pull() {
     tmux select-pane -t "$PROMPT_PANE"
     sleep 0.1
 
-    tmux send-keys -t "$PROMPT_PANE" '\' 'llmp'
+    tmux send-keys -t "$PROMPT_PANE" "$(nvim_leader)" 'llmp'
     sleep 0.5  # Wait for pull to complete
 }
 
@@ -284,9 +318,15 @@ start_lazy_llm_session_with_args() {
     local session_name=$1
     local extra_args=$2
 
+    nvim_leader >/dev/null  # resolve once, in this shell, so it's cached for the helpers
     # Export mock AI configuration
     export MOCK_AI_MODE=${MOCK_AI_MODE:-multiline}
     export MOCK_AI_LOG="/tmp/test-${session_name}-mock-ai.log"
+    # Pane shells take their environment from the tmux SERVER, not from this
+    # process — with the runner's server already up, the mock would otherwise
+    # start in whatever mode (if any) the server was started with.
+    tmux set-environment -g MOCK_AI_MODE "$MOCK_AI_MODE" 2>/dev/null || true
+    tmux set-environment -g MOCK_AI_LOG "$MOCK_AI_LOG" 2>/dev/null || true
 
     # Use absolute path for mock-ai-tool
     local ai_tool="$PWD/tests/mock-ai-tool"
@@ -323,10 +363,7 @@ start_lazy_llm_session_with_args() {
     # Wait for panes to be initialized
     sleep 1
 
-    # Get pane IDs
-    export AI_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^0:' | cut -d: -f2)
-    export EDITOR_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^1:' | cut -d: -f2)
-    export PROMPT_PANE=$(tmux list-panes -t "${TEST_SESSION}:0" -F '#{pane_index}:#{pane_id}' | grep '^2:' | cut -d: -f2)
+    resolve_test_panes "$TEST_SESSION"
 
     # Verify panes exist
     if [ -z "$AI_PANE" ] || [ -z "$EDITOR_PANE" ] || [ -z "$PROMPT_PANE" ]; then
