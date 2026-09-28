@@ -9,6 +9,7 @@
 #   branch.<branch>.lazyLlmPrimary  the main directory (repo toplevel)
 #
 # Usage:
+#   llm-wt info [path]                  worktree, branch, base, main directory
 #   llm-wt status [path] [--porcelain]  what closing this worktree would lose
 #   llm-wt sync [path]                  rebase onto the base branch
 #   llm-wt integrate [path]             rebase, then fast-forward the base branch
@@ -260,7 +261,13 @@ cmd_create() {
   printf '%s\n' "$wt"
 }
 
-# ── status ───────────────────────────────────────────────────────────────
+# ── info / status ────────────────────────────────────────────────────────
+
+# key<TAB>value lines; exits 2 when [path] isn't in a pane worktree.
+cmd_info() {
+  load_ctx "${1:-}"
+  printf 'worktree\t%s\nbranch\t%s\nbase\t%s\nprimary\t%s\n' "$WT" "$BRANCH" "$BASE" "$PRIMARY"
+}
 
 # Paths in the manifest, one per line.
 manifest_paths() { cut -f2 "$(manifest_path "$1")" 2>/dev/null || true; }
@@ -409,6 +416,7 @@ usage() { sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0"; }
 cmd="${1:-}"
 [[ $# -gt 0 ]] && shift
 case "$cmd" in
+  info) cmd_info "$@" ;;
   status) cmd_status "$@" ;;
   sync) cmd_sync "$@" ;;
   integrate) cmd_integrate "$@" ;;

@@ -1684,6 +1684,16 @@ lazy_llm_add_ai_pane() {
   printf '%s\n' "$new_pane_id"
 }
 
+# Launch command for an AI pane isolated in a pane worktree: the tool's
+# command with the env that tells it (and its hooks, and llm-wt) where it is.
+# A prefix rather than `split-window -e`, so the same string serves pane 0 of
+# a restored window, which is created by the window build, not a split.
+# Args: $1 launch command  $2 base branch  $3 main directory
+# Stdout: the prefixed command
+lazy_llm_wt_launch_cmd() {
+  printf 'LAZY_LLM_WORKTREE=1 LAZY_LLM_PRIMARY_DIR=%q LAZY_LLM_BASE_BRANCH=%q %s\n' "$3" "$2" "$1"
+}
+
 # Run a command, killing it after $1 seconds (macOS has no `timeout`).
 # Returns the command's status, or 124 on timeout.
 lazy_llm_with_timeout() {

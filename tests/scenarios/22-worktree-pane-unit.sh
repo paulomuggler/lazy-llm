@@ -275,6 +275,70 @@ assert_contains "$output" "│ ⎇ claude-2→main $(sha "$wt") ↑1↓1 >" "bor
 assert_not_contains "$(printf '%s\n' "$output" | grep '^off=')" "⎇" "off switch drops it"
 
 echo ""
+echo "Test 11: llm-add --isolate / --worktree, and plain adds stay in the main directory..."
+# The stowed ~/.local/bin layout, in the sandbox HOME. `-t cat` stands in
+# for a real tool: nothing is ever launched.
+mkdir -p "$HOME/.local/bin"
+for f in llm-send-bin/.local/bin/lazy-llm-lib.sh llm-add-bin/.local/bin/llm-add \
+         llm-cycle-bin/.local/bin/llm-cycle llm-wt-bin/.local/bin/llm-wt; do
+    ln -sf "$REPO_ROOT/$f" "$HOME/.local/bin/$(basename "$f")"
+done
+R="$sandbox/r11"; mk_repo "$R"
+output=$(TMUX_TMPDIR="$sandbox/tmux" bash <<EOF
+unset TMUX
+tmux -f /dev/null new-session -d -s aws -c "$R" -x 200 -y 50 "exec sleep 120"
+P=\$(tmux display -t aws -p '#{pane_id}')
+tmux set-option -t aws @lazy_llm 1
+tmux set-option -t aws @lazy_llm_dir "$R"
+tmux set-option -w -t aws @AI_PANE_ID "\$P"
+tmux set-option -w -t aws @AI_PANES "\$P"
+tmux set-option -w -t aws @AI_TOOLS cat
+tmux set-option -w -t aws @AI_PANE_IDX 0
+# llm-add runs from the prompt pane, which (unlike an AI pane) never moves
+# into the hold window.
+Q=\$(tmux split-window -t "\$P" -c "$R" -P -F '#{pane_id}' "exec sleep 120")
+tmux set-option -w -t aws @PROMPT_PANE_ID "\$Q"
+export TMUX_PANE="\$Q"
+"$HOME/.local/bin/llm-add" -t cat -i >/dev/null 2>&1; echo "isolate-rc=\$?"
+read -ra panes <<< "\$(tmux show-option -wqv -t aws @AI_PANES)"
+N=\${panes[1]}
+sleep 0.5
+echo "npanes=\${#panes[@]}"
+echo "wt-opt=\$(tmux show-option -pqv -t "\$N" @lazy_llm_wt)"
+echo "wt-cwd=\$(tmux display -t "\$N" -p '#{pane_current_path}')"
+echo "typed=\$(tmux capture-pane -p -t "\$N" | grep -m1 LAZY_LLM_WORKTREE)"
+# With the isolated pane focused (the visible AI pane), add plain and joined panes
+tmux select-pane -t "\$N"
+"$HOME/.local/bin/llm-add" -t cat >/dev/null 2>&1; echo "plain-rc=\$?"
+read -ra panes <<< "\$(tmux show-option -wqv -t aws @AI_PANES)"
+echo "plain-cwd=\$(tmux display -t "\${panes[2]}" -p '#{pane_current_path}')"
+echo "plain-opt=<\$(tmux show-option -pqv -t "\${panes[2]}" @lazy_llm_wt)>"
+WT=\$(tmux show-option -pqv -t "\$N" @lazy_llm_wt)
+"$HOME/.local/bin/llm-add" -t cat -w "\$WT" >/dev/null 2>&1; echo "join-rc=\$?"
+read -ra panes <<< "\$(tmux show-option -wqv -t aws @AI_PANES)"
+echo "join-opt=\$(tmux show-option -pqv -t "\${panes[3]}" @lazy_llm_wt)"
+echo "join-cwd=\$(tmux display -t "\${panes[3]}" -p '#{pane_current_path}')"
+"$HOME/.local/bin/llm-add" -t cat -w "$R" >/dev/null 2>&1; echo "join-bad-rc=\$?"
+"$HOME/.local/bin/llm-add" -t cat -i -w "\$WT" >/dev/null 2>&1; echo "both-rc=\$?"
+tmux kill-server 2>/dev/null
+EOF
+)
+WT="$R/.worktrees/.panes/lazy-aws-cat-2"
+assert_contains "$output" "isolate-rc=0" "llm-add -i succeeds"
+assert_contains "$output" "npanes=2" "the pane is added to the workspace"
+assert_contains "$output" "wt-opt=$WT" "the pane is tagged with its worktree"
+assert_contains "$output" "wt-cwd=$WT" "the pane starts in its worktree"
+assert_contains "$output" "LAZY_LLM_WORKTREE=1 LAZY_LLM_PRIMARY_DIR=$R LAZY_LLM_BASE_BRANCH=main cat" "the tool is launched with the worktree env"
+assert_contains "$output" "plain-cwd=$R" "a plain add with the isolated pane focused stays in the main directory"
+assert_contains "$output" "plain-opt=<>" "a plain pane isn't tagged"
+assert_contains "$output" "join-rc=0" "llm-add -w succeeds"
+assert_contains "$output" "join-opt=$WT" "the joined pane shares the worktree"
+assert_contains "$output" "join-cwd=$WT" "the joined pane starts there"
+assert_equals "$(git -C "$R" branch --list 'lazy/*' | wc -l | tr -d ' ')" "1" "joining creates no new branch"
+assert_contains "$output" "join-bad-rc=1" "-w on a non-pane-worktree is refused"
+assert_contains "$output" "both-rc=1" "-i and -w together are refused"
+
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
