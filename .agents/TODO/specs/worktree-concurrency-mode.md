@@ -22,6 +22,39 @@ Revision 2 (2026-09-28, after the user's review):
   write creates it there (§5.2).
 - New `llm-wt sync` subcommand (§7.3).
 
+Implementation notes (2026-09-28, `e30c8bb`..`010be85`). Where the code differs from the text below:
+- **`llm-wt` subcommands.** `close <path> [--default]` asks, reconciles changed copies, and
+  prints `remove` / `keep` / `cancel`. `remove <path> [--force]` deletes the worktree and branch.
+  `llm-remove` kills the pane between the two calls. Also added: `info` (worktree, branch, base,
+  primary). `close` answers `keep` when there's no terminal to ask on.
+- **Ignoring.** `.worktrees/` and bootstrapped paths go to `.git/info/exclude`, each under a
+  `# lazy-llm worktree bootstrap` line. Creating a pane never edits the tracked `.gitignore`,
+  and an agent can't `git add` a link.
+- **Save/restore.** The manifest stores `worktree: {path, branch}`. Base and main directory are
+  read from the branch's git config. When the pane comes back shared because its branch is gone,
+  it also starts a fresh conversation, since `--resume` can't find it from another directory.
+- **Worktrees tab.** Enter on an orphan offers only "add a pane in it, in the current workspace".
+  Opening it as a task workspace (`-W`) can't work: its branch is already checked out at the
+  pane-worktree path. K on a pane worktree whose pane is still open says to close the pane first.
+- **nvim.** The module is `nvim-llm-send-plugin/.config/nvim/lua/lazy_llm_worktree.lua`, at the
+  top level, because `lua/lazy_llm/` is a stow-folded symlink into the session plugin. The
+  winbar marker is a dropbar source that reads `b:lazy_llm_wt`. References from a worktree
+  buffer carry the main copy's cwd-relative path, which matches the pane's subdirectory offset.
+- **Bugs fixed on the way.**
+  - The Worktrees tab truncated long paths and then used the truncated text as the path
+    (Enter/g/K silently did nothing). It now carries the full path in a hidden field.
+  - `lazy_llm_gather_worktrees` rows were tab-separated, so empty fields shifted the columns
+    after them. Rows are now `\x1f`-separated, with the new OWNER column.
+- **§16 results.**
+  - `SessionStart` `additionalContext`: confirmed against the docs. It fires on startup, resume,
+    clear, compact and fork. The limit is 10k characters; the guidance is about 3k.
+  - Pane options survive `swap-pane`: confirmed (scenario 22, test 11).
+  - Claude Code's Edit/Write **refuse** to write through a symlink and name its target, so they
+    never replace a link. The guidance tells the agent to write to the target.
+  - Whether granting a permission rewrites a symlinked `.claude/settings.local.json` is **not
+    verified**. The close flow catches a replaced link either way (§5.4).
+  - dropbar custom source: implemented, but the winbar rendering is untested headless.
+
 ## 1. Goal and scope
 
 Two or more agents in one workspace currently share one working tree, so their checkouts,

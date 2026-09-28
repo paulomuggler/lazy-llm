@@ -2,13 +2,13 @@
 slug: worktree-concurrency-mode
 title: Optional per-pane worktree isolation for concurrent AI panes in one workspace
 priority: P1
-status: in-progress
+status: done
 created: 2026-09-23_04:20
-updated: 2026-09-28_01:10
+updated: 2026-09-28_14:45
 depends-on: []
 tags: [worktree, concurrency, dashboard, design]
-spec: specs/worktree-concurrency-mode.md
-commits: []
+spec: ../specs/worktree-concurrency-mode.md
+commits: [e30c8bb, 955279d, 46cac75, d7eec68, b4fc01c, 6984da5, d94ef23, 4b7799a, 893d88b, 010be85]
 ---
 
 # Optional per-pane worktree isolation for concurrent AI panes
@@ -38,7 +38,7 @@ granularity not yet decided.
 
 ## Design (2026-09-28): spec revision 2 approved; implementing
 
-Full design: [`specs/worktree-concurrency-mode.md`](specs/worktree-concurrency-mode.md).
+Full design: [`specs/worktree-concurrency-mode.md`](../specs/worktree-concurrency-mode.md).
 Decisions made with the user:
 
 - **Toggle**: opt-in per pane. Dashboard `A` and `llm-add --isolate`; `a` is unchanged.
@@ -99,16 +99,50 @@ Decisions made with the user:
 ## Acceptance Criteria
 
 - [x] Design spec resolving every open question, reviewed by the user (revision 2, 2026-09-28)
-- [ ] Explicit non-default: a workspace with no isolation requested behaves exactly as today
-      (shared directory, no worktree overhead). The full existing suite passes unchanged.
-- [ ] Clear boundary between pane worktrees and task worktrees (spec §1.1, §9)
-- [ ] §2 fix: the workspace directory comes from `@lazy_llm_dir`; cleanup can't kill a workspace
-- [ ] `llm-wt` status / integrate / sync / create / close, per spec §7
-- [ ] `llm-add --isolate` / `--worktree`, bootstrap config + init hook (§4, §5)
-- [ ] Close flow with loss warnings, last-pane rule, copy reconciliation (§8)
-- [ ] Dashboard: Workspaces `A`, `a` dialog, tree marker, Worktrees tab owner/Enter/K (§3, §9)
-- [ ] AI pane border git segment for every AI pane (§12.1)
-- [ ] Persist: worktree field, recreate on restore, snapshot-copy semantics (§11)
-- [ ] nvim `<leader>llmw` toggle; references relative to the buffer's own git root (§10)
-- [ ] Guidance injected via SessionStart only in isolated panes, incl. TODO rules (§6, §6.1)
-- [ ] Tests per spec §14; docs updated
+- [x] Explicit non-default: a workspace with no isolation requested behaves exactly as today.
+      Plain `a` / `llm-add` are unchanged, and the pre-existing suite passes.
+- [x] Clear boundary between pane worktrees and task worktrees (spec §1.1, §9)
+- [x] §2 fix: the workspace directory comes from `@lazy_llm_dir`; cleanup can't kill a workspace
+- [x] `llm-wt` status / integrate / sync / create / close / remove / info, per spec §7
+- [x] `llm-add --isolate` / `--worktree`, bootstrap config + init hook (§4, §5)
+- [x] Close flow with loss warnings, last-pane rule, copy reconciliation (§8)
+- [x] Dashboard: Workspaces `A`, `a` dialog, tree marker, Worktrees tab owner/Enter/K (§3, §9)
+- [x] AI pane border git segment for every AI pane (§12.1)
+- [x] Persist: worktree field, recreate on restore, snapshot-copy semantics (§11)
+- [x] nvim `<leader>llmw` toggle; references relative to the buffer's own git root (§10)
+- [x] Guidance injected via SessionStart only in isolated panes, incl. TODO rules (§6, §6.1)
+- [x] Tests per spec §14; docs updated
+
+## Work Report (2026-09-28)
+
+Built in ten commits, each tested and pushed on its own. Where the code departs from the spec is
+recorded in the spec's "Implementation notes".
+
+- **Tests.** New scenario 22 (110 assertions). Scenario 20 gained 11 persist assertions (108
+  total). Scenarios 14 and 18 were adjusted to the `\x1f` worktree rows and the border segment.
+  The full suite passes, 22/22. Every run pointed `$TMUX` at a decoy server, to prove it never
+  touches the real tmux server.
+- **Incident.** The first standalone run of scenario 22 killed the user's tmux server. Its
+  cleanup trap called `tmux kill-server` with `TMUX_TMPDIR` but with `$TMUX` still set, and
+  `$TMUX` wins. Fixed in the test (it unsets `TMUX` at the top and pins the socket), confirmed
+  with a decoy server, and saved as an agent memory.
+- **Installed live.** Stowed `llm-wt-bin`, `nvim-llm-send-plugin` (new `lazy_llm_worktree.lua`)
+  and `llm-status-bin` (new `~/.local/share/lazy-llm`).
+- **Standards.** No `.claude/standards.yaml` in this repo. shellcheck 0.11 found no new warnings
+  in changed files. No formatter is configured.
+
+## Human Validation
+
+Interactive flows the unit tests can't drive (fzf dialogs, real Claude sessions):
+
+- [ ] `Prefix+S` → `A` → claude: a new pane with `⎇` in the tree and border. Its first reply
+      knows it's in a worktree (guidance loaded). Ask it to make two commits and integrate:
+      the main directory fast-forwards.
+- [ ] With that pane in view, `a` asks worktree vs main directory, and both choices work.
+- [ ] `K` on the isolated pane with unintegrated work: the dialog lists it, preselects Keep, and
+      the worktree then shows as orphaned in the Worktrees tab. Enter there adds a pane back;
+      after closing it, `K` removes the worktree.
+- [ ] `<leader>llmw` in the editor: flips to the worktree copy (winbar `⎇ …`) and back. A
+      `<leader>llmr` reference from the worktree copy reads `src/…`, not `.worktrees/…`.
+- [ ] Grant a permission in an isolated Claude pane: check whether
+      `.claude/settings.local.json` in the worktree is still a symlink (spec §16, unverified).
