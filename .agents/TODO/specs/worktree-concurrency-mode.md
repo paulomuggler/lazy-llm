@@ -8,6 +8,20 @@ report it. Don't redesign.
 Grounded in a read of the code at `1d98cd8` (lazy-llm `main`), git 2.55.0, tmux 3.7c, Claude
 Code 2.1.283.
 
+Revision 2 (2026-09-28, after the user's review):
+- The agent guidance loads **only in isolated panes**. It's injected by the `SessionStart` hook,
+  not shipped as a plugin skill that every session would list (§6).
+- TODO-system integration is spelled out. `.agents/TODO/.work-state` is **shared** by linking,
+  while task files travel with each branch (§6.1).
+- `a` with an isolated pane visible offers to add into that same worktree, with a confirm
+  dialog (§3.1). A worktree can have several panes; only the last one to close asks about the
+  worktree (§8).
+- The AI pane's border gets a git segment: branch, commit, upstream, ahead/behind, dirty, and
+  which worktree (§12).
+- A literal-path link entry is linked even when the main directory lacks the file, so the first
+  write creates it there (§5.2).
+- New `llm-wt sync` subcommand (§7.3).
+
 ## 1. Goal and scope
 
 Two or more agents in one workspace currently share one working tree, so their checkouts,
@@ -65,11 +79,30 @@ whose cwd is elsewhere.
 | Where | Surface |
 |---|---|
 | CLI | `llm-add --isolate [-t tool]` (short form `-i`) |
-| Dashboard, Workspaces tab | `A`: same tool picker as `a`, then creates an isolated pane. `a` is unchanged. |
-| Tree row, pane border | `⎇ <branch-suffix>` after the pane label, e.g. `claude-2 ⎇ claude-2` |
+| Dashboard, Workspaces tab | `A`: same tool picker as `a`, then creates a new isolated pane. `a`: unchanged, except when the visible AI pane is isolated (§3.1). |
+| CLI | `llm-add --worktree <path>`: add a pane into an existing pane worktree. `--isolate` and `--worktree` are mutually exclusive. |
+| Tree row | `⎇ <branch-suffix>` after the pane label, e.g. `claude-2 ⎇ claude-2` |
+| AI pane border | git segment (§12) |
 | Worktrees tab | pane worktrees are tagged `pane: <ws>/<label>`, or `orphaned` when the pane is gone (§9) |
 | nvim | `<leader>llmw`: toggle the current buffer between the main copy and the visible pane's worktree copy (§10) |
 | Agent | `llm-wt status`, `llm-wt integrate` (§7), plus the Claude skill and session context |
+
+### 3.1 `a` while an isolated pane is visible
+
+In the dashboard, `a` checks the current window's visible AI pane (`@AI_PANE_ID`). If that pane
+has `@lazy_llm_wt`, then after the tool picker it asks, via fzf like the other confirmations:
+
+- **Add in worktree `<branch>`** (shared with `<label>`) — preselected
+- **Add in the main directory**
+- **Cancel**
+
+The first choice calls `llm-add --worktree <path>`, the second plain `llm-add`. If the visible
+pane isn't isolated, `a` behaves exactly as today, with no dialog. Plain `llm-add` from the CLI
+never asks and always means the main directory, so scripts see no change.
+
+A pane added with `--worktree` gets the same launch env prefix and `@lazy_llm_wt` as the
+pane that created the worktree (§4 steps 7–8). It skips steps 1–6, because the worktree and its
+bootstrap already exist.
 
 ## 4. Creating an isolated pane
 
@@ -131,8 +164,8 @@ copy: .venv/
 - Patterns are bash globs relative to the repo root, with `dotglob` and `nullglob` on. A trailing
   `/` means a directory.
 - Blank lines and `#` comments are ignored, including trailing ` # …` comments.
-- If neither file exists, the default list is `.env*` and `.claude/settings.local.json`, both
-  linked.
+- If neither file exists, the default list is `.env*`, `.claude/settings.local.json` and
+  `.agents/TODO/.work-state`, all linked (the last one is explained in §6.1).
 - `<repo>/.lazy-llm/` is already lazy-llm's gitignored per-project state directory, so this
   config is personal and imposes nothing on other people who use the repo.
 
@@ -140,8 +173,16 @@ copy: .venv/
 
 Each glob is expanded in the **main directory**. A match is linked or copied only if it is **not
 tracked**, meaning `git -C "$primary" ls-files --error-unmatch -- <path>` fails. Linking over a
-checked-out file would corrupt the worktree. A pattern that matches nothing is skipped silently.
+checked-out file would corrupt the worktree. A glob that matches nothing is skipped silently.
 Parent directories are created as needed.
+
+A **link** entry that is a literal path (no `*`, `?` or `[`) is linked even when the main
+directory doesn't have the file. The result is a dangling symlink, and the first write through it
+creates the file in the main directory. That's what `.claude/settings.local.json` and
+`.work-state` need. A literal **copy** entry that's missing is skipped.
+
+Bootstrapped paths are listed in the manifest (§5.4), and `llm-wt status` doesn't count them as
+untracked work.
 
 ### 5.3 Init hook
 
@@ -165,26 +206,55 @@ contents aren't lost silently.
 
 - **Detection.** `LAZY_LLM_WORKTREE=1` in the tool's environment (§4 step 7). The helper reads
   everything else from git config, so it doesn't depend on the env.
-- **Claude, session context.** `llm-claude-hook` on `SessionStart`: when `LAZY_LLM_WORKTREE=1`,
-  print hook JSON with `hookSpecificOutput.additionalContext`. Keep it short: "You are in an
-  isolated git worktree `<path>` on branch `<branch>`, split from `<base>` in `<primary>`. Commit
-  here. Integrate finished logical units with `llm-wt integrate`. Don't edit files under
-  `<primary>` directly." It must still do its existing status work, and stay a no-op otherwise.
-- **Claude, skill.** `claude-plugin/skills/lazy-llm-worktree/SKILL.md`. It triggers when working
-  in a lazy-llm isolated worktree, or when `LAZY_LLM_WORKTREE` is set. Content:
+- **Claude: guidance injected only in isolated panes.** A plugin skill would be listed in every
+  Claude session, isolated or not, and plugin skills can't be enabled per environment. So the
+  guidance is a Markdown file, `llm-status-bin/.local/share/lazy-llm/worktree-agent.md`, which
+  stows to `~/.local/share/lazy-llm/`. `llm-claude-hook` on `SessionStart`: when
+  `LAZY_LLM_WORKTREE=1`, it fills in the placeholders (`{{path}}`, `{{branch}}`, `{{base}}`,
+  `{{primary}}`) and prints hook JSON with `hookSpecificOutput.additionalContext`. It still does
+  its existing status work, and outputs nothing extra otherwise. `SessionStart` also fires on
+  resume and after compaction, so the guidance comes back after a compact. Because the file is
+  live in the repo (not in the plugin's cached copy), editing it needs no plugin bump.
+
+  The guidance covers:
   - where the agent is and why (other agents share the main directory);
   - commit in logical units, and integrate each finished unit rather than hoarding them until
     the end, since short-lived divergence means fewer conflicts;
   - how to read `llm-wt status`;
   - what each `llm-wt integrate` exit code means and what to do about it (§7);
-  - never check out `<base>`, never write under `<primary>`, never force.
-
-  The plugin runs from a cached copy, so the skill ships with a plugin version bump, the same
-  way `hooks.json` changes do.
+  - never check out `<base>`, never write under `<primary>`, never force;
+  - the TODO rules in §6.1;
+  - **branch hygiene is already answered**: the branch is intentionally off `<base>`, and it
+    integrates via `llm-wt integrate`. Don't ask the user about it. Don't push the `lazy/`
+    branch. After integrating a completed task, the usual push rule applies to `<base>`: run
+    `git push origin <base>` after the secrets scan over `origin/<base>..<base>`.
 - **Other tools.** They get the env vars and `llm-wt`. v1 has no injected guidance for them.
-  That's a follow-up (§15).
+  That's a follow-up (§15). The same `worktree-agent.md` is the source to feed them later.
 
-## 7. `llm-wt`: status and integrate
+### 6.1 TODO work tracking (`.agents/TODO/`)
+
+The todo skill keeps `.work-state` gitignored and **keyed per session**. It already handles
+several live sessions in one file: it leaves entries owned by live pids alone and offers to adopt
+orphaned ones. So the two kinds of state get different treatment:
+
+| State | In an isolated worktree | Why |
+|---|---|---|
+| `.work-state` | **linked** to the main directory's file (default bootstrap list) | All agents, isolated or not, see each other's in-flight tasks through the concurrency model the todo skill already has. Resume after compaction reads the same file. |
+| Task files, `INDEX.md`, `REVIEW-QUEUE.md`, `CONTINUATION.md` | **per branch** (tracked, part of the checkout) | They are committed history. `[todo]` commits travel back with `llm-wt integrate` like code commits do. |
+
+Rules in the guidance:
+- **Claiming a task.** Before picking, run `llm-wt sync` (§7.3) so the task files reflect what
+  has already been integrated. Commit the claim (status → in-progress) as its own `[todo]`
+  commit, then run `llm-wt integrate` right away so other agents see it. The remaining race is
+  two agents claiming the same task between one's sync and the other's integrate. The shared
+  `.work-state` narrows it further, because an entry for that task under a live pid means it's
+  taken.
+- **`INDEX.md` conflicts during a rebase.** `INDEX.md` is regenerated by the todo lint.
+  Resolve by taking either side, then regenerate, then continue the rebase. Never hand-merge it
+  line by line.
+- **The `[todo]` / code commit split** is unchanged. Both streams integrate the same way.
+
+## 7. `llm-wt`: status, integrate, sync
 
 A new stow package, `llm-wt-bin/.local/bin/llm-wt`, added to `STOW_PACKAGES` in `install.sh`. It
 sources `lazy-llm-lib.sh` the same way `llm-add` does. Every subcommand takes an optional
@@ -196,7 +266,7 @@ worktree path and defaults to the cwd's worktree. It refuses with exit 2 when th
 Reports the loss categories the close flow uses:
 
 - `dirty`: tracked changes, count;
-- `untracked`: untracked, non-ignored files, count;
+- `untracked`: untracked, non-ignored files not in the bootstrap manifest, count;
 - `unintegrated`: `git rev-list --count <base>..<branch>`;
 - `copies-changed`: manifest entries whose hash changed, or links that were replaced;
 - `ignored-extra`: ignored files not in the manifest, count only.
@@ -225,10 +295,29 @@ Fast-forwarding does update files in the main directory while another agent or t
 using them. That's the same kind of concurrent change the shared mode already has, and nvim's
 autoread covers the editor.
 
+### 7.3 `llm-wt sync [path]`
+
+Brings the worktree up to date with `<base>` without integrating anything. It's step 3 of
+integrate on its own: rebase onto `<base>`, with the same exit 5 on conflict. With a dirty
+worktree it exits 3, the same as integrate. The main directory is never touched. It's used
+before claiming a task (§6.1), and whenever the agent wants other agents' integrated work.
+
+### 7.4 Other subcommands (used by the tooling, not the agent)
+
+- `llm-wt create <primary> <tool> <ws>`: §4 steps 1–6. Prints the worktree path.
+- `llm-wt close <path> [--pane <id>]`: §8 steps 1–4 for the last pane in a worktree.
+
+These live in `llm-wt` rather than the lib, so `llm-add`, `llm-remove`, the dashboard and
+persist all share one implementation and the lib only gains the small edits listed in §13.
+
 ## 8. Closing an isolated pane
 
 This covers `llm-remove` (dashboard `K`, CLI) on a pane with `@lazy_llm_wt`. The user chose
 **always ask**.
+
+If another live pane (in any window or workspace) has the same `@lazy_llm_wt`, the worktree
+stays in use. The pane is removed with the ordinary confirm, and the worktree isn't mentioned.
+The steps below apply only to the **last** pane in a worktree.
 
 1. Run `llm-wt status --porcelain` and show a summary:
    - uncommitted changes (N files);
@@ -299,7 +388,13 @@ an isolated agent then resolves to that agent's copy, which is correct.
 
 - **Save.** When a pane has `@lazy_llm_wt`, add
   `worktree: {path, branch, base, primary}` to its manifest entry. The existing `cwd` field
-  already holds the worktree path.
+  already holds the worktree path. Manual saves copy entries into `snapshots/<ts>/<id>.json`, so
+  the field carries into snapshots without extra work.
+- **Reading it back.** `restore_one` reads each entry in **one** jq pass as `\x1f`-separated
+  E / W / P records. Tabs would collapse empty fields, so don't switch to them. Add the
+  worktree fields to the `P` record and to the `P)` branch's `read`. Keep `saved_rows_fast` in
+  step with `entry_state` if either changes. Don't use `awk '… {print; exit}'` on a pipeline:
+  under `pipefail` and `set -e` it silently killed `close` once.
 - **Restore.** For a pane with `worktree`:
   - if the path is a registered worktree, launch there as today;
   - else, if the branch exists, recreate it with `lazy_llm_setup_worktree <branch> <base_dir>`,
@@ -309,11 +404,64 @@ an isolated agent then resolves to that agent's copy, which is correct.
   Either way, prefix the launch command with the §4 env vars and set `@lazy_llm_wt` on the new
   pane id.
 - `claude --resume` finds the conversation because the pane relaunches in the same cwd.
+- **Restoring a copy of a live workspace** (`cmd_restore_snapshot` rewrites the entry with a new
+  id when the original is live). An isolated pane in the copy joins the **same** worktree as a
+  second pane (§3.1 semantics), because the conversation can only be resumed from that cwd. The
+  close flow's "last pane" rule (§8) keeps the copy's panes from tearing the worktree down under
+  the original.
 
 ## 12. Display
 
-- `llm-pane-border`: when the pane has `@lazy_llm_wt`, append `⎇ <branch minus lazy/<ws>/>`.
-- Dashboard tree row: the same marker. The data comes from the one `list-panes` call the tree
+### 12.1 AI pane border: git segment
+
+A new segment is appended to every AI pane's border (isolated or not), after the status glyph:
+
+```
+ <summary> │ <workspace - label - tool - model> <glyph> │ <git>
+```
+
+| Pane is in… | `<git>` renders as |
+|---|---|
+| the main tree, with an upstream | `main* 1b3dafc origin ↑2↓1` |
+| the main tree, no upstream | `feat/x 1b3dafc local` |
+| a pane worktree | `⎇ claude-2→main* 1b3dafc ↑3↓1` (counts are against `<base>`, not an upstream) |
+| a task worktree (`-W`) | `⎇ feat-x feat/x 1b3dafc origin ↑1` (worktree dir name, then branch) |
+| a detached HEAD | `(detached) 1b3dafc` |
+| not a git repo | segment omitted, along with its `│` |
+
+Rules:
+- `*` means tracked changes only (`-uno`). Scanning for untracked files is too slow for a border.
+- Zero counts are omitted. An upstream with nothing ahead or behind shows just the remote name.
+  The remote is shown as `origin` when the upstream branch has the same name as the local one,
+  otherwise as `origin/<name>`.
+- Branch and worktree names are clamped with `lazy_llm_clamp_label` (24 columns).
+- Colors: the `⎇` marker in an accent color, ahead in green, behind in yellow, dirty `*` in
+  yellow, the sha and remote dim. Every piece gets an explicit fg, as the existing header comment
+  requires.
+- The border is cut from the right on narrow panes, so the git segment is the first thing to go,
+  and identity and status survive.
+
+Data, at most four git calls, all run with `GIT_OPTIONAL_LOCKS=0` so the border never takes
+`index.lock` while an agent is committing:
+
+1. `git rev-parse --show-toplevel --absolute-git-dir --git-common-dir`: repo check, and linked
+   worktree when the git dir isn't the common dir.
+2. `git status --porcelain=v2 --branch -uno`: the `branch.oid`, `branch.head`,
+   `branch.upstream` and `branch.ab` headers, and dirty if any other line appears.
+3. For a pane worktree only: `git config branch.<b>.lazyLlmBase`, then
+   4. `git rev-list --left-right --count <base>...HEAD`.
+
+The pane's cwd comes from `#{pane_current_path}`, fetched in the same `display-message` call the
+script already makes for `#S` and `#S:#I`, so there's no extra tmux call. tmux runs `#()`
+asynchronously and caches it per `status-interval`, so git latency never blocks drawing.
+
+Off switch: the global tmux option `@lazy_llm_border_git` (default on). Setting it to `off` drops
+the segment. It's a tmux option rather than an env var, because `#()` runs in the tmux server's
+environment, not the user's shell.
+
+### 12.2 Dashboard tree
+
+- Dashboard tree row: `⎇ <suffix>` after the pane label. The data comes from the one `list-panes` call the tree
   already makes (add `#{@lazy_llm_wt}` to its format). No extra tmux calls.
 
 ## 13. Files and coordination
@@ -321,22 +469,22 @@ an isolated agent then resolves to that agent's copy, which is correct.
 | File | Change |
 |---|---|
 | `llm-send-bin/.local/bin/lazy-llm-lib.sh` | §2 fixes; `setup_worktree` args; owner column in `gather_worktrees`; bootstrap helpers |
-| `llm-add-bin/.local/bin/llm-add` | `--isolate`, §2 target dir |
+| `llm-add-bin/.local/bin/llm-add` | `--isolate`, `--worktree <path>`, §2 target dir |
 | `llm-remove-bin/.local/bin/llm-remove` | §8 flow for isolated panes |
-| `lazy-llm-bin/.local/bin/llm-dashboard` | `A`, tree marker, Worktrees tab owner/Enter/K |
+| `lazy-llm-bin/.local/bin/llm-dashboard` | Workspaces-tab `A` (the Saved tab's `A` is taken, and stays), the §3.1 `a` dialog, tree marker, Worktrees tab owner/Enter/K |
 | `lazy-llm-bin/.local/bin/llm-persist` | §11 |
-| `lazy-llm-bin/.local/bin/llm-pane-border` | §12 |
-| `llm-status-bin/.local/bin/llm-claude-hook` | §6 SessionStart context |
-| `claude-plugin/skills/lazy-llm-worktree/SKILL.md`, `plugin.json`, `marketplace.json` | skill, version bump |
-| `llm-wt-bin/.local/bin/llm-wt` (new), `install.sh` | §7 |
+| `lazy-llm-bin/.local/bin/llm-pane-border` | §12.1 git segment |
+| `llm-status-bin/.local/bin/llm-claude-hook` | §6 SessionStart context, only when `LAZY_LLM_WORKTREE=1` |
+| `llm-status-bin/.local/share/lazy-llm/worktree-agent.md` (new) | §6 guidance text, including §6.1 |
+| `llm-wt-bin/.local/bin/llm-wt` (new), `install.sh` | §7: `status`, `integrate`, `sync`, `create`, `close` |
 | `nvim-llm-send-plugin/…/llm-send.lua`, `nvim-note-plugin/…/note.lua` | §10 |
 | `README.md`, `docs/USAGE.md` | user surface, config file, `llm-wt` |
 
-As of 2026-09-28 the workspace-save-restore session is editing `llm-persist`, `llm-dashboard` and
-`lazy-llm-lib.sh`. Coordinate with it (or wait) before touching those three files.
+The workspace-save-restore session released `llm-persist`, `llm-dashboard` and
+`lazy-llm-lib.sh` at `e977a3b` (2026-09-28).
 
-Suggested commit order: §2 fix → lib helpers + `llm-wt` → `llm-add --isolate` + border → close
-flow → dashboard → persist → nvim → Claude hook + skill → docs.
+Commit order: §2 fix → lib `setup_worktree` args + `llm-wt` → border git segment → `llm-add`
+`--isolate`/`--worktree` → close flow → dashboard → persist → nvim → hook + guidance → docs.
 
 ## 14. Tests (`tests/scenarios/22-…`, the next free number)
 
@@ -362,10 +510,24 @@ Unit tests, sandboxed (temporary repo, private tmux socket):
   - Base moved → retries, then succeeds.
   - Dirty overlap in the main directory → 7, with the main directory untouched (compare the
     `git status` output before and after).
+- **`llm-wt sync`.** Rebases onto a moved base, → 3 when dirty, → 5 on conflict, and never
+  touches the main directory.
+- **Bootstrap, revision 2.** A literal-path link that's missing becomes a dangling link, and a
+  write through it creates the file in the main directory. The default list links
+  `.work-state`. Manifest paths aren't counted as untracked.
 - **Close flow.** The preselected choice follows the loss categories. Remove deletes the worktree
-  and branch and leaves the workspace alive.
-- **Persist.** A worktree field round-trips. Restore recreates a missing worktree from its
-  branch, and falls back to shared when the branch is gone.
+  and branch and leaves the workspace alive. With two panes in one worktree, closing the first
+  one leaves the worktree untouched and doesn't ask about it.
+- **`a` dialog decision.** The helper that decides whether to offer the worktree returns the path
+  when the visible pane is isolated, and nothing otherwise.
+- **Border git segment.** Fixture repos, one per row of the §12.1 table: the rendered text
+  (colors stripped) matches. `@lazy_llm_border_git off` drops the segment.
+- **Hook.** `SessionStart` prints `additionalContext` with the placeholders filled when
+  `LAZY_LLM_WORKTREE=1`, and prints nothing new without it. It extends scenario 19.
+- **Persist** (extend scenario 20). A worktree field round-trips, including through a manual
+  snapshot. Restore recreates a missing worktree from its branch, and falls back to shared when
+  the branch is gone. Restoring a copy of a live workspace puts the isolated pane into the same
+  worktree.
 
 Manual:
 - In a real workspace: `A` → claude. Ask it to make two commits and integrate. The main
@@ -389,5 +551,8 @@ Manual:
 - Whether Claude Code rewrites `.claude/settings.local.json` in a way that replaces the symlink
   (write to a temp file, then rename). §5.4 handles either case. Record which one happens.
 - dropbar custom winbar segment support (§10).
+- Whether Claude Code's Write/Edit tools follow a symlinked `.work-state` or replace it. If they
+  replace it, the sharing in §6.1 silently stops. The close flow still catches the replaced link
+  (§5.4), but the todo concurrency benefit is lost, so record the result and report it.
 - `set-option -p` pane options survive `swap-pane` into and out of the hold window. They should,
   since they belong to the pane and not to its position. Verify.

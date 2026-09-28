@@ -2,12 +2,12 @@
 slug: worktree-concurrency-mode
 title: Optional per-pane worktree isolation for concurrent AI panes in one workspace
 priority: P1
-status: backlog
+status: in-progress
 created: 2026-09-23_04:20
-updated: 2026-09-28_00:30
+updated: 2026-09-28_01:10
 depends-on: []
 tags: [worktree, concurrency, dashboard, design]
-spec: ../specs/worktree-concurrency-mode.md
+spec: specs/worktree-concurrency-mode.md
 commits: []
 ---
 
@@ -36,9 +36,9 @@ like a mode, or an optional thing, idk?" — this must NOT default to giving eve
 additional pane its own worktree unconditionally. It needs to be opt-in at some
 granularity not yet decided.
 
-## Design (2026-09-28): spec drafted, awaiting review
+## Design (2026-09-28): spec revision 2 approved; implementing
 
-Full design: [`specs/worktree-concurrency-mode.md`](../specs/worktree-concurrency-mode.md).
+Full design: [`specs/worktree-concurrency-mode.md`](specs/worktree-concurrency-mode.md).
 Decisions made with the user:
 
 - **Toggle**: opt-in per pane. Dashboard `A` and `llm-add --isolate`; `a` is unchanged.
@@ -96,12 +96,19 @@ Decisions made with the user:
   for the EXISTING worktree model this needs to sit alongside without confusing
   the two use cases (task-level worktree vs. pane-level concurrency isolation)
 
-## Acceptance Criteria (not scoped in detail — design work comes first)
+## Acceptance Criteria
 
-- [ ] Design doc or plan resolving every open question above, written and
-      reviewed before any implementation starts
-- [ ] Explicit non-default: a workspace with no isolation requested must behave
-      exactly as it does today (shared directory, no worktree overhead)
-- [ ] Clear boundary drawn between this (pane-level, possibly ephemeral) and
-      the existing Worktrees tab (task-level, user-managed) — or an explicit
-      decision to unify them, with a stated reason
+- [x] Design spec resolving every open question, reviewed by the user (revision 2, 2026-09-28)
+- [ ] Explicit non-default: a workspace with no isolation requested behaves exactly as today
+      (shared directory, no worktree overhead). The full existing suite passes unchanged.
+- [ ] Clear boundary between pane worktrees and task worktrees (spec §1.1, §9)
+- [ ] §2 fix: the workspace directory comes from `@lazy_llm_dir`; cleanup can't kill a workspace
+- [ ] `llm-wt` status / integrate / sync / create / close, per spec §7
+- [ ] `llm-add --isolate` / `--worktree`, bootstrap config + init hook (§4, §5)
+- [ ] Close flow with loss warnings, last-pane rule, copy reconciliation (§8)
+- [ ] Dashboard: Workspaces `A`, `a` dialog, tree marker, Worktrees tab owner/Enter/K (§3, §9)
+- [ ] AI pane border git segment for every AI pane (§12.1)
+- [ ] Persist: worktree field, recreate on restore, snapshot-copy semantics (§11)
+- [ ] nvim `<leader>llmw` toggle; references relative to the buffer's own git root (§10)
+- [ ] Guidance injected via SessionStart only in isolated panes, incl. TODO rules (§6, §6.1)
+- [ ] Tests per spec §14; docs updated

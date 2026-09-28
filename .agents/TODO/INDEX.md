@@ -1,7 +1,9 @@
 # TODO Index
 > Auto-generated. Run `/todo lint` to regenerate.
 
-## Pending (0)
+## Pending (1)
+
+- [~] [worktree-concurrency-mode](worktree-concurrency-mode.md) - Optional per-pane worktree isolation for concurrent AI panes in one workspace
 
 ## Done (10)
 
@@ -16,10 +18,7 @@
 - [x] [status-unread-state-and-aggregate-counts](done/status-unread-state-and-aggregate-counts.md) - "Unread" pane status + per-status aggregate counts in status bars
 - [x] [dashboard-reload-avoid-full-redraw](done/dashboard-reload-avoid-full-redraw.md) - Use fzf's reload() to avoid a full fzf relaunch on fold/toggle/refresh
 
-## Backlog (7)
-
-### P1 - High
-- [-] [worktree-concurrency-mode](backlog/worktree-concurrency-mode.md) - Optional per-pane worktree isolation for concurrent AI panes in one workspace
+## Backlog (6)
 
 ### P3 - Low
 - [-] [lazy-llm-refinement-pass](backlog/lazy-llm-refinement-pass.md) - Refinement pass over lazy-llm feature space and codebase
