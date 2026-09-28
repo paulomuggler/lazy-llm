@@ -211,7 +211,7 @@ Add inline notes throughout your codebase that can be collected and sent to your
 | `<leader>np` | **Project Notes** - Send all notes from entire project to prompt pane |
 | `]n` | **Next Note** - Jump to next note in buffer |
 | `[n` | **Previous Note** - Jump to previous note in buffer |
-| `<leader>nf` | **Find Notes** - Fuzzy picker for all project notes |
+| `<leader>n/` | **Search Notes** - Fuzzy picker for all project notes; `alt-h` / `alt-i` include hidden / gitignored files |
 | `<leader>nq` | **Quickfix Buffer** - Buffer notes to quickfix list |
 | `<leader>nQ` | **Quickfix Project** - Project notes to quickfix list |
 | `<leader>nn` | **Notification History** - LazyVim's `<leader>n`, moved here |

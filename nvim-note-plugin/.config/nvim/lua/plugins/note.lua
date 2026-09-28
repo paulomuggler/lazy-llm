@@ -148,16 +148,21 @@ local function collect_buffer_notes()
   return notes
 end
 
--- Collect all NOTEs from project (using ripgrep)
-local function collect_project_notes()
+-- Collect all NOTEs from project (using ripgrep). Like rg, skips hidden and
+-- gitignored files unless scope.hidden / scope.ignored (the picker toggles them).
+local function collect_project_notes(scope)
+  scope = scope or {}
   local root = get_workspace_root()
-  local cmd = string.format(
-    "rg --no-heading --line-number --column '%s' %s 2>/dev/null",
-    config.rg_pattern,
-    vim.fn.shellescape(root)
-  )
+  local cmd = { "rg", "--no-heading", "--line-number", "--column" }
+  if scope.hidden then
+    vim.list_extend(cmd, { "--hidden", "--glob", "!.git" })
+  end
+  if scope.ignored then
+    table.insert(cmd, "--no-ignore")
+  end
+  vim.list_extend(cmd, { config.rg_pattern, root })
 
-  local output = vim.fn.systemlist(cmd)
+  local output = vim.split(vim.system(cmd, { text = true }):wait().stdout or "", "\n", { trimempty = true })
   local notes = {}
 
   for _, line in ipairs(output) do
@@ -323,14 +328,20 @@ local function goto_prev_note()
   vim.notify("No notes found in buffer", vim.log.levels.WARN)
 end
 
--- Navigate project notes with fzf-lua picker
-local function pick_project_notes()
-  local notes = collect_project_notes()
+-- Navigate project notes with fzf-lua picker; alt-h / alt-i reopen it with
+-- hidden / gitignored files included or not (LazyVim's picker toggles)
+local function pick_project_notes(scope)
+  scope = scope or {}
+  local notes = collect_project_notes(scope)
 
-  if #notes == 0 then
-    vim.notify("No notes found in project", vim.log.levels.WARN)
-    return
+  local included = {}
+  if scope.hidden then
+    table.insert(included, "+hidden")
   end
+  if scope.ignored then
+    table.insert(included, "+ignored")
+  end
+  local prompt = #included > 0 and ("Notes (" .. table.concat(included, " ") .. ") > ") or "Notes > "
 
   -- Format for fzf display
   local entries = {}
@@ -340,8 +351,15 @@ local function pick_project_notes()
   end
 
   require("fzf-lua").fzf_exec(entries, {
-    prompt = "Notes > ",
+    prompt = prompt,
+    fzf_opts = { ["--header"] = "alt-h: hidden files · alt-i: gitignored files" },
     actions = {
+      ["alt-h"] = function()
+        pick_project_notes({ hidden = not scope.hidden, ignored = scope.ignored })
+      end,
+      ["alt-i"] = function()
+        pick_project_notes({ hidden = scope.hidden, ignored = not scope.ignored })
+      end,
       ["default"] = function(selected)
         if selected and selected[1] then
           -- Parse selection: file:lnum: text
@@ -462,10 +480,10 @@ local specs = {
 
       -- Pick/browse notes
       {
-        "<leader>nf",
+        "<leader>n/",
         pick_project_notes,
         mode = "n",
-        desc = "Note: Find notes in project (fzf)",
+        desc = "Note: Search notes in project (fzf)",
       },
 
       -- Quickfix lists
