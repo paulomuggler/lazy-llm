@@ -69,6 +69,27 @@ return {
     opts = function()
       local sources = require("dropbar.sources")
 
+      -- "⎇ <branch>" first on the winbar of a file from an AI pane's own
+      -- worktree (b:lazy_llm_wt, set by lazy_llm_worktree.lua), so the copy
+      -- you're editing is never mistaken for the main one. Empty otherwise.
+      local worktree = {
+        get_symbols = function(buf)
+          local branch = vim.b[buf].lazy_llm_wt
+          if not branch or branch == "" then
+            return {}
+          end
+          return {
+            require("dropbar.bar").dropbar_symbol_t:new({
+              icon = "⎇ ",
+              name = branch:match("[^/]+$") or branch,
+              icon_hl = "DropBarKindModule",
+              name_hl = "DropBarKindModule",
+              on_click = false,
+            }),
+          }
+        end,
+      }
+
       return {
         bar = {
           -- Configure sources based on file type
@@ -78,6 +99,7 @@ return {
             -- Markdown files: show path and markdown heading hierarchy
             if ft == "markdown" then
               return {
+                worktree,
                 sources.path,
                 sources.markdown,
               }
@@ -85,6 +107,7 @@ return {
 
             -- Default fallback: LSP -> Treesitter -> path
             return {
+              worktree,
               sources.lsp,
               sources.treesitter,
               sources.path,

@@ -444,6 +444,48 @@ assert_contains "$output" "owner-main=<>" "main checkout has no owner"
 assert_contains "$output" "owner-orphan=orphaned" "pane gone: orphaned"
 
 echo ""
+echo "Test 14: nvim — counterpart toggle, reference paths, buffer marks (spec §10)..."
+R="$sandbox/r14"; mk_repo "$R"
+mkdir -p "$R/src"; printf 'l1\nl2\nl3\nl4\n' > "$R/src/x.lua"
+git -C "$R" add src && git -C "$R" commit -qm src
+wt=$("$LLMWT" create "$R" claude ws 2>/dev/null)
+printf 'l1\nl2\nl3\nl4\npane-only\n' > "$wt/src/x.lua"
+cat > "$sandbox/nvim-test.lua" <<LUA
+local out = {}
+local function log(k, v) table.insert(out, k .. "=" .. tostring(v)) end
+local M = require("lazy_llm_worktree")
+vim.cmd("edit src/x.lua")
+log("ref-main", M.reference_path(0))
+M.visible_pane_worktree = function() return "$wt" end
+vim.api.nvim_win_set_cursor(0, { 3, 0 })
+M.toggle()
+log("after-toggle", vim.api.nvim_buf_get_name(0))
+log("cursor", vim.api.nvim_win_get_cursor(0)[1])
+log("ref-wt", M.reference_path(0))
+M.mark(0)
+log("mark", vim.b.lazy_llm_wt)
+log("lines", vim.api.nvim_buf_line_count(0))
+M.toggle()
+log("back", vim.api.nvim_buf_get_name(0))
+M.mark(0)
+log("mark-main", vim.b.lazy_llm_wt)
+vim.fn.writefile(out, "$sandbox/nvim-out.txt")
+vim.cmd("qa!")
+LUA
+(cd "$R" && nvim --headless --clean \
+    --cmd "set rtp^=$REPO_ROOT/nvim-llm-send-plugin/.config/nvim" \
+    -c "luafile $sandbox/nvim-test.lua" >/dev/null 2>&1)
+nv=$(cat "$sandbox/nvim-out.txt" 2>/dev/null)
+assert_contains "$nv" "ref-main=src/x.lua" "a main-directory buffer's reference is unchanged"
+assert_contains "$nv" "after-toggle=$wt/src/x.lua" "toggle opens the visible pane's worktree copy"
+assert_contains "$nv" "cursor=3" "...on the same line"
+assert_contains "$nv" "ref-wt=src/x.lua" "a worktree buffer's reference is the repo-relative path the agent sees"
+assert_contains "$nv" "mark=lazy/ws/claude-2" "worktree buffers are marked with their branch"
+assert_contains "$nv" "lines=5" "the worktree copy is its own file (editable)"
+assert_contains "$nv" "back=$R/src/x.lua" "toggle again goes back to the main copy"
+assert_contains "$nv" "mark-main=nil" "main buffers aren't marked"
+
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

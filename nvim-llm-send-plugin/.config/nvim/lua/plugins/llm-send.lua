@@ -44,11 +44,25 @@ local function get_pane_base_index()
 	return tonumber(result) or 0
 end
 
+-- Per-pane worktree isolation (lazy_llm_worktree.lua, shipped alongside):
+-- worktree buffers are marked for the winbar, and references from them carry
+-- the repo-relative path the isolated agent sees.
+local wt_ok, lazy_llm_wt = pcall(require, "lazy_llm_worktree")
+if wt_ok then
+	vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
+		group = vim.api.nvim_create_augroup("lazy_llm_worktree", { clear = true }),
+		callback = function(ev)
+			lazy_llm_wt.mark(ev.buf)
+		end,
+	})
+end
+
 -- Helper function for code reference insertion
 -- raw_mode: if true, insert inline; if false, wrap with newlines
 local function add_code_reference(raw_mode)
-	-- Get file path (relative to git root or cwd)
-	local filepath = vim.fn.expand("%:.")
+	-- File path relative to cwd; a file in a pane worktree is given as its
+	-- main copy's path, which resolves to the worktree copy from the agent's cwd
+	local filepath = wt_ok and lazy_llm_wt.reference_path(0) or vim.fn.expand("%:.")
 
 	-- Get line number(s)
 	local mode = vim.fn.mode()
@@ -411,6 +425,16 @@ return {
 				end,
 				mode = { "n", "v" },
 				desc = "LLM: Add Code Reference (wrapped/newlines)",
+			},
+			{
+				"<leader>llmw",
+				function()
+					if wt_ok then
+						lazy_llm_wt.toggle()
+					end
+				end,
+				mode = "n",
+				desc = "LLM: Toggle file ⇄ visible AI pane's worktree copy",
 			},
 			{
 				"<leader>llmp",

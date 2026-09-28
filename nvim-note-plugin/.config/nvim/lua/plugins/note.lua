@@ -17,8 +17,14 @@ local function get_workspace_root()
   return (git_root and git_root ~= "" and vim.v.shell_error == 0) and git_root or vim.fn.getcwd()
 end
 
--- Helper: Get relative path from workspace root
+-- Helper: Get relative path from workspace root. A file in a pane worktree
+-- (lazy_llm_worktree) is given as its main copy's path: the same
+-- repo-relative path the isolated agent sees from its own cwd.
 local function get_relative_path(filepath)
+  local wt_ok, lazy_llm_wt = pcall(require, "lazy_llm_worktree")
+  if wt_ok then
+    filepath = lazy_llm_wt.main_counterpart(filepath) or filepath
+  end
   local root = get_workspace_root()
   if filepath:sub(1, #root) == root then
     return filepath:sub(#root + 2) -- +2 to skip the trailing /
