@@ -269,10 +269,17 @@ return {
 			{
 				"<leader>llms",
 				function()
+					-- The selected lines, read while still in visual mode: a Lua
+					-- mapping runs before visual mode ends, so the '< and '> marks
+					-- would still be the PREVIOUS selection (and this used to run
+					-- `<,'>write!`, a malformed range, so it never sent anything).
+					local first, last = vim.fn.line("v"), vim.fn.line(".")
+					if first > last then
+						first, last = last, first
+					end
 					local tmp = vim.fn.tempname() .. ".md"
-					vim.cmd([[
-					<,'>write!
-					]] .. tmp)
+					vim.fn.writefile(vim.api.nvim_buf_get_lines(0, first - 1, last, false), tmp)
+					vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
 					vim.fn.jobstart({
 						"bash",
 						"-lc",
