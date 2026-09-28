@@ -5,6 +5,7 @@
 
 ## Done (12)
 
+- [x] [claude-notify-click-finished](done/claude-notify-click-finished.md) - Notifications — click to jump to the pane, "finished" notices, elicitation/subagent prompts
 - [x] [worktree-concurrency-mode](done/worktree-concurrency-mode.md) - Optional per-pane worktree isolation for concurrent AI panes in one workspace
 - [x] [claude-notify-detail](done/claude-notify-detail.md) - Permission notifications name the conversation, the pending command, and the pane
 - [x] [fix-send-scenarios-leader-key](done/fix-send-scenarios-leader-key.md) - Fix scenarios 01-07: they assume a backslash leader and window 0
