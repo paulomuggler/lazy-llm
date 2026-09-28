@@ -480,6 +480,22 @@ lazy_llm_workspace_dir() {
   printf '%s\n' "$dir"
 }
 
+# Live panes tagged with pane worktree <wt> (llm-add -i/-w set @lazy_llm_wt).
+# Stdout: "session<TAB>pane_id" per pane
+lazy_llm_wt_panes() {
+  local wt="$1"
+  tmux list-panes -a -F $'#{session_name}\t#{pane_id}\t#{@lazy_llm_wt}' 2>/dev/null \
+    | awk -F'\t' -v w="$wt" '$3 == w {print $1 "\t" $2}'
+}
+
+# The pane worktree of the current window's visible AI pane, if it has one.
+lazy_llm_visible_pane_wt() {
+  local ai
+  ai=$(tmux display-message -p '#{@AI_PANE_ID}' 2>/dev/null) || return 0
+  [[ -n "$ai" ]] || return 0
+  tmux show-option -pqv -t "$ai" @lazy_llm_wt 2>/dev/null || true
+}
+
 # Find the lazy-llm session (if any) whose workspace directory is the given path.
 # Compares via realpath so symlinks don't fool the match.
 # Args: $1 target_path
@@ -573,7 +589,7 @@ lazy_llm_default_branch() {
 
 # Internal helper for lazy_llm_gather_worktrees. Skip detached-HEAD worktrees.
 _lazy_llm_emit_worktree_row() {
-  local path="$1" branch="$2" default="$3" is_github="$4"
+  local path="$1" branch="$2" default="$3" is_github="$4" wt_panes="${5:-}"
   [[ -z "$branch" ]] && return 0
 
   local dirty="" ahead="0" behind="0" session="" pr=""
@@ -594,13 +610,27 @@ _lazy_llm_emit_worktree_row() {
             --json state -q .state 2>/dev/null) || pr=""
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$branch" "$dirty" "$ahead" "$behind" "$session" "$pr"
+  # Pane worktrees (llm-wt): owned by the live pane tagged with this path,
+  # else orphaned. Task worktrees have no owner.
+  local owner="" base
+  base=$(git -C "$path" config "branch.$branch.lazyLlmBase" 2>/dev/null) || base=""
+  if [[ -n "$base" ]]; then
+    owner=$(awk -F'\t' -v w="$path" '$1 == w {print "pane:" $2 ":" $3; exit}' <<< "$wt_panes")
+    [[ -n "$owner" ]] || owner="orphaned"
+  fi
+
+  printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+    "$path" "$branch" "$dirty" "$ahead" "$behind" "$session" "$pr" "$owner"
 }
 
-# List worktrees with state. Tab-separated rows:
-#   PATH<TAB>BRANCH<TAB>DIRTY<TAB>AHEAD<TAB>BEHIND<TAB>SESSION<TAB>PR_STATE
+# List worktrees with state. \x1f-separated rows (not tabs: DIRTY, SESSION,
+# PR_STATE and OWNER can be empty, and `read` collapses runs of a whitespace
+# IFS, shifting every field after an empty one):
+#   PATH BRANCH DIRTY AHEAD BEHIND SESSION PR_STATE OWNER
 # DIRTY: "*" or ""; AHEAD/BEHIND: counts vs origin/<default>; SESSION: lazy-llm
-# session attached; PR_STATE: OPEN/MERGED/CLOSED/"" (only when gh+github remote).
+# session attached; PR_STATE: OPEN/MERGED/CLOSED/"" (only when gh+github remote);
+# OWNER: "pane:<session>:<pane_id>" or "orphaned" for a pane worktree (llm-wt),
+# "" for a task worktree.
 # Skips detached-HEAD worktrees.
 lazy_llm_gather_worktrees() {
   local repo default has_gh is_github
@@ -614,6 +644,11 @@ lazy_llm_gather_worktrees() {
       && is_github=true
   fi
 
+  # Every pane's worktree tag, in one tmux call: "wt<TAB>session<TAB>pane".
+  local wt_panes
+  wt_panes=$(tmux list-panes -a -F $'#{@lazy_llm_wt}\t#{session_name}\t#{pane_id}' 2>/dev/null \
+    | awk -F'\t' '$1 != ""') || wt_panes=""
+
   local path="" branch=""
   while IFS= read -r line; do
     if [[ "$line" == worktree\ * ]]; then
@@ -621,11 +656,11 @@ lazy_llm_gather_worktrees() {
     elif [[ "$line" == branch\ * ]]; then
       branch="${line#branch refs/heads/}"
     elif [[ -z "$line" ]]; then
-      _lazy_llm_emit_worktree_row "$path" "$branch" "$default" "$is_github"
+      _lazy_llm_emit_worktree_row "$path" "$branch" "$default" "$is_github" "$wt_panes"
       path=""; branch=""
     fi
   done < <(git -C "$repo" worktree list --porcelain 2>/dev/null)
-  [[ -n "$path" ]] && _lazy_llm_emit_worktree_row "$path" "$branch" "$default" "$is_github"
+  [[ -n "$path" ]] && _lazy_llm_emit_worktree_row "$path" "$branch" "$default" "$is_github" "$wt_panes"
   return 0
 }
 

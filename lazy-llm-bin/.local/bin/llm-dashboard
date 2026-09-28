@@ -223,16 +223,19 @@ _dashboard_build_rows() {
   #   @AI_PANE_ID/@AI_TOOL — legacy single-pane fallback (@AI_PANES unset)
   #   focused pane    — tmux's own pane_active in that window, see below
   #   @lazy_llm_collapsed — the session's fold flag
-  local -A w_first=() w_panes=() w_tools=() w_names=() w_idx=() w_single=() w_single_tool=() w_focused=() w_collapsed=()
-  local s win act pane_id o_panes o_tools o_names o_idx o_single o_single_tool o_collapsed
-  while IFS=$'\x1f' read -r s win act pane_id o_panes o_tools o_names o_idx o_single o_single_tool o_collapsed; do
+  #   @lazy_llm_wt    — per PANE (any window, hold windows too): the pane
+  #                     worktree an isolated AI pane runs in (llm-add -i)
+  local -A w_first=() w_panes=() w_tools=() w_names=() w_idx=() w_single=() w_single_tool=() w_focused=() w_collapsed=() pane_wt=()
+  local s win act pane_id o_panes o_tools o_names o_idx o_single o_single_tool o_collapsed o_wt
+  while IFS=$'\x1f' read -r s win act pane_id o_panes o_tools o_names o_idx o_single o_single_tool o_collapsed o_wt; do
+    [[ -n "$o_wt" ]] && pane_wt[$pane_id]="$o_wt"
     if [[ -z "${w_first[$s]+set}" ]]; then
       w_first[$s]="$win"; w_panes[$s]="$o_panes"; w_tools[$s]="$o_tools"; w_names[$s]="$o_names"
       w_idx[$s]="$o_idx"; w_single[$s]="$o_single"; w_single_tool[$s]="$o_single_tool"
       w_collapsed[$s]="$o_collapsed"
     fi
     [[ "$win" == "${w_first[$s]}" && "$act" == "1" ]] && w_focused[$s]="$pane_id"
-  done < <(tmux list-panes -a -F $'#{session_name}\x1f#{window_index}\x1f#{pane_active}\x1f#{pane_id}\x1f#{@AI_PANES}\x1f#{@AI_TOOLS}\x1f#{@AI_PANE_NAMES}\x1f#{@AI_PANE_IDX}\x1f#{@AI_PANE_ID}\x1f#{@AI_TOOL}\x1f#{@lazy_llm_collapsed}' 2>/dev/null)
+  done < <(tmux list-panes -a -F $'#{session_name}\x1f#{window_index}\x1f#{pane_active}\x1f#{pane_id}\x1f#{@AI_PANES}\x1f#{@AI_TOOLS}\x1f#{@AI_PANE_NAMES}\x1f#{@AI_PANE_IDX}\x1f#{@AI_PANE_ID}\x1f#{@AI_TOOL}\x1f#{@lazy_llm_collapsed}\x1f#{@lazy_llm_wt}' 2>/dev/null)
 
   # Colored glyph per status, computed once rather than two subshells per row.
   local -A glyph=()
@@ -325,6 +328,13 @@ _dashboard_build_rows() {
         [[ "$display_label" == "_" ]] && display_label="$tool"
         local pane_display
         printf -v pane_display '    ↳ %-12s %s' "$display_label" "${glyph[${st_arr[$i]}]:-${glyph[unknown]}}"
+        # Isolated pane: ⎇ + its worktree's <tool>-<n> (the dir is
+        # lazy-<ws>-<tool>-<n>). Plain ANSI, like the bold below.
+        if [[ -n "${pane_wt[$pid]:-}" ]]; then
+          local wt_sfx="${pane_wt[$pid]##*/}"
+          [[ "$wt_sfx" =~ ([^-]+-[0-9]+)$ ]] && wt_sfx="${BASH_REMATCH[1]}"
+          pane_display+=$' \033[38;5;75m⎇ '"${wt_sfx}"$'\033[0m'
+        fi
         # Bold instead of an "(active)" text tag — real ANSI codes (not
         # tmux's #[..] syntax), since this is plain fzf row text rendered
         # via --ansi, a different rendering context than status-right/
@@ -385,7 +395,7 @@ render_sessions_tab() {
     # "? unknown" is left to the Help tab — rare, and it kept this line short.
     local _legend="◐ waiting  ◉ unread  ● working  ○ idle"
     if [[ "$_budget" -ge 85 ]]; then
-      header="/:search enter:switch K:kill/rm r:rename z:fold a:add-pane ]/[:cycle-pane s:save R:refresh"
+      header="/:search enter:switch K:kill/rm r:rename z:fold a:add-pane A:add-isolated ]/[:cycle-pane s:save R:refresh"
       [[ "$_budget" -ge 40 ]] && header+=$'\n'"$_legend"
     elif [[ "$_budget" -ge 50 ]]; then
       header="/:search enter:switch K:kill a:add-pane R:refresh"
@@ -548,14 +558,14 @@ render_sessions_tab() {
     --bind='K:print(K)+accept' --bind='r:print(r)+accept' --bind='R:print(R)+accept' \
     --bind='s:print(s)+accept' \
     --bind="z:transform($_dashboard_self --fold-transform {1})" \
-    --bind='a:print(a)+accept' \
+    --bind='a:print(a)+accept' --bind='A:print(A)+accept' \
     --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
     --bind="ctrl-up:transform($_dashboard_self --reorder-transform up {1})" \
     --bind="ctrl-down:transform($_dashboard_self --reorder-transform down {1})" \
     --bind="k:transform($_dashboard_self --reorder-transform up {1})" \
     --bind="j:transform($_dashboard_self --reorder-transform down {1})" \
-    --bind='/:unbind(1,2,3,K,r,R,s,z,a,],[,?,ctrl-up,ctrl-down,j,k)+show-input+enable-search' \
-    --bind='tab:clear-query+hide-input+rebind(1,2,3,K,r,R,s,z,a,],[,?,ctrl-up,ctrl-down,j,k)' \
+    --bind='/:unbind(1,2,3,K,r,R,s,z,a,A,],[,?,ctrl-up,ctrl-down,j,k)+show-input+enable-search' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,3,K,r,R,s,z,a,A,],[,?,ctrl-up,ctrl-down,j,k)' \
     --bind='q:abort' \
     --bind="load:pos(${_start_pos})+unbind(load)" \
   ) || { echo "quit"; return 0; }
@@ -647,6 +657,7 @@ render_sessions_tab() {
       ;;
     R)     echo "action:refresh" ;;
     a)     echo "action:pane-add" ;;
+    A)     echo "action:pane-add-isolated" ;;
     "]")   echo "action:pane-next" ;;
     "[")   echo "action:pane-prev" ;;
     "?")   echo "tab:help" ;;
@@ -671,11 +682,11 @@ render_worktrees_tab() {
   data=$(lazy_llm_gather_worktrees)
 
   if [[ -z "$data" ]]; then
-    lines="(No worktrees in this repo, or not inside a git repo.)"
+    lines=$'\t\t'"(No worktrees in this repo, or not inside a git repo.)"
     header="no worktrees — n:new"
   else
     lines=""
-    while IFS=$'\t' read -r path branch dirty ahead behind session pr; do
+    while IFS=$'\x1f' read -r path branch dirty ahead behind session pr owner; do
       local short_path="${path/#$HOME/\~}"
       [[ ${#short_path} -gt 38 ]] && short_path="...${short_path: -35}"
 
@@ -690,8 +701,18 @@ render_worktrees_tab() {
         CLOSED) pr_mark="PRx" ;;
       esac
 
-      lines+=$(printf '%-38s  %-24s %s  %-10s %s  %s' \
-        "$short_path" "$branch" "$dirty_mark" "$ab" "$sess_mark" "$pr_mark")
+      # Pane worktrees (llm-wt): ⎇ and the workspace owning them, or orphaned.
+      local owner_mark=""
+      case "$owner" in
+        pane:*) owner_mark=$'\033[38;5;75m⎇\033[0m '"$(cut -d: -f2 <<< "$owner")" ;;
+        orphaned) owner_mark=$'\033[38;5;75m⎇\033[0m orphaned' ;;
+      esac
+
+      # Hidden fields: the FULL path (the display truncates long ones, and
+      # a truncated path is no path at all) and the owner, for the keys.
+      lines+="${path}"$'\t'"${owner}"$'\t'
+      lines+=$(printf '%-38s  %-24s %s  %-10s %s  %s  %s' \
+        "$short_path" "$branch" "$dirty_mark" "$ab" "$sess_mark" "$pr_mark" "$owner_mark")
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
@@ -709,8 +730,7 @@ render_worktrees_tab() {
 
   # Preview: git status -sb + recent log for the selected worktree path.
   local preview_cmd
-  preview_cmd='set -- {1}; '
-  preview_cmd+='wt="$1"; wt="${wt/#\~/$HOME}"; '
+  preview_cmd='wt={1}; '
   preview_cmd+='if git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then '
   preview_cmd+='echo "=== git status ==="; git -C "$wt" -c color.status=always status -sb 2>&1 | head -20; '
   preview_cmd+='echo; echo "=== git log -10 ==="; git -C "$wt" -c color.ui=always log --oneline -10 2>&1; '
@@ -727,6 +747,8 @@ render_worktrees_tab() {
     --border=rounded \
     --prompt="worktree> " \
     --header="$header" \
+    --delimiter=$'\t' \
+    --with-nth=3 \
     --preview="$preview_cmd" \
     --preview-window="right:55%:follow" \
     --disabled --no-input \
@@ -740,10 +762,10 @@ render_worktrees_tab() {
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
-  local chosen_line chosen_path
+  local chosen_line chosen_path chosen_owner
   chosen_line=$(echo "$selection" | tail -1)
-  chosen_path=$(echo "$chosen_line" | awk '{print $1}')
-  chosen_path="${chosen_path/#\~/$HOME}"
+  chosen_path=$(printf '%s' "$chosen_line" | cut -f1)
+  chosen_owner=$(printf '%s' "$chosen_line" | cut -f2)
   [[ -d "$chosen_path" ]] || chosen_path=""
 
   case "$key" in
@@ -752,11 +774,38 @@ render_worktrees_tab() {
     3)   echo "tab:saved" ;;
     n)   echo "action:worktree-new" ;;
     g)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-lazygit:$chosen_path" ;;
-    K)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-cleanup:$chosen_path" ;;
+    K)
+      if [[ -z "$chosen_path" ]]; then
+        echo "action:refresh"
+      elif [[ "$chosen_owner" == pane:* ]]; then
+        echo "action:worktree-pane-busy"
+      elif [[ "$chosen_owner" == orphaned ]]; then
+        echo "action:worktree-pane-cleanup:$chosen_path"
+      else
+        echo "action:worktree-cleanup:$chosen_path"
+      fi
+      ;;
     R)   echo "action:refresh" ;;
     "?") echo "tab:help" ;;
     *)
-      [[ -z "$chosen_path" ]] && echo "quit" || echo "action:worktree-open:$chosen_path"
+      if [[ -z "$chosen_path" ]]; then
+        echo "quit"
+      elif [[ "$chosen_owner" == pane:* ]]; then
+        # A live pane worktree: go to its pane (switch-pane wants the pane's
+        # index in its workspace's first window).
+        local o_s o_p o_win o_i=0 o_p2 o_found=""
+        o_s=$(cut -d: -f2 <<< "$chosen_owner"); o_p=$(cut -d: -f3 <<< "$chosen_owner")
+        o_win=$(tmux list-windows -t "$o_s" -F '#{window_index}' 2>/dev/null | head -1)
+        for o_p2 in $(tmux show-option -wqv -t "$o_s:$o_win" @AI_PANES 2>/dev/null); do
+          [[ "$o_p2" == "$o_p" ]] && { o_found=$o_i; break; }
+          o_i=$((o_i + 1))
+        done
+        [[ -n "$o_found" ]] && echo "action:switch-pane:$o_s:$o_found" || echo "action:switch:$o_s"
+      elif [[ "$chosen_owner" == orphaned ]]; then
+        echo "action:worktree-adopt:$chosen_path"
+      else
+        echo "action:worktree-open:$chosen_path"
+      fi
       ;;
   esac
 }
@@ -1166,7 +1215,7 @@ dispatch_action() {
         --prompt="confirm> " || echo no)
       [[ "$confirm" == "yes" ]] && { "$HOME/.local/bin/llm-persist" forget --id "$sid" >/dev/null 2>&1 || true; }
       ;;
-    action:pane-add)
+    action:pane-add|action:pane-add-isolated)
       local tool
       # `|| true`: without it, pressing Esc here makes fzf exit nonzero, and
       # since this is a bare assignment (not tested by any if/while/||),
@@ -1178,11 +1227,44 @@ dispatch_action() {
         --height=100% --reverse --border=rounded --prompt="tool> " \
         --header="Pick an AI tool to add (esc to cancel):" \
         --no-info || true)
-      [[ -n "$tool" ]] && "$HOME/.local/bin/llm-add" -t "$tool" >&2 || true
+      [[ -n "$tool" ]] || return 0
+      if [[ "$action" == action:pane-add-isolated ]]; then
+        "$HOME/.local/bin/llm-add" -t "$tool" -i >&2 || true
+        return 0
+      fi
+      # Spec §3.1: with an isolated pane in view, offer to add into ITS
+      # worktree (preselected); otherwise `a` is exactly what it always was.
+      local vis_wt where
+      vis_wt=$(lazy_llm_visible_pane_wt)
+      if [[ -n "$vis_wt" && -d "$vis_wt" ]]; then
+        where=$(printf '%s\n' "Add in worktree $(git -C "$vis_wt" branch --show-current 2>/dev/null)" \
+            "Add in the main directory" "Cancel" | fzf \
+          --height=100% --reverse --border=rounded --prompt="where> " --no-info \
+          --header="The pane in view runs in its own worktree. Where should the new $tool pane go?" || true)
+        case "$where" in
+          "Add in worktree"*) "$HOME/.local/bin/llm-add" -t "$tool" -w "$vis_wt" >&2 || true ;;
+          "Add in the main directory") "$HOME/.local/bin/llm-add" -t "$tool" >&2 || true ;;
+        esac
+        return 0
+      fi
+      "$HOME/.local/bin/llm-add" -t "$tool" >&2 || true
       ;;
     action:pane-remove:*)
       local idx="${action#action:pane-remove:}"
       [[ -z "$idx" ]] && return 0
+      # The last pane in a pane worktree: llm-remove's own worktree dialog
+      # (Keep / Remove / Cancel) is the confirmation — don't ask twice.
+      local -a rm_panes=()
+      local rm_wt=""
+      read -ra rm_panes <<< "$(tmux display-message -p '#{@AI_PANES}' 2>/dev/null)"
+      if [[ -n "${rm_panes[$idx]:-}" ]]; then
+        rm_wt=$(tmux show-option -pqv -t "${rm_panes[$idx]}" @lazy_llm_wt 2>/dev/null) || rm_wt=""
+        [[ -n "$rm_wt" && "$(lazy_llm_wt_panes "$rm_wt" | wc -l)" -gt 1 ]] && rm_wt=""
+      fi
+      if [[ -n "$rm_wt" ]]; then
+        "$HOME/.local/bin/llm-remove" -f "$idx" >&2 || true
+        return 0
+      fi
       local confirm
       confirm=$(printf 'no\nyes' | fzf \
         --height=100% --reverse --border=rounded --header="Remove pane $idx?" \
@@ -1197,6 +1279,24 @@ dispatch_action() {
       ;;
     action:pane-remove-unsupported)
       tmux display-message "Pane removal only works for the current workspace's panes today — switch to it first (Enter), then K."
+      ;;
+    action:worktree-pane-busy)
+      tmux display-message "That worktree's pane is still open — close the pane (K on its row in the Workspaces tab) to clean the worktree up."
+      ;;
+    action:worktree-pane-cleanup:*)
+      # An orphaned pane worktree: the same close dialog a pane gets.
+      local path="${action#action:worktree-pane-cleanup:}" decision
+      decision=$("$HOME/.local/bin/llm-wt" close "$path") || decision=keep
+      [[ "$decision" == remove ]] && { "$HOME/.local/bin/llm-wt" remove "$path" --force >&2 || true; }
+      ;;
+    action:worktree-adopt:*)
+      # An orphaned pane worktree: put an AI pane back in it, in the current
+      # workspace (the one this dashboard was opened from).
+      local path="${action#action:worktree-adopt:}" tool
+      tool=$(printf 'claude\ngemini\ncodex\ngrok\naider' | fzf \
+        --height=100% --reverse --border=rounded --prompt="tool> " --no-info \
+        --header="Orphaned worktree $(git -C "$path" branch --show-current 2>/dev/null): add an AI pane in it, in the current workspace (esc to cancel):" || true)
+      [[ -n "$tool" ]] && { "$HOME/.local/bin/llm-add" -t "$tool" -w "$path" >&2 || true; }
       ;;
     action:worktree-open:*)
       local path="${action#action:worktree-open:}"
@@ -1326,15 +1426,21 @@ render_help_tab() {
     " R      refresh"
     ""
     "CURRENT WORKSPACE ONLY"
-    " a      add AI pane"
+    " a      add AI pane (asks where"
+    "        if the one in view is ⎇)"
+    " A      add isolated pane: own"
+    "        worktree + branch (⎇)"
     " ]  [   cycle next/prev pane"
   )
   local -a right=(
     "WORKTREES TAB"
     " Enter  open/attach in worktree"
+    "        ⎇ pane's: go to its pane"
+    "        ⎇ orphaned: add a pane in it"
     " n      new worktree + workspace"
     " g      launch lazygit"
     " K      atomic cleanup"
+    "        (⎇: once its pane is closed)"
     " R      refresh"
     ""
     "SAVED  ●live ◌died ◇closed ✕dropped"
@@ -1447,7 +1553,11 @@ Inside the dashboard:
              same two actions (useful over an SSH/tunneled terminal where
              Ctrl+Arrow doesn't reach the popup cleanly).
   a          add an AI pane to the CURRENT workspace (Workspaces — the one
-             this dashboard was opened from, not whatever's highlighted)
+             this dashboard was opened from, not whatever's highlighted);
+             when the pane in view is isolated, asks: its worktree or the
+             main directory
+  A          add an ISOLATED AI pane to the CURRENT workspace: its own git
+             worktree and branch (Workspaces; see llm-wt)
   g          launch lazygit (Worktrees)
   K          workspace: close (keep saved) or kill (drop) · pane: remove ·
              Saved: drop · worktree: cleanup (all with confirmation)
@@ -1695,7 +1805,7 @@ while true; do
     action:saved-toggle-dropped)
       if $_dashboard_saved_dropped; then _dashboard_saved_dropped=false; else _dashboard_saved_dropped=true; fi
       ;;
-    action:switch:*|action:switch-pane:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*|action:save-now|action:saved-*)
+    action:switch:*|action:switch-pane:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-add-isolated|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*|action:worktree-pane-busy|action:worktree-pane-cleanup:*|action:worktree-adopt:*|action:save-now|action:saved-*)
       dispatch_action "$result"
       # Switching exits the popup (restoring one workspace switches to it
       # too); for others we re-enter the current tab

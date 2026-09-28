@@ -81,8 +81,7 @@ remove_tool="${tool_arr[$remove_idx]}"
 wt=$(tmux show-option -pqv -t "$remove_pane" @lazy_llm_wt 2>/dev/null) || wt=""
 wt_decision=""
 if [ -n "$wt" ] && [ -d "$wt" ]; then
-  others=$(tmux list-panes -a -F $'#{pane_id}\t#{@lazy_llm_wt}' \
-    | awk -F'\t' -v p="$remove_pane" -v w="$wt" '$1 != p && $2 == w' | wc -l)
+  others=$(lazy_llm_wt_panes "$wt" | awk -F'\t' -v p="$remove_pane" '$2 != p' | wc -l)
   if [ "$others" -eq 0 ]; then
     wt_decision=$("$(dirname "$0")/llm-wt" close "$wt") || wt_decision="keep"
     if [ "$wt_decision" = "cancel" ]; then

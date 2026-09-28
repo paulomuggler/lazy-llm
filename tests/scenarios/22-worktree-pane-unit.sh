@@ -401,6 +401,49 @@ assert_contains "$output" "wt2=gone" "the worktree is gone"
 assert_contains "$output" "branches=lazy/rws/cat-2 " "its branch is deleted; the kept one remains"
 
 echo ""
+echo "Test 13: dashboard tree marker, worktree owners (spec §9, §12.2)..."
+ln -sf "$REPO_ROOT/lazy-llm-bin/.local/bin/llm-dashboard" "$HOME_BIN/llm-dashboard"
+R="$sandbox/r13"; mk_repo "$R"
+(cd "$R" && lazy_llm_setup_worktree task-x >/dev/null 2>&1)
+output=$(TMUX_TMPDIR="$sandbox/tmux" bash <<EOF
+unset TMUX
+source "$LIB_FILE"
+tmux -f /dev/null new-session -d -s dws -c "$R" -x 200 -y 50 "exec sleep 120"
+P=\$(tmux display -t dws -p '#{pane_id}')
+tmux set-option -t dws @lazy_llm 1
+tmux set-option -t dws @lazy_llm_dir "$R"
+tmux set-option -w -t dws @AI_PANE_ID "\$P"
+tmux set-option -w -t dws @AI_PANES "\$P"
+tmux set-option -w -t dws @AI_TOOLS cat
+tmux set-option -w -t dws @AI_PANE_IDX 0
+Q=\$(tmux split-window -t "\$P" -c "$R" -P -F '#{pane_id}' "exec sleep 120")
+export TMUX_PANE="\$Q"
+"$HOME_BIN/llm-add" -t cat -i >/dev/null 2>&1
+read -ra panes <<< "\$(tmux show-option -wqv -t dws @AI_PANES)"
+N=\${panes[1]}
+WT=\$(tmux show-option -pqv -t "\$N" @lazy_llm_wt)
+echo "rows=\$("$HOME_BIN/llm-dashboard" --emit-rows dws 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep "pane:dws:1:" | cut -f2)"
+echo "wt-panes=\$(lazy_llm_wt_panes "\$WT" | tr '\t\n' '| ')"
+g() { (cd "$R" && lazy_llm_gather_worktrees) | awk -F\$'\x1f' -v p="\$1" '\$1 == p {print \$8}'; }
+echo "owner-live=\$(g "\$WT")"
+echo "owner-task=<\$(g "$R/.worktrees/task-x")>"
+echo "owner-main=<\$(g "$R")>"
+echo "pid=\$N"
+tmux kill-pane -t "\$N"
+echo "owner-orphan=\$(g "\$WT")"
+tmux kill-server 2>/dev/null
+EOF
+)
+N=$(printf '%s\n' "$output" | sed -n 's/^pid=//p')
+assert_contains "$output" "rows=    ↳ cat" "tree row for the isolated pane"
+assert_contains "$(printf '%s\n' "$output" | grep '^rows=')" "⎇ cat-2" "...carries the ⎇ marker"
+assert_contains "$output" "wt-panes=dws|$N " "lazy_llm_wt_panes finds the tagged pane"
+assert_contains "$output" "owner-live=pane:dws:$N" "gather_worktrees: owner is the live pane"
+assert_contains "$output" "owner-task=<>" "task worktree has no owner"
+assert_contains "$output" "owner-main=<>" "main checkout has no owner"
+assert_contains "$output" "owner-orphan=orphaned" "pane gone: orphaned"
+
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
