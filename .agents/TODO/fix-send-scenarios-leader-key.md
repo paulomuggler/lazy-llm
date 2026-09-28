@@ -2,9 +2,9 @@
 slug: fix-send-scenarios-leader-key
 title: Fix scenarios 01-07: they assume a backslash leader and window 0
 priority: P2
-status: backlog
+status: in-progress
 created: 2026-09-27_16:13
-updated: 2026-09-27_16:13
+updated: 2026-09-28_13:26
 depends-on: []
 tags: [tests]
 commits: []
