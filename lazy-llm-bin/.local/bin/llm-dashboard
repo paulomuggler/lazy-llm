@@ -967,7 +967,16 @@ render_saved_tab() {
     1)   echo "tab:workspaces" ;;
     2)   echo "tab:worktrees" ;;
     3|R) echo "action:refresh" ;;
-    A)   echo "action:saved-restore-all" ;;
+    A)
+      # Scoped to the highlighted row's section: a manual save (its divider
+      # or one of its entries) restores that save's workspaces; anywhere else,
+      # the rolling entries that died with their tmux server.
+      if [[ "$chosen_state" == snapshot || "$chosen_state" == snaphdr ]]; then
+        echo "action:saved-restore-all:${chosen_id%%/*}"
+      else
+        echo "action:saved-restore-all"
+      fi
+      ;;
     s)   echo "action:save-now" ;;
     d)   echo "action:saved-toggle-dropped" ;;
     "?") echo "tab:help" ;;
@@ -1187,14 +1196,27 @@ dispatch_action() {
       out=$("$HOME/.local/bin/llm-persist" restore --id "${action#action:saved-restore:}" 2>&1) \
         || tmux display-message "lazy-llm: restore failed: $(tail -1 <<< "$out")"
       ;;
-    action:saved-restore-all)
-      local confirm out
+    action:saved-restore-all|action:saved-restore-all:*)
+      # No ts: the rolling entries that died with their tmux server. A ts:
+      # every workspace of that manual save (running ones come back as copies).
+      local ts="" question confirm out n
+      [[ "$action" == action:saved-restore-all:* ]] && ts="${action#action:saved-restore-all:}"
+      if [[ -n "$ts" ]]; then
+        n=$(find "${LAZY_LLM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lazy-llm}/snapshots/$ts" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+        question="Restore the $n workspace(s) of the manual save of ${ts:0:4}-${ts:4:2}-${ts:6:2} ${ts:9:2}:${ts:11:2}? (running ones come back as copies)"
+      else
+        question="Restore every workspace that died with its tmux server (◌)?"
+      fi
       confirm=$(printf 'no\nyes' | fzf \
-        --height=100% --reverse --border=rounded --header="Restore every saved workspace that isn't running?" \
+        --height=100% --reverse --border=rounded --header="$question" \
         --prompt="confirm> " || echo no)
       if [[ "$confirm" == "yes" ]]; then
         _dashboard_busy "restoring…"
-        out=$("$HOME/.local/bin/llm-persist" restore 2>&1) || true
+        if [[ -n "$ts" ]]; then
+          out=$("$HOME/.local/bin/llm-persist" restore --snapshot "$ts" 2>&1) || true
+        else
+          out=$("$HOME/.local/bin/llm-persist" restore 2>&1) || true
+        fi
         _dashboard_flash="lazy-llm: $(grep -c '^Restored' <<< "$out" || true) workspace(s) restored"
       fi
       ;;
@@ -1448,7 +1470,7 @@ render_help_tab() {
     " z      show/hide its panes"
     " c      close a live one, keep it"
     " K      live: kill · else: drop"
-    " A      restore all that died"
+    " A      restore all in this section"
     " s      save now (also Prefix+C-s);"
     "        adds a ◆ manual save: Enter"
     "        brings back that version"
@@ -1564,7 +1586,8 @@ Inside the dashboard:
   r          rename (Workspaces)
   ], [       cycle next / prev AI pane in the CURRENT workspace (Workspaces)
   s          save every workspace now (Workspaces, Saved; also Prefix+C-s)
-  A          restore every workspace that died with its tmux server (Saved)
+  A          restore all in the highlighted section (Saved): the ones that died
+             with their tmux server, or every workspace of one manual save
   c          close a running workspace but keep it saved (Saved)
   d          show/hide dropped workspaces (Saved)
   z          fold/unfold a saved workspace's AI panes (Saved; folded by default)

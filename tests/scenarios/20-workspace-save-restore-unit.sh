@@ -291,6 +291,16 @@ assert_equals "$(T show-option -qv -t '=wsA:' @lazy_llm_ws_id)" "$idA" "...as it
 assert_equals "$(wopt wsA @AI_PANE_NAMES)" "alpha beta gamma" "...with the snapshot's panes"
 sbx llm-persist forget --snapshot "$ts1/$idA" >/dev/null
 assert_file_not_exists "$SB/state/snapshots/$ts1/$idA.json" "forget --snapshot <ts>/<id> deletes one workspace from a manual save"
+# A whole manual save at once (the Saved tab's A on it): every workspace in
+# it; the running ones come back as copies, the live ones stay untouched.
+before=$(T list-sessions -F '#S' | sort | tr '\n' ' ')
+nts1=$(find "$SB/state/snapshots/$ts1" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')
+out=$(sbx llm-persist restore --snapshot "$ts1" 2>&1)
+assert_equals "$(grep -c '^Restored' <<< "$out")" "$nts1" "restore --snapshot <ts> restores every workspace of that save ($nts1)"
+after=$(T list-sessions -F '#S' | sort | tr '\n' ' ')
+assert_equals "$(( $(wc -w <<< "$after") - $(wc -w <<< "$before") ))" "$nts1" "...each as a new session, since they're all running"
+assert_contains "$out" "a copy" "...as copies, never merged into the live ones"
+for s_ in $after; do [[ " $before " == *" $s_ "* ]] || T kill-session -t "=$s_"; done
 sbx llm-persist forget --snapshot "$ts1" >/dev/null
 assert_file_not_exists "$SB/state/snapshots/$ts1" "forget --snapshot <ts> deletes the whole manual save"
 

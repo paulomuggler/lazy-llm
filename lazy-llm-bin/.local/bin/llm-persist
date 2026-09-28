@@ -980,22 +980,15 @@ restore_one() {
 # restore never touches a live session. Otherwise it comes back as that
 # workspace, and its next save makes the snapshot its current state.
 # Args: $1 "<ts>/<id>", or "<ts>" with $2 the workspace name
-cmd_restore_snapshot() {
-  local key="$1" f
-  if [[ "$key" != */* ]]; then
-    local want="${2:?usage: lazy-llm restore --snapshot <ts> <name>}"
-    for f in "$SNAP_DIR/$key"/*.json; do
-      [[ -f "$f" && "$(jq -r .name "$f")" == "$want" ]] && { key="$key/$(jq -r .id "$f")"; break; }
-    done
-  fi
-  f="$SNAP_DIR/$key.json"
-  [[ -f "$f" ]] || die "no such snapshot entry: $key (see 'lazy-llm saved')"
-  unset CLAUDECODE
-  lock_acquire wait
-
+# Restore one snapshot entry; the caller holds the lock and saves afterwards.
+# Prints a summary line, then the restored session's name as the last line.
+# Args: $1 "<ts>/<id>"
+restore_snapshot_entry() {
+  local key="$1" f="$SNAP_DIR/$1.json"
+  [[ -f "$f" ]] || { echo "no such snapshot entry: $key (see 'lazy-llm saved')" >&2; return 1; }
   local id name dir srv live_ids tmpf fork=false
   id=$(jq -r .id "$f"); name=$(jq -r .name "$f"); dir=$(jq -r .dir "$f")
-  [[ -d "$dir" ]] || die "$dir no longer exists"
+  [[ -d "$dir" ]] || { echo "Skipped $name: $dir no longer exists" >&2; return 1; }
   srv=$(server_id)
   live_ids=""
   [[ -n "$srv" ]] && live_ids=$(live_workspaces | cut -f1)
@@ -1024,18 +1017,53 @@ cmd_restore_snapshot() {
   local session
   session=$(restore_one "$tmpf" | tail -1)
   rm -f "$tmpf"
-  lock_release
-  rm -f "$PENDING"
-  "$0" save --no-rpc >/dev/null
   if $fork; then
     echo "Restored $name from the manual save of $(pretty_ts "${key%%/*}") as $session (a copy: $name is running)"
   else
     echo "Restored $name from the manual save of $(pretty_ts "${key%%/*}")$([[ "$session" == "$name" ]] || echo " as $session ('$name' is taken)")"
   fi
+  printf '%s\n' "$session"
+}
+
+# Args: "<ts>/<id>"; "<ts> <name>" for one workspace of a manual save; or
+# "<ts>" alone for every workspace in it (the Saved tab's A on a manual save).
+cmd_restore_snapshot() {
+  local key="$1" f
+  local -a keys=()
+  if [[ "$key" == */* ]]; then
+    keys=("$key")
+  elif [[ -n "${2:-}" ]]; then
+    for f in "$SNAP_DIR/$key"/*.json; do
+      [[ -f "$f" && "$(jq -r .name "$f")" == "$2" ]] && { keys=("$key/$(jq -r .id "$f")"); break; }
+    done
+    [[ ${#keys[@]} -gt 0 ]] || die "no workspace named '$2' in the manual save of $(pretty_ts "$key")"
+  else
+    [[ -d "$SNAP_DIR/$key" ]] || die "no such manual save: $key (see 'lazy-llm saved')"
+    # In the order the dashboard listed them.
+    while IFS=$'\t' read -r _ f; do
+      keys+=("$key/$(basename "$f" .json)")
+    done < <(for f in "$SNAP_DIR/$key"/*.json; do [[ -f "$f" ]] && printf '%s\t%s\n' "$(jq -r .order "$f")" "$f"; done | sort -n)
+    [[ ${#keys[@]} -gt 0 ]] || die "the manual save of $(pretty_ts "$key") is empty"
+  fi
+  unset CLAUDECODE
+  lock_acquire wait
+
+  local k out
+  local -a sessions=()
+  for k in "${keys[@]}"; do
+    if out=$(restore_snapshot_entry "$k"); then
+      sed '$d' <<< "$out"
+      sessions+=("$(tail -1 <<< "$out")")
+    fi
+  done
+  lock_release
+  rm -f "$PENDING"
+  "$0" save --no-rpc >/dev/null
+  [[ ${#sessions[@]} -gt 0 ]] || return 1
   if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]]; then
-    exec tmux attach-session -t "=$session"
-  elif [[ -n "${TMUX:-}" ]]; then
-    tmux switch-client -t "=$session"
+    exec tmux attach-session -t "=${sessions[0]}"
+  elif [[ -n "${TMUX:-}" && ${#sessions[@]} -eq 1 ]]; then
+    tmux switch-client -t "=${sessions[0]}"
   fi
 }
 
@@ -1231,8 +1259,9 @@ Usage: lazy-llm save [--async|--notify] [--no-rpc]
                                              save every running workspace now
        lazy-llm restore [--dry-run] [--id <id>]... [name]...
                                              rebuild saved workspaces that aren't running
-       lazy-llm restore --snapshot <ts> <name> | --snapshot <ts>/<id>
-                                             bring one back as it was at a manual save
+       lazy-llm restore --snapshot <ts> [<name>] | --snapshot <ts>/<id>
+                                             bring one (or, with no name, every) workspace
+                                             back as it was at a manual save
        lazy-llm saved [-v] [--dropped]       list saved workspaces
        lazy-llm close <name> | --id <id>     close a running workspace, keep it saved
        lazy-llm forget <name> | --id <id>    drop a saved workspace

@@ -360,7 +360,7 @@ lazy-llm forget --snapshot 20260928-001210            # delete that manual save
 if-shell 'test -x "$HOME/.local/bin/llm-tmux-init"' 'run-shell -b "$HOME/.local/bin/llm-tmux-init"'
 ```
 
-Or use the dashboard's **Saved** tab (`Prefix+S`, then `3`). It lists the rolling entries at the top, then each manual save under a divider with its date. `z` expands an entry to show its AI panes (folded by default). Enter restores (or switches to a running one), `c` closes a running one (kept), `K` kills or drops (on a manual save's entry or divider: deletes it), `A` restores everything that died, `s` saves, `d` shows dropped ones. `K` on a workspace in the Workspaces tab asks whether to close (keep) or kill (drop).
+Or use the dashboard's **Saved** tab (`Prefix+S`, then `3`). It lists the rolling entries at the top, then each manual save under a divider with its date. `z` expands an entry to show its AI panes (folded by default). Enter restores (or switches to a running one), `c` closes a running one (kept), `K` kills or drops (on a manual save's entry or divider: deletes it), `A` restores everything in the highlighted section (the ones that died, or one manual save's workspaces), `s` saves, `d` shows dropped ones. `K` on a workspace in the Workspaces tab asks whether to close (keep) or kill (drop).
 
 | State | Meaning |
 |---|---|
