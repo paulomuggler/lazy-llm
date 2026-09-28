@@ -99,7 +99,8 @@ if $ISOLATE || [[ -n "$JOIN_WT" ]]; then
 fi
 
 # Create the pane in the (hidden) holding window and append it to the lists
-new_pane_id=$(lazy_llm_add_ai_pane "$_SESSION" "$_WINDOW" "$pane_dir" "$NEW_AI_TOOL" "$launch_cmd")
+new_pane_id=$(lazy_llm_add_ai_pane "$_SESSION" "$_WINDOW" "$pane_dir" "$NEW_AI_TOOL" "$launch_cmd") \
+  || { echo "Error: could not add the pane" >&2; exit 1; }
 # Pane-scoped, so it follows the pane through swaps in and out of the hold
 # window. The border, the dashboard, llm-remove and llm-persist read it.
 [[ -n "$wt" ]] && tmux set-option -p -t "$new_pane_id" @lazy_llm_wt "$wt"

@@ -1682,6 +1682,9 @@ lazy_llm_build_window() {
 # hidden holding window (created on first use). Doesn't cycle it into view.
 # Args: $1 session  $2 window index  $3 dir  $4 tool  $5 launch command
 # Stdout: the new pane's id
+# Returns 1, changing nothing, when tmux can't create the pane. Callers must
+# check: an empty pane id as a tmux target means the CURRENT pane, so using
+# it would type the launch command into whatever pane has focus.
 lazy_llm_add_ai_pane() {
   local session="$1" window="$2" target_dir="$3" tool="$4" launch_cmd="$5"
   local hold_win panes tools names new_pane_id
@@ -1695,8 +1698,19 @@ lazy_llm_add_ai_pane() {
     tmux set-option -w -t "$hold_win" @lazy_llm_hold "1"
   fi
 
+  # Tile the hold window before splitting (and after): split-window halves
+  # the target pane, and the target is always the newest one, so without
+  # re-tiling each held pane is half the last and, a handful of panes in,
+  # tmux has no room left ("no space for new pane"). Held panes' sizes don't
+  # matter otherwise: a pane takes its slot's size when swapped into view.
+  tmux select-layout -t "$hold_win" tiled >/dev/null 2>&1 || true
   # -d: don't steal focus; -P -F prints the new pane's id
-  new_pane_id=$(tmux split-window -d -t "$hold_win" -c "$target_dir" -P -F '#{pane_id}')
+  new_pane_id=$(tmux split-window -d -t "$hold_win" -c "$target_dir" -P -F '#{pane_id}' 2>/dev/null) || new_pane_id=""
+  if [[ -z "$new_pane_id" ]]; then
+    echo "Error: tmux couldn't create a pane in the hold window $hold_win" >&2
+    return 1
+  fi
+  tmux select-layout -t "$hold_win" tiled >/dev/null 2>&1 || true
   tmux send-keys -t "$new_pane_id" "$launch_cmd" C-m
   # select-pane -T also makes it the hold window's active pane; that window
   # is never displayed, so nothing visible changes.

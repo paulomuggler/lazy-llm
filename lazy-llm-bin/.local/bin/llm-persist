@@ -954,10 +954,14 @@ restore_one() {
           lazy_llm_build_window "$session" "$win" "$dir" "$a" "$cmd" "$w_prompt" restore
           new_pane=$(tmux show-option -wqv -t "=$session:$win" @AI_PANE_ID)
         else
-          new_pane=$(lazy_llm_add_ai_pane "$session" "$win" "$dir" "$a" "$cmd")
+          new_pane=$(lazy_llm_add_ai_pane "$session" "$win" "$dir" "$a" "$cmd") || new_pane=""
         fi
-        seed_pane "$new_pane" "$conv" "$c"
-        [[ -n "$pane_wt" ]] && tmux set-option -p -t "$new_pane" @lazy_llm_wt "$pane_wt"
+        # No pane id means tmux couldn't make one: an empty -t would hit the
+        # current pane, so skip this pane rather than tag or seed another.
+        if [[ -n "$new_pane" ]]; then
+          seed_pane "$new_pane" "$conv" "$c"
+          [[ -n "$pane_wt" ]] && tmux set-option -p -t "$new_pane" @lazy_llm_wt "$pane_wt"
+        fi
         p_count=$((p_count + 1))
         ;;
     esac
