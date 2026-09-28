@@ -500,13 +500,14 @@ lazy_llm_find_session_for_path() {
 # Create or locate a git worktree for the given branch.
 # - If branch exists: create worktree pointing at it (error if already checked out elsewhere)
 # - If branch doesn't exist: create branch from HEAD and create the worktree
-# - Worktree base path: $LAZY_LLM_WORKTREE_DIR or "$repo_root/.worktrees"
+# - Worktree base path: $2, else $LAZY_LLM_WORKTREE_DIR, else "$repo_root/.worktrees"
 # - When using the in-repo default, ensure .worktrees/ is in .gitignore
-# Args: $1 branch_name
+# - A new branch starts at $3 when given, else at HEAD
+# Args: $1 branch_name  $2 base_dir (optional)  $3 start_point (optional)
 # Stdout: absolute worktree path on success
 # Exit: 0 success, non-zero failure (with message on stderr)
 lazy_llm_setup_worktree() {
-  local branch="$1"
+  local branch="$1" base_dir="${2:-}" start_point="${3:-}"
   [[ -z "$branch" ]] && { echo "Error: branch name required" >&2; return 2; }
 
   local repo
@@ -514,7 +515,7 @@ lazy_llm_setup_worktree() {
     || { echo "Error: not inside a git repository" >&2; return 2; }
 
   local sanitized="${branch//\//-}"
-  local base="${LAZY_LLM_WORKTREE_DIR:-$repo/.worktrees}"
+  local base="${base_dir:-${LAZY_LLM_WORKTREE_DIR:-$repo/.worktrees}}"
   local wt="$base/$sanitized"
 
   # If the default in-repo path is in use, make sure .worktrees/ is gitignored
@@ -545,7 +546,7 @@ lazy_llm_setup_worktree() {
     git -C "$repo" worktree add "$wt" "$branch" >&2 \
       || { echo "Error: git worktree add failed" >&2; return 1; }
   else
-    git -C "$repo" worktree add -b "$branch" "$wt" >&2 \
+    git -C "$repo" worktree add -b "$branch" "$wt" ${start_point:+"$start_point"} >&2 \
       || { echo "Error: git worktree add -b failed" >&2; return 1; }
   fi
 
@@ -1343,6 +1344,14 @@ lazy_llm_create_prompt_file() {
   printf '%s\n' "$prompt_file"
 }
 
+# The prefix-table key that opens the dashboard: tmux option
+# @lazy_llm_dashboard_key, default S. Also read by llm-status's hint.
+lazy_llm_dashboard_key() {
+  local key
+  key=$(tmux show-option -gqv @lazy_llm_dashboard_key 2>/dev/null) || key=""
+  printf '%s' "${key:-S}"
+}
+
 # Server-global hooks and key bindings. Idempotent; called whenever a
 # workspace window is built, so a fresh server gets them with its first one.
 lazy_llm_register_tmux_integration() {
@@ -1408,7 +1417,14 @@ lazy_llm_register_tmux_integration() {
   # Unguarded, unlike the pane keys: the dashboard is useful from any window,
   # and from a fresh tmux with no workspace at all (its Saved tab restores
   # them; see llm-tmux-init for registering this at server start).
-  tmux bind-key -N "lazy-llm dashboard" -T prefix S \
+  # The key is @lazy_llm_dashboard_key (default S). Set it in tmux.conf
+  # before llm-tmux-init runs; re-binding it there instead wouldn't stick,
+  # since this runs again every time a workspace window is built. Taking a
+  # key tmux already uses (e.g. s, choose-tree) is fine — move that command
+  # to another key in the same tmux.conf.
+  local dash_key
+  dash_key=$(lazy_llm_dashboard_key)
+  tmux bind-key -N "lazy-llm dashboard" -T prefix "$dash_key" \
     run-shell "$HOME/.local/bin/llm-dashboard-open"
   tmux bind-key -N "Save lazy-llm workspaces" -T prefix C-s if-shell \
     "tmux show-option -wqv @AI_PANES" \

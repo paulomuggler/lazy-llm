@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+# llm-wt - per-pane git worktrees for lazy-llm AI panes
+#
+# An isolated AI pane runs in its own worktree, on its own branch
+# (lazy/<ws>/<tool>-<n>), and merges its work back into the branch the
+# workspace's main directory is on. Ownership lives in git config, so this
+# works from inside the worktree with no tmux state:
+#   branch.<branch>.lazyLlmBase     the branch to integrate into
+#   branch.<branch>.lazyLlmPrimary  the main directory (repo toplevel)
+#
+# Usage:
+#   llm-wt status [path] [--porcelain]  what closing this worktree would lose
+#   llm-wt sync [path]                  rebase onto the base branch
+#   llm-wt integrate [path]             rebase, then fast-forward the base branch
+#   llm-wt create <dir> <tool> <ws>     new pane worktree for workspace dir <dir>
+#   llm-wt bootstrap <path>             (re)link/copy untracked files, run init hook
+#
+# [path] defaults to the current directory's worktree.
+#
+# Exit codes (sync/integrate): 0 ok, 1 other error, 2 not a pane worktree,
+# 3 uncommitted changes, 4 main directory not on the base branch,
+# 5 rebase conflict (or a rebase already in progress), 6 base kept moving,
+# 7 the fast-forward would overwrite uncommitted files in the main directory.
+
+set -euo pipefail
+
+# Sibling-first (post-install via stow), then dev-fallback to the in-repo path.
+_lib_sibling="$(dirname "$0")/lazy-llm-lib.sh"
+if [[ -f "$_lib_sibling" ]]; then
+  # shellcheck source=/dev/null
+  source "$_lib_sibling"
+else
+  # shellcheck source=/dev/null
+  source "$(dirname "$0")/../../../llm-send-bin/.local/bin/lazy-llm-lib.sh"
+fi
+
+readonly MANIFEST_NAME="lazy-llm-bootstrap"
+readonly EXCLUDE_MARK="# lazy-llm worktree bootstrap"
+readonly DEFAULT_FILES=$'.env*\n.claude/settings.local.json\n.agents/TODO/.work-state'
+
+die() { local code="$1"; shift; printf 'llm-wt: %s\n' "$*" >&2; exit "$code"; }
+warn() { printf 'llm-wt: %s\n' "$*" >&2; }
+
+# ── context ──────────────────────────────────────────────────────────────
+
+# The branch a worktree is on, including mid-rebase (when HEAD is detached).
+wt_branch() {
+  local wt="$1" b f
+  b=$(git -C "$wt" branch --show-current 2>/dev/null) || b=""
+  if [[ -z "$b" ]]; then
+    for f in rebase-merge/head-name rebase-apply/head-name; do
+      f=$(git -C "$wt" rev-parse --path-format=absolute --git-path "$f" 2>/dev/null) || continue
+      [[ -f "$f" ]] && { b=$(<"$f"); b="${b#refs/heads/}"; break; }
+    done
+  fi
+  printf '%s\n' "$b"
+}
+
+rebase_in_progress() {
+  local wt="$1" f
+  for f in rebase-merge rebase-apply; do
+    f=$(git -C "$wt" rev-parse --path-format=absolute --git-path "$f" 2>/dev/null) || continue
+    [[ -d "$f" ]] && return 0
+  done
+  return 1
+}
+
+# Sets WT BRANCH BASE PRIMARY for the pane worktree containing $1 (default
+# cwd). Exits 2 when it isn't one.
+load_ctx() {
+  local start="${1:-$PWD}"
+  WT=$(git -C "$start" rev-parse --show-toplevel 2>/dev/null) || die 2 "not in a git worktree: $start"
+  BRANCH=$(wt_branch "$WT")
+  [[ -n "$BRANCH" ]] || die 2 "$WT has no branch checked out"
+  BASE=$(git -C "$WT" config "branch.$BRANCH.lazyLlmBase" 2>/dev/null) || BASE=""
+  PRIMARY=$(git -C "$WT" config "branch.$BRANCH.lazyLlmPrimary" 2>/dev/null) || PRIMARY=""
+  [[ -n "$BASE" && -n "$PRIMARY" ]] || die 2 "$WT (branch $BRANCH) is not a lazy-llm pane worktree"
+}
+
+manifest_path() {
+  printf '%s/%s\n' "$(git -C "$1" rev-parse --absolute-git-dir)" "$MANIFEST_NAME"
+}
+
+# ── bootstrap: untracked files a fresh worktree lacks ───────────────────
+
+# Print the worktree-files entries, one "mode<TAB>pattern" per line, where
+# mode is link, copy or exclude. Global list first, then the repo's own.
+read_file_entries() {
+  local repo="$1" f line mode any=false
+  local -a files=("${XDG_CONFIG_HOME:-$HOME/.config}/lazy-llm/worktree-files" "$repo/.lazy-llm/worktree-files")
+  for f in "${files[@]}"; do
+    [[ -f "$f" ]] || continue
+    any=true
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%%[[:space:]]#*}"      # trailing " # comment"
+      [[ "$line" == \#* ]] && continue    # whole-line comment
+      line="${line#"${line%%[![:space:]]*}"}"
+      line="${line%"${line##*[![:space:]]}"}"
+      [[ -z "$line" ]] && continue
+      mode="link"
+      if [[ "$line" == copy:* ]]; then
+        mode=copy; line="${line#copy:}"; line="${line#"${line%%[![:space:]]*}"}"
+      elif [[ "$line" == !* ]]; then
+        mode=exclude; line="${line#!}"
+      fi
+      printf '%s\t%s\n' "$mode" "$line"
+    done < "$f"
+  done
+  if ! $any; then
+    while IFS= read -r line; do printf 'link\t%s\n' "$line"; done <<< "$DEFAULT_FILES"
+  fi
+}
+
+tree_hash() {
+  local p="$1"
+  if [[ -d "$p" && ! -L "$p" ]]; then
+    (cd "$p" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum) | sha256sum | cut -d' ' -f1
+  elif [[ -e "$p" ]]; then
+    sha256sum < "$p" | cut -d' ' -f1
+  else
+    printf 'missing\n'
+  fi
+}
+
+# Link or copy the configured untracked files from the main directory into
+# the worktree, record them in the manifest, keep them out of `git add`, and
+# run the repo's init hook. Safe to rerun: existing paths are left alone.
+cmd_bootstrap() {
+  load_ctx "${1:-}"
+  local repo="$PRIMARY" wt="$WT" manifest mode pat path ex
+  local -a entries=() excludes=() paths=() modes=()
+  manifest=$(manifest_path "$wt")
+  touch "$manifest"
+
+  while IFS=$'\t' read -r mode pat; do
+    pat="${pat%/}"
+    [[ -z "$pat" ]] && continue
+    if [[ "$mode" == exclude ]]; then excludes+=("$pat"); else entries+=("$mode"$'\t'"$pat"); fi
+  done < <(read_file_entries "$repo")
+
+  local entry m
+  for entry in ${entries[@]+"${entries[@]}"}; do
+    mode="${entry%%$'\t'*}"; pat="${entry#*$'\t'}"
+    local -a matches=()
+    if [[ "$pat" == *[\*\?\[]* ]]; then
+      mapfile -t matches < <(cd "$repo" && shopt -s dotglob nullglob && for m in $pat; do printf '%s\n' "${m%/}"; done)
+    else
+      # A literal path: linked even when missing (the first write through
+      # the dangling link creates it in the main directory); copied only
+      # when present.
+      matches=("$pat")
+      [[ "$mode" == copy && ! -e "$repo/$pat" ]] && matches=()
+    fi
+    for path in ${matches[@]+"${matches[@]}"}; do
+      local skip=false
+      for ex in ${excludes[@]+"${excludes[@]}"}; do
+        # shellcheck disable=SC2053  # $ex is a glob, deliberately unquoted
+        [[ "$path" == $ex ]] && { skip=true; break; }
+      done
+      $skip && continue
+      # Never shadow a tracked file (or a directory holding tracked files).
+      git -C "$repo" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 && continue
+      # Already handled (first pattern wins), or already in the worktree.
+      [[ " ${paths[*]+${paths[*]}} " == *" $path "* ]] && continue
+      [[ -e "$wt/$path" || -L "$wt/$path" ]] && continue
+      paths+=("$path"); modes+=("$mode")
+    done
+  done
+
+  local i hash
+  for i in "${!paths[@]}"; do
+    path="${paths[$i]}"; mode="${modes[$i]}"
+    mkdir -p "$(dirname "$wt/$path")"
+    if [[ "$mode" == link ]]; then
+      # A dangling link can only create its target if the target's parent
+      # exists: make it (an empty directory is invisible to git).
+      mkdir -p "$(dirname "$repo/$path")"
+      ln -s "$repo/$path" "$wt/$path"
+      printf 'link\t%s\n' "$path" >> "$manifest"
+    else
+      cp -a "$repo/$path" "$wt/$path"
+      hash=$(tree_hash "$wt/$path")
+      printf 'copy\t%s\t%s\n' "$path" "$hash" >> "$manifest"
+    fi
+  done
+
+  exclude_bootstrapped "$wt" "$manifest"
+  run_init_hook
+}
+
+# Keep bootstrapped paths out of `git add -A` in the worktree, so an agent
+# can't commit a symlink into the main directory. info/exclude is shared by
+# every worktree of the repo (the main directory too); these are untracked
+# local files by construction, so ignoring them there changes nothing but
+# their "untracked" listing. Lines carry a marker so they're identifiable.
+exclude_bootstrapped() {
+  local wt="$1" manifest="$2" mode path
+  while IFS=$'\t' read -r mode path _; do
+    [[ -z "$path" ]] && continue
+    add_exclude "$wt" "/$path"
+  done < "$manifest"
+}
+
+# Append <pattern> to the repo's shared info/exclude, unless git already
+# ignores that path or the line is there.
+add_exclude() {
+  local where="$1" pat="$2" excl
+  git -C "$where" check-ignore -q --no-index -- "${pat#/}" 2>/dev/null && return 0
+  excl=$(git -C "$where" rev-parse --path-format=absolute --git-common-dir)/info/exclude
+  mkdir -p "$(dirname "$excl")"
+  touch "$excl"
+  # gitignore has no trailing comments: the marker goes on its own line.
+  grep -qxF "$pat" "$excl" || printf '%s\n%s\n' "$EXCLUDE_MARK" "$pat" >> "$excl"
+}
+
+run_init_hook() {
+  local hook="$PRIMARY/.lazy-llm/worktree-init" rc=0
+  [[ -x "$hook" ]] || return 0
+  echo "llm-wt: running $hook in $WT" >&2
+  (cd "$WT" && LAZY_LLM_WORKTREE=1 LAZY_LLM_PRIMARY_DIR="$PRIMARY" LAZY_LLM_BASE_BRANCH="$BASE" "$hook") >&2 || rc=$?
+  [[ $rc -eq 0 ]] || warn "init hook exited $rc (the pane is created anyway)"
+  return 0
+}
+
+# ── create ───────────────────────────────────────────────────────────────
+
+safe_name() { local s="${1//[^A-Za-z0-9._-]/-}"; s="${s#.}"; printf '%s\n' "${s:-ws}"; }
+
+cmd_create() {
+  [[ $# -eq 3 ]] || die 1 "usage: llm-wt create <dir> <tool> <ws>"
+  local dir="$1" tool ws repo base n branch wt pane_base
+  tool=$(safe_name "$2"); ws=$(safe_name "$3")
+  repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || die 1 "$dir is not in a git repository"
+  base=$(git -C "$repo" branch --show-current)
+  [[ -n "$base" ]] || die 1 "$repo has a detached HEAD; check out a branch first"
+  if [[ -n "$(git -C "$repo" status --porcelain -uno)" ]]; then
+    warn "the main directory has uncommitted changes; the isolated pane starts from '$base' HEAD and won't see them"
+  fi
+
+  pane_base="${LAZY_LLM_WORKTREE_DIR:-$repo/.worktrees}/.panes"
+  n=2
+  while :; do
+    branch="lazy/$ws/$tool-$n"
+    if ! git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" \
+      && [[ ! -e "$pane_base/${branch//\//-}" ]]; then
+      break
+    fi
+    n=$((n + 1))
+  done
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || die 1 "invalid branch name: $branch"
+
+  # Ignore .worktrees/ via info/exclude rather than the tracked .gitignore:
+  # creating a pane must not leave an uncommitted change in the main directory.
+  [[ "$pane_base" == "$repo/.worktrees/"* ]] && add_exclude "$repo" "/.worktrees/"
+  wt=$(cd "$repo" && lazy_llm_setup_worktree "$branch" "$pane_base" "$base") || die 1 "could not create the worktree"
+  git -C "$repo" config "branch.$branch.lazyLlmBase" "$base"
+  git -C "$repo" config "branch.$branch.lazyLlmPrimary" "$repo"
+
+  cmd_bootstrap "$wt"
+  printf '%s\n' "$wt"
+}
+
+# ── status ───────────────────────────────────────────────────────────────
+
+# Paths in the manifest, one per line.
+manifest_paths() { cut -f2 "$(manifest_path "$1")" 2>/dev/null || true; }
+
+cmd_status() {
+  local porcelain=false path=""
+  for a in "$@"; do
+    case "$a" in --porcelain) porcelain=true ;; *) path="$a" ;; esac
+  done
+  load_ctx "$path"
+
+  local dirty=0 untracked=0 unintegrated=0 behind=0 ignored_extra=0 rebasing=0
+  local -a changed=() boot=()
+  local p
+  while IFS= read -r p; do [[ -n "$p" ]] && boot+=("$p"); done < <(manifest_paths "$WT")
+  # True when $1 is a bootstrapped path or inside a bootstrapped directory.
+  in_boot() {
+    local q="${1%/}" b
+    for b in ${boot[@]+"${boot[@]}"}; do
+      [[ "$q" == "$b" || "$q" == "$b/"* ]] && return 0
+    done
+    return 1
+  }
+
+  local rec xy file
+  while IFS= read -r -d '' rec; do
+    xy="${rec:0:2}"; file="${rec:3}"
+    if [[ "$xy" == "??" ]]; then
+      in_boot "$file" || untracked=$((untracked + 1))
+    else
+      dirty=$((dirty + 1))
+      # a rename record is followed by its source path: skip it
+      [[ "$xy" == R* || "$xy" == C* ]] && IFS= read -r -d '' _
+    fi
+  done < <(git -C "$WT" status --porcelain=v1 -z --untracked-files=all)
+
+  unintegrated=$(git -C "$WT" rev-list --count "$BASE..HEAD" 2>/dev/null || echo 0)
+  behind=$(git -C "$WT" rev-list --count "HEAD..$BASE" 2>/dev/null || echo 0)
+  rebase_in_progress "$WT" && rebasing=1
+
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    in_boot "$p" || ignored_extra=$((ignored_extra + 1))
+  done < <(git -C "$WT" ls-files --others --ignored --exclude-standard --directory)
+
+  local mode hash
+  while IFS=$'\t' read -r mode p hash; do
+    [[ -z "$p" ]] && continue
+    if [[ "$mode" == link ]]; then
+      # A tool that saves via temp-file-and-rename replaces the link with a
+      # plain file: its contents are this pane's own now.
+      [[ -e "$WT/$p" && ! -L "$WT/$p" ]] && changed+=("$p")
+    elif [[ "$(tree_hash "$WT/$p")" != "$hash" ]]; then
+      changed+=("$p")
+    fi
+  done < "$(manifest_path "$WT")"
+
+  if $porcelain; then
+    printf 'worktree\t%s\nbranch\t%s\nbase\t%s\nprimary\t%s\n' "$WT" "$BRANCH" "$BASE" "$PRIMARY"
+    printf 'dirty\t%s\nuntracked\t%s\nunintegrated\t%s\nbehind\t%s\n' "$dirty" "$untracked" "$unintegrated" "$behind"
+    printf 'rebasing\t%s\ncopies-changed\t%s\nignored-extra\t%s\n' "$rebasing" "${#changed[@]}" "$ignored_extra"
+    for p in ${changed[@]+"${changed[@]}"}; do printf 'copy-changed\t%s\n' "$p"; done
+    return 0
+  fi
+  printf 'worktree        %s\n' "$WT"
+  printf 'branch          %s  (base %s, main directory %s)\n' "$BRANCH" "$BASE" "$PRIMARY"
+  [[ $rebasing -eq 1 ]] && printf 'rebasing        yes — resolve, git rebase --continue\n'
+  printf 'uncommitted     %s\n' "$dirty"
+  printf 'untracked       %s\n' "$untracked"
+  printf 'unintegrated    %s%s\n' "$unintegrated" "$([[ $unintegrated -gt 0 ]] && echo '  (llm-wt integrate)')"
+  printf 'behind base     %s%s\n' "$behind" "$([[ $behind -gt 0 ]] && echo '  (llm-wt sync)')"
+  printf 'copies changed  %s\n' "${#changed[@]}"
+  for p in ${changed[@]+"${changed[@]}"}; do printf '                  %s\n' "$p"; done
+  printf 'ignored extra   %s\n' "$ignored_extra"
+}
+
+# ── sync / integrate ─────────────────────────────────────────────────────
+
+require_clean() {
+  rebase_in_progress "$WT" \
+    && die 5 "a rebase is in progress in $WT: resolve the conflicts, 'git rebase --continue', then run this again"
+  [[ -z "$(git -C "$WT" status --porcelain -uno)" ]] \
+    || die 3 "uncommitted changes in $WT: commit them first (only committed work is integrated)"
+  local n
+  n=$(git -C "$WT" status --porcelain | grep -c '^??' || true)
+  [[ "$n" -gt 0 ]] && warn "$n untracked file(s) aren't committed and won't be included"
+  return 0
+}
+
+# Rebase the worktree's branch onto the base branch. Exits 5 on conflict.
+rebase_onto_base() {
+  git -C "$WT" merge-base --is-ancestor "$BASE" HEAD && return 0
+  if ! git -C "$WT" rebase --quiet "$BASE" >&2; then
+    local files
+    files=$(git -C "$WT" diff --name-only --diff-filter=U | sed 's/^/  /')
+    die 5 "rebase onto '$BASE' stopped on conflicts in $WT:
+$files
+Resolve them there, 'git add' them, 'git rebase --continue', then run this again."
+  fi
+}
+
+cmd_sync() {
+  load_ctx "${1:-}"
+  require_clean
+  rebase_onto_base
+  printf 'up to date with %s; %s commit(s) not yet integrated\n' \
+    "$BASE" "$(git -C "$WT" rev-list --count "$BASE..HEAD")"
+}
+
+cmd_integrate() {
+  load_ctx "${1:-}"
+  require_clean
+  local cur out old
+  cur=$(git -C "$PRIMARY" branch --show-current 2>/dev/null) || cur=""
+  [[ "$cur" == "$BASE" ]] \
+    || die 4 "the main directory ($PRIMARY) is on '${cur:-a detached HEAD}', not '$BASE'; ask the user"
+
+  for _ in 1 2 3; do
+    rebase_onto_base
+    if [[ "$(git -C "$WT" rev-list --count "$BASE..HEAD")" -eq 0 ]]; then
+      echo "nothing to integrate: $BRANCH has no commits beyond $BASE"
+      return 0
+    fi
+    old=$(git -C "$PRIMARY" rev-parse HEAD)
+    if out=$(git -C "$PRIMARY" merge --ff-only --quiet "$BRANCH" 2>&1); then
+      echo "integrated into $BASE:"
+      git -C "$PRIMARY" log --oneline "$old..HEAD"
+      return 0
+    fi
+    # Base moved under us (another agent integrated): rebase again.
+    git -C "$WT" merge-base --is-ancestor "$BASE" HEAD || continue
+    if [[ "$out" == *"would be overwritten"* ]]; then
+      die 7 "the main directory has uncommitted changes to files this integration touches; nothing was changed. Tell the user:
+$out"
+    fi
+    die 1 "git merge --ff-only failed in $PRIMARY:
+$out"
+  done
+  die 6 "'$BASE' kept moving during 3 attempts; run integrate again"
+}
+
+# ── main ─────────────────────────────────────────────────────────────────
+
+usage() { sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0"; }
+
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift
+case "$cmd" in
+  status) cmd_status "$@" ;;
+  sync) cmd_sync "$@" ;;
+  integrate) cmd_integrate "$@" ;;
+  create) cmd_create "$@" ;;
+  bootstrap) cmd_bootstrap "$@" ;;
+  -h | --help | help | "") usage ;;
+  *) die 1 "unknown command: $cmd (see llm-wt --help)" ;;
+esac
