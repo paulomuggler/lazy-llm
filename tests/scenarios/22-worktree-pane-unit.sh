@@ -109,6 +109,7 @@ assert_file_exists "$R/.claude/settings.local.json" "writing through the danglin
 assert_equals "$(git -C "$R" status --porcelain)" "" "main directory left clean (.gitignore untouched)"
 assert_contains "$(cat "$R/.git/info/exclude")" "/.worktrees/" ".worktrees/ ignored via info/exclude"
 assert_equals "$(git -C "$wt" status --porcelain)" "" "bootstrapped paths don't show as untracked in the worktree"
+assert_equals "$(porc "$wt" ignored-extra)" "0" "...nor as extra ignored paths (their parent dirs included)"
 wt3=$("$LLMWT" create "$R" claude myws 2>/dev/null)
 assert_equals "$(git -C "$wt3" branch --show-current)" "lazy/myws/claude-3" "second pane gets the next number"
 
@@ -512,6 +513,49 @@ assert_contains "$ctx" "| 7 | The main directory has uncommitted changes" "...an
 [[ "$ctx" == *"{{"* ]] && r="left" || r="none"
 assert_equals "$r" "none" "no placeholder left"
 assert_contains "$output" "shared=<>" "a shared pane's session gets nothing"
+
+echo ""
+echo "Test 16: many adds fit the hold window; a failed add changes nothing..."
+R="$sandbox/r16"; mk_repo "$R"
+output=$(TMUX_TMPDIR="$sandbox/tmux" bash <<EOF
+unset TMUX
+tmux -f /dev/null new-session -d -s mws -c "$R" -x 120 -y 40 "exec sleep 120"
+P=\$(tmux display -t mws -p '#{pane_id}')
+tmux set-option -t mws @lazy_llm 1
+tmux set-option -t mws @lazy_llm_dir "$R"
+tmux set-option -w -t mws @AI_PANE_ID "\$P"
+tmux set-option -w -t mws @AI_PANES "\$P"
+tmux set-option -w -t mws @AI_TOOLS cat
+tmux set-option -w -t mws @AI_PANE_IDX 0
+Q=\$(tmux split-window -t "\$P" -c "$R" -P -F '#{pane_id}' "exec sleep 120")
+export TMUX_PANE="\$Q"
+fails=0
+for i in \$(seq 1 14); do "$HOME_BIN/llm-add" -t cat >/dev/null 2>&1 || fails=\$((fails + 1)); done
+read -ra panes <<< "\$(tmux show-option -wqv -t mws @AI_PANES)"
+read -ra tools <<< "\$(tmux show-option -wqv -t mws @AI_TOOLS)"
+echo "fails=\$fails panes=\${#panes[@]} tools=\${#tools[@]}"
+# Force a failure: a hold window too small to split.
+H=\$(tmux show-option -wqv -t mws @AI_HOLD_WIN)
+tmux set-option -w -t "\$H" window-size manual
+tmux resize-window -t "\$H" -x 2 -y 2
+tmux kill-pane -a -t "\$(tmux list-panes -t "\$H" -F '#{pane_id}' | head -1)"
+tmux set-option -w -t mws @AI_PANES "\$P"
+tmux set-option -w -t mws @AI_TOOLS cat
+tmux select-pane -t "\$Q"
+before="\$(tmux show-option -wqv -t mws @AI_PANES)|\$(tmux show-option -wqv -t mws @AI_TOOLS)"
+for i in 1 2 3 4 5 6; do "$HOME_BIN/llm-add" -t cat -i >/dev/null 2>&1; done; echo "rc=\$?"
+after="\$(tmux show-option -wqv -t mws @AI_PANES)|\$(tmux show-option -wqv -t mws @AI_TOOLS)"
+[ "\$before" = "\$after" ] && echo "lists=unchanged" || echo "lists=changed <\$before> <\$after>"
+echo "typed-into-focus=\$(tmux capture-pane -p -t "\$Q" | grep -c 'cat' || true)"
+echo "focus-tag=<\$(tmux show-option -pqv -t "\$Q" @lazy_llm_wt)>"
+tmux kill-server 2>/dev/null
+EOF
+)
+assert_contains "$output" "fails=0 panes=15 tools=15" "14 adds in a small window all succeed, lists aligned"
+assert_contains "$output" "rc=1" "an add that can't get a pane fails"
+assert_contains "$output" "lists=unchanged" "...leaving the pane and tool lists alone"
+assert_contains "$output" "typed-into-focus=0" "...typing nothing into the focused pane"
+assert_contains "$output" "focus-tag=<>" "...and tagging no other pane"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

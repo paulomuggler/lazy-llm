@@ -286,11 +286,12 @@ cmd_status() {
   local -a changed=() boot=()
   local p
   while IFS= read -r p; do [[ -n "$p" ]] && boot+=("$p"); done < <(manifest_paths "$WT")
-  # True when $1 is a bootstrapped path or inside a bootstrapped directory.
+  # True when $1 is a bootstrapped path, inside a bootstrapped directory, or
+  # a directory made only to hold one (.claude/ for settings.local.json).
   in_boot() {
     local q="${1%/}" b
     for b in ${boot[@]+"${boot[@]}"}; do
-      [[ "$q" == "$b" || "$q" == "$b/"* ]] && return 0
+      [[ "$q" == "$b" || "$q" == "$b/"* || "$b" == "$q/"* ]] && return 0
     done
     return 1
   }
@@ -439,24 +440,32 @@ cmd_close() {
     esac
   done <<< "$st"
 
-  local loss=false header
-  header="Closing the last pane in worktree $BRANCH (base $BASE)."
-  if [[ $dirty -gt 0 ]]; then loss=true; header+=$'\n'"  ! $dirty uncommitted change(s)"; fi
-  if [[ $untracked -gt 0 ]]; then loss=true; header+=$'\n'"  ! $untracked untracked file(s)"; fi
-  if [[ $unintegrated -gt 0 ]]; then
-    loss=true
-    header+=$'\n'"  ! $unintegrated commit(s) not integrated into $BASE (llm-wt integrate keeps them)"
-  fi
+  # The warning must stand out (fzf --ansi renders these): what can't be
+  # recovered in bold red, commits that llm-wt integrate would still save in
+  # bold yellow, the rest dim.
+  local b=$'\033[1m' red=$'\033[1;31m' yel=$'\033[1;33m' grn=$'\033[1;32m' dim=$'\033[2m' rst=$'\033[0m'
+  local loss=false header lines=""
+  header="${b}Closing the last pane in worktree ${BRANCH}${rst} ${dim}(base ${BASE})${rst}"
+  if [[ $dirty -gt 0 ]]; then loss=true; lines+=$'\n'"  ${red}✗ ${dirty} uncommitted change(s)${rst}"; fi
+  if [[ $untracked -gt 0 ]]; then loss=true; lines+=$'\n'"  ${red}✗ ${untracked} untracked file(s)${rst}"; fi
   if [[ ${#changed[@]} -gt 0 ]]; then
     loss=true
-    header+=$'\n'"  ! changed copies: $(IFS=,; printf '%s' "${changed[*]}" | sed 's/,/, /g')"
+    lines+=$'\n'"  ${red}✗ changed copies: $(IFS=,; printf '%s' "${changed[*]}" | sed 's/,/, /g')${rst}"
   fi
-  [[ $ignored -gt 0 ]] && header+=$'\n'"    $ignored ignored path(s) (deps, build output) are deleted with it"
-  $loss || header+=$'\n'"  Nothing would be lost: everything is integrated."
+  if [[ $unintegrated -gt 0 ]]; then
+    loss=true
+    lines+=$'\n'"  ${yel}⚠ ${unintegrated} commit(s) not integrated into ${BASE}${rst} ${dim}— llm-wt integrate keeps them${rst}"
+  fi
+  if $loss; then
+    header+=$'\n\n'"${red}⚠ REMOVING THIS WORKTREE WOULD LOSE:${rst}${lines}"
+  else
+    header+=$'\n\n'"${grn}✓ Nothing would be lost: everything is integrated.${rst}"
+  fi
+  [[ $ignored -gt 0 ]] && header+=$'\n'"  ${dim}${ignored} ignored path(s) (deps, build output) go with it${rst}"
 
   local -a opts
   if $loss; then
-    opts=("Keep worktree (it stays in the Worktrees tab)" "Remove worktree and branch" "Cancel")
+    opts=("Keep worktree (it stays in the Worktrees tab)" "${red}Remove worktree and branch — loses the above${rst}" "Cancel")
   else
     opts=("Remove worktree and branch" "Keep worktree (it stays in the Worktrees tab)" "Cancel")
   fi
@@ -471,7 +480,7 @@ cmd_close() {
   fi
 
   local choice
-  choice=$(printf '%s\n' "${opts[@]}" | fzf --height=100% --reverse --border=rounded \
+  choice=$(printf '%s\n' "${opts[@]}" | fzf --ansi --height=100% --reverse --border=rounded \
     --header="$header" --prompt="worktree> " --no-info || true)
   case "$choice" in
     Remove*) ;;
