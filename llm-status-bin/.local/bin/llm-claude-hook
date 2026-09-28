@@ -14,7 +14,9 @@
 #                 is genuinely blocked on your decision) or "idle" (matcher
 #                 idle_prompt). Writes the fresh-status file read by
 #                 _lazy_llm_read_hook_status; a transition INTO waiting also
-#                 fires a desktop notification.
+#                 fires a desktop notification naming the conversation (its
+#                 /rename or generated title), what it's asking, the pending
+#                 command or path, and the tmux session:window, pane and dir.
 #   UserPromptSubmit  status "working" (<state>), and clears the pane's unread
 #                 mark: you just answered it. Without this, a prompt typed within
 #                 30s of the last Stop read as idle/unread until that aged out.
@@ -38,7 +40,8 @@
 # suffix the other two carry (e.g. "[1m]"), and a border flipping between the
 # two forms every turn would be noise.
 #
-# Portable (Linux + macOS): payload fields are pulled with grep/sed, not jq;
+# Portable (Linux + macOS): payload fields are pulled with grep/sed, not jq
+# (jq only adds the pending command to the notification, when present);
 # no tac (GNU-only — tail -r on BSD); desktop notification via notify-send or
 # osascript, whichever exists.
 #
@@ -100,10 +103,91 @@ reverse_lines() {
 notify() {
   local title="$1" body="$2"
   if command -v notify-send >/dev/null 2>&1; then
-    timeout 2s notify-send -u normal "$title" "$body" -t 8000 2>/dev/null &
+    # The body is markup to most daemons (Quickshell, mako): a command like
+    # `a && b` would otherwise render wrong or not at all. The title is plain.
+    # Replacements quoted: bash 5.2 reads a bare & there as the matched text.
+    body=${body//&/"&amp;"}
+    body=${body//</"&lt;"}
+    body=${body//>/"&gt;"}
+    timeout 2s notify-send -a lazy-llm -u normal "$title" "$body" -t 8000 2>/dev/null &
   elif command -v osascript >/dev/null 2>&1; then
+    title=${title//\\/\\\\}
+    title=${title//\"/\\\"}
+    body=${body//\\/\\\\}
+    body=${body//\"/\\\"}
     osascript -e "display notification \"$body\" with title \"$title\"" >/dev/null 2>&1 &
   fi
+}
+
+# The conversation's name: its /rename title if one was set, else the title
+# Claude generates for it. Both are transcript entries; the latest wins.
+session_title() {
+  local transcript="$1" key title
+  [ -f "$transcript" ] || return 0
+  for key in customTitle aiTitle; do
+    title=$(reverse_lines "$transcript" 2>/dev/null \
+      | grep -m1 -oE "\"$key\":\"[^\"]+\"" \
+      | sed -E "s/\"$key\":\"([^\"]*)\"/\1/")
+    [ -n "$title" ] && { printf '%s' "$title"; return 0; }
+  done
+}
+
+# The pane's dashboard rename, if it has one (same lookup as llm-pane-border).
+pane_label() {
+  local sw panes names p idx=0 label
+  sw=$(tmux display-message -t "$PANE_ID" -p '#S:#I' 2>/dev/null) || return 0
+  panes=$(tmux show-option -wv -t "$sw" @AI_PANES 2>/dev/null)
+  names=$(tmux show-option -wv -t "$sw" @AI_PANE_NAMES 2>/dev/null)
+  for p in $panes; do
+    if [ "$p" = "$PANE_ID" ]; then
+      label=$(lazy_llm_pane_display_label claude "$names" "$idx")
+      [ "$label" != claude ] && printf '%s' "$label"
+      return 0
+    fi
+    idx=$((idx + 1))
+  done
+}
+
+# What a permission prompt is for: the payload's message names only the tool,
+# so take the pending call's command / path / URL from the transcript — the
+# latest tool call, if nothing has answered it yet. Optional (needs jq), and
+# retried briefly because the transcript is written asynchronously.
+pending_tool_detail() {
+  local transcript="$1" line detail
+  command -v jq >/dev/null 2>&1 && [ -f "$transcript" ] || return 0
+  for _ in 1 2 3 4; do
+    line=$(reverse_lines "$transcript" 2>/dev/null | grep -m1 -E '"type":"tool_(use|result)"')
+    detail=$(printf '%s' "$line" | jq -r 'select(.type == "assistant")
+      | [.message.content[]? | select(.type == "tool_use")] | last // empty
+      | .input | (.command // .file_path // .url // .pattern // .query // .description // empty)' 2>/dev/null \
+      | head -1)
+    if [ -n "$detail" ]; then
+      detail=${detail//$HOME/\~}
+      [ "${#detail}" -gt 140 ] && detail="${detail:0:139}…"
+      printf '%s' "$detail"
+      return 0
+    fi
+    sleep 0.25
+  done
+}
+
+# "Claude: <conversation>" over what it's asking, the pending command, and
+# where: tmux session:window, pane name, directory.
+notify_waiting() {
+  local transcript title detail where label cwd body
+  transcript=$(field transcript_path)
+  title=$(session_title "$transcript")
+  where=$(tmux display-message -t "$PANE_ID" -p '#S:#I' 2>/dev/null)
+  where=${where:-$PANE_ID}
+  label=$(pane_label)
+  [ -n "$label" ] && where="$where · $label"
+  cwd=$(field cwd)
+  [ -n "$cwd" ] && where="$where · ${cwd/#$HOME/\~}"
+  body=$(field message)
+  body=${body:-Claude needs your input}
+  detail=$(pending_tool_detail "$transcript")
+  [ -n "$detail" ] && body="$body"$'\n'"$detail"
+  notify "Claude: ${title:-${cwd##*/}}" "$body"$'\n'"$where"
 }
 
 # Record the last response's model from the transcript. Retries for a few
@@ -136,10 +220,9 @@ write_status() {
   [ -f "$status_file" ] && prev=$(cut -d' ' -f1 "$status_file" 2>/dev/null)
   printf '%s %s\n' "$state" "$(date +%s)" > "$status_file" 2>/dev/null
   # Debounce: only notify on a transition INTO waiting, not on every nudge.
+  # Detached, fds closed: it may wait on the transcript, Claude shouldn't.
   if [ "$state" = "waiting" ] && [ "$prev" != "waiting" ]; then
-    local label
-    label=$(tmux display-message -t "$PANE_ID" -p '#S:#I' 2>/dev/null)
-    notify "lazy-llm: ${label:-$PANE_ID}" "Claude needs your input"
+    notify_waiting </dev/null >/dev/null 2>&1 &
   fi
   # Opportunistic cleanup: status files for panes not touched in a day.
   find "$STATUS_DIR" -type f -mtime +1 -delete 2>/dev/null
