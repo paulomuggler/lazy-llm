@@ -439,6 +439,16 @@ leave stale spinner lines in scrollback, which used to read as `working` indefin
 
 **Dashboard reminder.** `llm-status`'s output always ends with `Dash ^B+S` — a
 reminder of `Prefix+S` (opens the dashboard), derived from your actual prefix key.
+
+**Dashboard key.** `S` by default. To use another key, set `@lazy_llm_dashboard_key` in
+`tmux.conf` before `llm-tmux-init` runs (lazy-llm re-binds the key every time it builds a
+workspace window, so a plain `bind` of your own wouldn't stick). To take over tmux's
+session tree key and move the tree to `S`:
+
+```tmux
+set -g @lazy_llm_dashboard_key s
+bind S choose-tree -Zs
+```
 Add `#(llm-status)` to your tmux `status-right` to show it — `llm-status` prints
 nothing outside a lazy-llm workspace window, so it's safe there unconditionally.
 
