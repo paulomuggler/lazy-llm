@@ -22,8 +22,10 @@ checkouts, staging and commits from colliding with theirs.
   rule applies to `{{base}}`: scan `origin/{{base}}..{{base}}` for secrets, then
   `git push origin {{base}}`.
 - Symlinked files (`.env*`, `.claude/settings.local.json`,
-  `.agents/TODO/.work-state`) are the main directory's own. Edit them in place.
-  Don't replace them, and never `git add` them.
+  `.agents/TODO/.work-state`) are the main directory's own, shared on purpose.
+  Your file tools refuse to write through a symlink and name its target: write
+  to that target in `{{primary}}`. It's the one exception to the rule above.
+  Never replace the link with a file, and never `git add` it.
 
 ## `llm-wt integrate` exit codes
 
