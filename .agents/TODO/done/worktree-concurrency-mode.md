@@ -4,11 +4,11 @@ title: Optional per-pane worktree isolation for concurrent AI panes in one works
 priority: P1
 status: done
 created: 2026-09-23_04:20
-updated: 2026-09-28_14:45
+updated: 2026-09-28_21:45
 depends-on: []
 tags: [worktree, concurrency, dashboard, design]
 spec: ../specs/worktree-concurrency-mode.md
-commits: [e30c8bb, 955279d, 46cac75, d7eec68, b4fc01c, 6984da5, d94ef23, 4b7799a, 893d88b, 010be85]
+commits: [e30c8bb, 955279d, 46cac75, d7eec68, b4fc01c, 6984da5, d94ef23, 4b7799a, 893d88b, 010be85, 54afac7, d63eedc]
 ---
 
 # Optional per-pane worktree isolation for concurrent AI panes
@@ -135,14 +135,31 @@ recorded in the spec's "Implementation notes".
 
 Interactive flows the unit tests can't drive (fzf dialogs, real Claude sessions):
 
-- [ ] `Prefix+S` → `A` → claude: a new pane with `⎇` in the tree and border. Its first reply
+- [x] `Prefix+S` → `A` → claude: a new pane with `⎇` in the tree and border. Its first reply
       knows it's in a worktree (guidance loaded). Ask it to make two commits and integrate:
       the main directory fast-forwards.
 - [ ] With that pane in view, `a` asks worktree vs main directory, and both choices work.
 - [ ] `K` on the isolated pane with unintegrated work: the dialog lists it, preselects Keep, and
       the worktree then shows as orphaned in the Worktrees tab. Enter there adds a pane back;
       after closing it, `K` removes the worktree.
-- [ ] `<leader>llmw` in the editor: flips to the worktree copy (winbar `⎇ …`) and back. A
+- [x] `<leader>llmw` in the editor: flips to the worktree copy (winbar `⎇ …`) and back. A
       `<leader>llmr` reference from the worktree copy reads `src/…`, not `.worktrees/…`.
-- [ ] Grant a permission in an isolated Claude pane: check whether
+- [x] Grant a permission in an isolated Claude pane: check whether
       `.claude/settings.local.json` in the worktree is still a symlink (spec §16, unverified).
+      Result: it stays a symlink (both live worktrees, 2026-09-28).
+
+## Follow-up (2026-09-28 evening, from human validation)
+
+- **`a` stopped working after the first isolated add, and launch commands appeared in the
+  focused pane.** This was a latent bug in `lazy_llm_add_ai_pane` that more adds exposed. Every
+  split halved the hold window's newest pane until tmux had no room left. The empty pane id that
+  came back was then used as a tmux target, which means the current pane: the launch command was
+  typed into it, it was tagged as isolated (the editor nvim was), and a tool was appended with no
+  pane. Fixed in `54afac7`: the hold window is re-tiled around every split, and a failed add
+  changes nothing. Scenario 22 test 16 covers it; the old code fails it.
+- **Live repair.** Untagged the editor pane, trimmed the dev-env and microdots_digital pane,
+  tool and name lists back to their real panes (dev-env had 7 phantom tools), and re-tiled both
+  hold windows.
+- **Close dialog** (`d63eedc`): what would be lost is in bold red and yellow. Status no longer
+  counts bootstrapped links' parent directories as extra ignored paths.
+- The `a` check above needs re-running now that adds can't fail silently.
