@@ -3,8 +3,9 @@
 
 ## Pending (0)
 
-## Done (9)
+## Done (10)
 
+- [x] [fix-send-scenarios-leader-key](done/fix-send-scenarios-leader-key.md) - Fix scenarios 01-07: they assume a backslash leader and window 0
 - [x] [status-transitions-and-dashboard-latency](done/status-transitions-and-dashboard-latency.md) - Fix stuck working/unread glyphs; cut dashboard fold/reorder latency to ~100ms
 - [x] [dashboard-early-input-quits](done/dashboard-early-input-quits.md) - Fix a key pressed before the dashboard list loads closing the dashboard
 - [x] [workspace-save-restore](done/workspace-save-restore.md) - Save lazy-llm workspaces to a manifest and rebuild them after the tmux server dies (lazy-llm restore)
@@ -15,13 +16,10 @@
 - [x] [status-unread-state-and-aggregate-counts](done/status-unread-state-and-aggregate-counts.md) - "Unread" pane status + per-status aggregate counts in status bars
 - [x] [dashboard-reload-avoid-full-redraw](done/dashboard-reload-avoid-full-redraw.md) - Use fzf's reload() to avoid a full fzf relaunch on fold/toggle/refresh
 
-## Backlog (8)
+## Backlog (7)
 
 ### P1 - High
 - [-] [worktree-concurrency-mode](backlog/worktree-concurrency-mode.md) - Optional per-pane worktree isolation for concurrent AI panes in one workspace
-
-### P2 - Normal
-- [-] [fix-send-scenarios-leader-key](backlog/fix-send-scenarios-leader-key.md) - Fix scenarios 01-07: they assume a backslash leader and window 0
 
 ### P3 - Low
 - [-] [lazy-llm-refinement-pass](backlog/lazy-llm-refinement-pass.md) - Refinement pass over lazy-llm feature space and codebase
