@@ -5,8 +5,9 @@
 
 - [~] [worktree-concurrency-mode](worktree-concurrency-mode.md) - Optional per-pane worktree isolation for concurrent AI panes in one workspace
 
-## Done (10)
+## Done (11)
 
+- [x] [claude-notify-detail](done/claude-notify-detail.md) - Permission notifications name the conversation, the pending command, and the pane
 - [x] [fix-send-scenarios-leader-key](done/fix-send-scenarios-leader-key.md) - Fix scenarios 01-07: they assume a backslash leader and window 0
 - [x] [status-transitions-and-dashboard-latency](done/status-transitions-and-dashboard-latency.md) - Fix stuck working/unread glyphs; cut dashboard fold/reorder latency to ~100ms
 - [x] [dashboard-early-input-quits](done/dashboard-early-input-quits.md) - Fix a key pressed before the dashboard list loads closing the dashboard
