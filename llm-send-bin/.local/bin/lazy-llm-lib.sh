@@ -465,7 +465,22 @@ lazy_llm_ensure_gitignore() {
   echo "Added $pat to $gi" >&2
 }
 
-# Find the lazy-llm session (if any) whose first-pane path equals the given path.
+# A workspace's directory: the session's @lazy_llm_dir, else (sessions from
+# before that option existed) the active pane's path in <session:window>.
+# Never read a pane's cwd when the option is set: an isolated AI pane runs in
+# its own worktree, and may be the active pane.
+# Args: $1 session  $2 window (optional)
+# Stdout: the directory
+lazy_llm_workspace_dir() {
+  local session="$1" window="${2:-}" dir
+  dir=$(tmux show-option -qv -t "$session" @lazy_llm_dir 2>/dev/null) || dir=""
+  if [[ -z "$dir" ]]; then
+    dir=$(tmux display-message -t "$session${window:+:$window}" -p '#{pane_current_path}' 2>/dev/null) || dir=""
+  fi
+  printf '%s\n' "$dir"
+}
+
+# Find the lazy-llm session (if any) whose workspace directory is the given path.
 # Compares via realpath so symlinks don't fool the match.
 # Args: $1 target_path
 # Stdout: session name or empty
@@ -663,19 +678,23 @@ lazy_llm_gather_sessions() {
   # \x1f separates fields, not tabs: `read` collapses runs of a whitespace
   # IFS, which would shift every field after an empty one.
   local rows
-  rows=$(tmux list-panes -a -F $'#{session_name}\x1f#{@lazy_llm}\x1f#{window_index}\x1f#{window_name}\x1f#{window_active}#{pane_active}\x1f#{pane_current_path}\x1f#{@AI_TOOLS}\x1f#{@AI_TOOL}\x1f#{session_attached}' 2>/dev/null) || return 0
+  rows=$(tmux list-panes -a -F $'#{session_name}\x1f#{@lazy_llm}\x1f#{window_index}\x1f#{window_name}\x1f#{window_active}#{pane_active}\x1f#{pane_current_path}\x1f#{@AI_TOOLS}\x1f#{@AI_TOOL}\x1f#{session_attached}\x1f#{@lazy_llm_dir}' 2>/dev/null) || return 0
   [[ -z "$rows" ]] && return 0
 
-  # Per session, in tmux's own session order: DIR is the current window's
-  # active pane's path, TOOLS the first window's @AI_TOOLS (or legacy
+  # Per session, in tmux's own session order: DIR is the session's
+  # @lazy_llm_dir, falling back to the current window's active pane's path
+  # for sessions that predate it. Never the active pane's path when the
+  # option is set: an AI pane in its own worktree can be the active pane,
+  # and find_session_for_path would then bind the whole workspace to that
+  # pane's worktree (and lazy_llm_cleanup_worktree would kill it). TOOLS the first window's @AI_TOOLS (or legacy
   # @AI_TOOL), WINS the window count minus holding windows (_hold_*).
   local cur="" dir tools wins attached first_win seen_wins
-  local s mark win wname act path t_multi t_single att
+  local s mark win wname act path t_multi t_single att ws_dir
   _lazy_llm_gather_emit() {
     [[ -n "$cur" ]] || return 0
     printf '%s\t%s\t%s\t%s\t%s\n' "$cur" "${dir:-?}" "${tools:-?}" "$wins" "$attached"
   }
-  while IFS=$'\x1f' read -r s mark win wname act path t_multi t_single att; do
+  while IFS=$'\x1f' read -r s mark win wname act path t_multi t_single att ws_dir; do
     [[ "$mark" == "1" ]] || continue
     if [[ "$s" != "$cur" ]]; then
       _lazy_llm_gather_emit
@@ -687,7 +706,11 @@ lazy_llm_gather_sessions() {
       [[ "$wname" == _hold_* ]] || wins=$((wins + 1))
     fi
     [[ "$win" == "$first_win" && -z "$tools" ]] && tools="${t_multi:-$t_single}"
-    [[ "$act" == "11" ]] && dir="$path"
+    if [[ -n "$ws_dir" ]]; then
+      dir="$ws_dir"
+    elif [[ "$act" == "11" ]]; then
+      dir="$path"
+    fi
   done <<< "$rows"
   _lazy_llm_gather_emit
   unset -f _lazy_llm_gather_emit
@@ -997,7 +1020,7 @@ lazy_llm_validate_hold_win() {
   # Holding window is gone — recreate it
   local hold_win_name="_hold_${_WINDOW}"
   local target_dir
-  target_dir=$(tmux display-message -t "$_SESSION:$_WINDOW" -p '#{pane_current_path}')
+  target_dir=$(lazy_llm_workspace_dir "$_SESSION" "$_WINDOW")
   tmux new-window -d -t "$_SESSION" -n "$hold_win_name" -c "$target_dir"
   AI_HOLD_WIN=$(tmux display-message -t "$_SESSION:$hold_win_name" -p '#{window_id}')
   tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN "$AI_HOLD_WIN"

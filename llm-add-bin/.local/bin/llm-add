@@ -40,8 +40,9 @@ lazy_llm_resolve_pane || { echo "Error: llm-add must be run inside a tmux sessio
 original_pane="$_CURRENT_PANE"
 lazy_llm_resolve_session_window || { echo "Error: Could not determine session/window" >&2; exit 1; }
 
-# Get current working directory from the workspace window
-target_dir=$(tmux display-message -t "$_SESSION:$_WINDOW" -p '#{pane_current_path}')
+# The workspace's directory (not the active pane's cwd, which may be an
+# isolated pane's worktree)
+target_dir=$(lazy_llm_workspace_dir "$_SESSION" "$_WINDOW")
 
 # Save user's chosen tool before reading state (lazy_llm_read_multi_state sets AI_TOOL)
 NEW_AI_TOOL="$AI_TOOL"
