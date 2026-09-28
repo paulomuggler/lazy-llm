@@ -15,6 +15,9 @@
 #   llm-wt integrate [path]             rebase, then fast-forward the base branch
 #   llm-wt create <dir> <tool> <ws>     new pane worktree for workspace dir <dir>
 #   llm-wt bootstrap <path>             (re)link/copy untracked files, run init hook
+#   llm-wt close <path> [--default]     ask what to do with a worktree whose last
+#                                       pane is closing; prints remove|keep|cancel
+#   llm-wt remove <path> [--force]      delete the worktree and its branch
 #
 # [path] defaults to the current directory's worktree.
 #
@@ -409,6 +412,112 @@ $out"
   die 6 "'$BASE' kept moving during 3 attempts; run integrate again"
 }
 
+# ── close / remove ───────────────────────────────────────────────────────
+
+has_tty() { { : < /dev/tty; } 2>/dev/null; }
+
+# Ask what happens to a worktree whose last pane is closing (spec §8), and
+# reconcile changed copies when the answer is "remove". Prints the decision:
+# remove, keep or cancel. --default prints the preselected answer without
+# asking. With no terminal to ask on, the answer is keep: nothing is lost.
+cmd_close() {
+  local path="" only_default=false a
+  for a in "$@"; do
+    case "$a" in --default) only_default=true ;; *) path="$a" ;; esac
+  done
+  load_ctx "$path"
+  local st key val dirty=0 untracked=0 unintegrated=0 ignored=0
+  local -a changed=()
+  st=$(cmd_status "$WT" --porcelain)
+  while IFS=$'\t' read -r key val; do
+    case "$key" in
+      dirty) dirty=$val ;;
+      untracked) untracked=$val ;;
+      unintegrated) unintegrated=$val ;;
+      ignored-extra) ignored=$val ;;
+      copy-changed) changed+=("$val") ;;
+    esac
+  done <<< "$st"
+
+  local loss=false header
+  header="Closing the last pane in worktree $BRANCH (base $BASE)."
+  if [[ $dirty -gt 0 ]]; then loss=true; header+=$'\n'"  ! $dirty uncommitted change(s)"; fi
+  if [[ $untracked -gt 0 ]]; then loss=true; header+=$'\n'"  ! $untracked untracked file(s)"; fi
+  if [[ $unintegrated -gt 0 ]]; then
+    loss=true
+    header+=$'\n'"  ! $unintegrated commit(s) not integrated into $BASE (llm-wt integrate keeps them)"
+  fi
+  if [[ ${#changed[@]} -gt 0 ]]; then
+    loss=true
+    header+=$'\n'"  ! changed copies: $(IFS=,; printf '%s' "${changed[*]}" | sed 's/,/, /g')"
+  fi
+  [[ $ignored -gt 0 ]] && header+=$'\n'"    $ignored ignored path(s) (deps, build output) are deleted with it"
+  $loss || header+=$'\n'"  Nothing would be lost: everything is integrated."
+
+  local -a opts
+  if $loss; then
+    opts=("Keep worktree (it stays in the Worktrees tab)" "Remove worktree and branch" "Cancel")
+  else
+    opts=("Remove worktree and branch" "Keep worktree (it stays in the Worktrees tab)" "Cancel")
+  fi
+  if $only_default || ! has_tty || ! command -v fzf >/dev/null 2>&1; then
+    if $only_default; then
+      case "${opts[0]}" in Remove*) echo remove ;; *) echo keep ;; esac
+    else
+      warn "no terminal to ask on: keeping $WT"
+      echo keep
+    fi
+    return 0
+  fi
+
+  local choice
+  choice=$(printf '%s\n' "${opts[@]}" | fzf --height=100% --reverse --border=rounded \
+    --header="$header" --prompt="worktree> " --no-info || true)
+  case "$choice" in
+    Remove*) ;;
+    Keep*) echo keep; return 0 ;;
+    *) echo cancel; return 0 ;;
+  esac
+
+  local p ans
+  for p in ${changed[@]+"${changed[@]}"}; do
+    while :; do
+      ans=$(printf '%s\n' "discard" "copy back to the main directory" "show diff" | fzf --height=100% \
+        --reverse --border=rounded --header="$p differs from the copy it started as. Before removing:" \
+        --prompt="$p> " --no-info || true)
+      case "$ans" in
+        "show diff")
+          diff -ru "$PRIMARY/$p" "$WT/$p" 2>&1 | "${PAGER:-less}" > /dev/tty || true ;;
+        "copy back"*)
+          rm -rf "${PRIMARY:?}/$p"
+          cp -a "$WT/$p" "$PRIMARY/$p"
+          break ;;
+        discard) break ;;
+        *) echo cancel; return 0 ;;
+      esac
+    done
+  done
+  echo remove
+}
+
+# Delete a pane worktree and its branch (the branch's config goes with it).
+# Refuses when anything would be lost, unless --force.
+cmd_remove() {
+  local path="" force=no a
+  for a in "$@"; do
+    case "$a" in --force) force=yes ;; *) path="$a" ;; esac
+  done
+  load_ctx "$path"
+  if [[ "$force" == no ]]; then
+    local st
+    st=$(cmd_status "$WT" --porcelain)
+    if grep -qE $'^(dirty|untracked|unintegrated|copies-changed)\t[1-9]' <<< "$st"; then
+      die 1 "$WT has work that would be lost (llm-wt status); use --force to remove it anyway"
+    fi
+  fi
+  lazy_llm_cleanup_worktree "$WT" yes "$force"
+}
+
 # ── main ─────────────────────────────────────────────────────────────────
 
 usage() { sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0"; }
@@ -422,6 +531,8 @@ case "$cmd" in
   integrate) cmd_integrate "$@" ;;
   create) cmd_create "$@" ;;
   bootstrap) cmd_bootstrap "$@" ;;
+  close) cmd_close "$@" ;;
+  remove) cmd_remove "$@" ;;
   -h | --help | help | "") usage ;;
   *) die 1 "unknown command: $cmd (see llm-wt --help)" ;;
 esac

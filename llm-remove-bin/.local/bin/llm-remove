@@ -74,6 +74,24 @@ esac
 remove_pane="${pane_arr[$remove_idx]}"
 remove_tool="${tool_arr[$remove_idx]}"
 
+# An isolated pane (spec §8): when it's the last pane in its worktree, ask
+# what happens to the worktree before anything is touched — always, even
+# with -f, since the answer can lose work. Other panes still in the worktree
+# (in any window) keep it alive, and then there's nothing to ask.
+wt=$(tmux show-option -pqv -t "$remove_pane" @lazy_llm_wt 2>/dev/null) || wt=""
+wt_decision=""
+if [ -n "$wt" ] && [ -d "$wt" ]; then
+  others=$(tmux list-panes -a -F $'#{pane_id}\t#{@lazy_llm_wt}' \
+    | awk -F'\t' -v p="$remove_pane" -v w="$wt" '$1 != p && $2 == w' | wc -l)
+  if [ "$others" -eq 0 ]; then
+    wt_decision=$("$(dirname "$0")/llm-wt" close "$wt") || wt_decision="keep"
+    if [ "$wt_decision" = "cancel" ]; then
+      echo "Cancelled: pane $remove_idx kept"
+      exit 0
+    fi
+  fi
+fi
+
 # If removing the currently visible pane, cycle to next first
 if [ "$remove_idx" -eq "$current_idx" ]; then
   # Calculate next index (wrapping)
@@ -94,6 +112,11 @@ fi
 
 # Kill the pane
 tmux kill-pane -t "$remove_pane" 2>/dev/null || true
+
+# The pane is gone, so nothing runs in the worktree any more.
+if [ "$wt_decision" = "remove" ]; then
+  "$(dirname "$0")/llm-wt" remove "$wt" --force >&2 || echo "Warning: could not remove worktree $wt" >&2
+fi
 
 # Build new arrays without the removed entry. @AI_PANE_NAMES is parallel to
 # @AI_PANES by position, so it loses the same slot ("_" = no override).
@@ -160,3 +183,7 @@ tmux select-pane -t "$original_pane"
 
 lazy_llm_save_async
 echo "Removed AI pane: $remove_tool ($remove_pane) [$total remaining]"
+case "$wt_decision" in
+  remove) echo "Removed worktree $wt" ;;
+  keep) echo "Kept worktree $wt (Worktrees tab)" ;;
+esac

@@ -339,6 +339,68 @@ assert_contains "$output" "join-bad-rc=1" "-w on a non-pane-worktree is refused"
 assert_contains "$output" "both-rc=1" "-i and -w together are refused"
 
 echo ""
+echo "Test 12: close flow — preselection, remove, last-pane rule (spec §8)..."
+R="$sandbox/r12"; mk_repo "$R"
+wt=$("$LLMWT" create "$R" claude ws 2>/dev/null)
+assert_equals "$("$LLMWT" close "$wt" --default)" "remove" "nothing to lose: Remove is preselected"
+commit_file "$wt" w.txt 1
+assert_equals "$("$LLMWT" close "$wt" --default)" "keep" "unintegrated work: Keep is preselected"
+# setsid: no controlling terminal, so nothing can prompt even when the suite
+# runs from a real terminal.
+assert_equals "$(setsid -w "$LLMWT" close "$wt" 2>/dev/null)" "keep" "no terminal to ask on: keep"
+"$LLMWT" remove "$wt" >/dev/null 2>&1; rc=$?
+assert_equals "$rc" "1" "remove refuses when work would be lost"
+[ -d "$wt" ] && r="kept" || r="gone"
+assert_equals "$r" "kept" "...and leaves the worktree alone"
+
+HOME_BIN="$HOME/.local/bin"
+ln -sf "$REPO_ROOT/llm-remove-bin/.local/bin/llm-remove" "$HOME_BIN/llm-remove"
+R="$sandbox/r12b"; mk_repo "$R"
+output=$(TMUX_TMPDIR="$sandbox/tmux" bash <<EOF
+unset TMUX
+tmux -f /dev/null new-session -d -s rws -c "$R" -x 200 -y 50 "exec sleep 120"
+P=\$(tmux display -t rws -p '#{pane_id}')
+tmux set-option -t rws @lazy_llm 1
+tmux set-option -t rws @lazy_llm_dir "$R"
+tmux set-option -w -t rws @AI_PANE_ID "\$P"
+tmux set-option -w -t rws @AI_PANES "\$P"
+tmux set-option -w -t rws @AI_TOOLS cat
+tmux set-option -w -t rws @AI_PANE_IDX 0
+Q=\$(tmux split-window -t "\$P" -c "$R" -P -F '#{pane_id}' "exec sleep 120")
+export TMUX_PANE="\$Q"
+"$HOME_BIN/llm-add" -t cat -i >/dev/null 2>&1
+read -ra panes <<< "\$(tmux show-option -wqv -t rws @AI_PANES)"
+WT=\$(tmux show-option -pqv -t "\${panes[1]}" @lazy_llm_wt)
+echo "wt=\$WT"
+"$HOME_BIN/llm-add" -t cat -w "\$WT" >/dev/null 2>&1
+echo "first=\$(setsid -w "$HOME_BIN/llm-remove" -f 1 2>&1 | tr '\n' ' ')"
+[ -d "\$WT" ] && echo "after-first=kept" || echo "after-first=gone"
+echo "last=\$(setsid -w "$HOME_BIN/llm-remove" -f 1 2>&1 | tr '\n' ' ')"
+[ -d "\$WT" ] && echo "after-last=kept" || echo "after-last=gone"
+# Remove with a pane of the worktree focused: the workspace must survive
+# (spec §2 end to end).
+"$HOME_BIN/llm-add" -t cat -i >/dev/null 2>&1
+read -ra panes <<< "\$(tmux show-option -wqv -t rws @AI_PANES)"
+N=\${panes[-1]}
+tmux select-pane -t "\$N"
+WT2=\$(tmux show-option -pqv -t "\$N" @lazy_llm_wt)
+"$HOME_BIN/llm-wt" remove "\$WT2" --force >/dev/null 2>&1; echo "force-rc=\$?"
+tmux has-session -t rws 2>/dev/null && echo "session=alive" || echo "session=killed"
+[ -d "\$WT2" ] && echo "wt2=kept" || echo "wt2=gone"
+echo "branches=\$(git -C "$R" branch --list 'lazy/*' --format='%(refname:short)' | tr '\n' ' ')"
+tmux kill-server 2>/dev/null
+EOF
+)
+assert_not_contains "$(printf '%s\n' "$output" | grep '^first=')" "worktree" "closing a pane that shares its worktree doesn't ask about it"
+assert_contains "$output" "after-first=kept" "...and the worktree stays"
+assert_contains "$output" "Kept worktree" "last pane, no terminal: the worktree is kept and it says so"
+assert_contains "$output" "after-last=kept" "...and it's still there"
+assert_contains "$output" "force-rc=0" "llm-wt remove --force succeeds"
+assert_contains "$output" "session=alive" "removing a worktree whose pane is focused leaves the workspace alive"
+assert_contains "$output" "wt2=gone" "the worktree is gone"
+assert_contains "$output" "branches=lazy/rws/cat-2 " "its branch is deleted; the kept one remains"
+
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
