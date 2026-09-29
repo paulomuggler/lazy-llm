@@ -114,7 +114,16 @@ case "$AI_TOOL" in
     # swallowed into it (left unsubmitted) or its newlines submitted early.
     # A named buffer, deleted after the paste (-d), leaves the user's paste
     # buffers alone.
-    echo "$COMPLETE_MESSAGE" | tmux load-buffer -b lazy-llm-send -
+    #
+    # Claude Code hands a bracketed paste to the model wrapped as pasted
+    # content, and treats instructions in it as not the user's own unless
+    # text the user typed says so, so a prompt sent as a paste alone got
+    # checked back ("your message contained only pasted text"). Typing a
+    # short line before the paste puts that statement outside the wrapper.
+    # It must not start with a character the tool treats as a mode key
+    # (/, !, #).
+    tmux send-keys -t "$TARGET" -l "My own prompt, sent from my editor with llm-send:"
+    printf '\n%s\n' "$COMPLETE_MESSAGE" | tmux load-buffer -b lazy-llm-send -
     tmux paste-buffer -b lazy-llm-send -d -p -t "$TARGET"
 
     # Send single Enter to submit the prompt
