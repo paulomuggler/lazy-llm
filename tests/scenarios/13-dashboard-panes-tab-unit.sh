@@ -46,7 +46,8 @@ fi
 
 echo ""
 echo "Test 3: Prefix+S binding untouched..."
-prefix_s=$(command grep -A2 'bind-key -T prefix S if-shell' "$LAZY_LLM" | tail -1)
+# The bindings live in the lib's lazy_llm_register_tmux_integration, and carry -N notes.
+prefix_s=$(command grep -A1 -E 'bind-key( -N "[^"]*")? -T prefix "\$dash_key"' "$LIB" | tail -1)
 assert_contains "$prefix_s" "llm-dashboard" "Prefix+S still launches llm-dashboard"
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -208,10 +209,22 @@ if command grep -v '^\s*#' "$DASHBOARD" | command grep -q -- '--track' \
 else
     print_pass "--track/--id-nth removed from the Workspaces fzf call (code, not just comments, checked)"
 fi
-if command grep -qE "printf 'reload-sync\(%s --emit-rows\)\+pos\(%s\)" "$DASHBOARD"; then
-    print_pass "--fold-transform prints reload-sync(...)+pos(N) — explicit cursor placement after the reload"
+# The chain itself comes from _dashboard_print_reload (shared with
+# --reorder-transform): run it and check it prints reload-sync(<read the rows
+# it already built from a temp file, then delete it>)+pos(N).
+RELOAD_OUT=$(bash -c "$(command sed -n '/^_dashboard_print_reload() {/,/^}/p' "$DASHBOARD")"'
+  REPLY_ROWS=$'"'"'ws:a\tA\nws:b\tB'"'"'; _dashboard_print_reload 2')
+RELOAD_FILE=$(printf '%s' "$RELOAD_OUT" | command sed -nE "s/^reload-sync\(cat '([^']+)'; rm -f '[^']+'\)\+pos\(2\)$/\1/p")
+if [[ -n "$RELOAD_FILE" && "$(cat "$RELOAD_FILE" 2>/dev/null)" == $'ws:a\tA\nws:b\tB' ]]; then
+    print_pass "_dashboard_print_reload prints reload-sync(cat <rows file>; rm)+pos(N), and the file holds the rows"
 else
-    print_fail "--fold-transform does not print reload-sync(...)+pos(N) — cursor placement after a fold reload is unaccounted for"
+    print_fail "_dashboard_print_reload output unexpected: $RELOAD_OUT"
+fi
+[[ -n "$RELOAD_FILE" ]] && rm -f "$RELOAD_FILE"
+if command grep -A60 -- '--fold-transform)' "$DASHBOARD" | command grep -qE '^\s*_dashboard_print_reload "\$_dashboard_fold_pos"'; then
+    print_pass "--fold-transform prints its reload via _dashboard_print_reload with the computed cursor row"
+else
+    print_fail "--fold-transform does not print reload-sync(...)+pos(N) via _dashboard_print_reload — cursor placement after a fold reload is unaccounted for"
 fi
 if command grep -v '^\s*#' "$DASHBOARD" | command grep -qE "printf 'reload\(%s"; then
     print_fail "--fold-transform uses plain reload(...) (not reload-sync) — confirmed live (fzf 0.74.3) that a chained pos(N) after a plain async reload() races and gets discarded"

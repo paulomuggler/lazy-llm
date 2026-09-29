@@ -70,6 +70,16 @@ cmd_kill() {
     exit 1
   fi
 
+  # Drop it from the saved-workspace manifest first: killing the last session
+  # takes the tmux server down with it, and no save would ever run to notice.
+  local ws_id
+  ws_id=$(tmux show-option -qv -t "$target" @lazy_llm_ws_id 2>/dev/null) || true
+  if [[ -n "$ws_id" ]]; then
+    "$HOME/.local/bin/llm-persist" forget --id "$ws_id" >/dev/null 2>&1 || true
+  fi
+
+  lazy_llm_move_clients_off "$target"
+
   # Kill holding windows first (clean shutdown)
   local wins
   wins=$(tmux list-windows -t "$target" -F '#{window_name}' 2>/dev/null) || true

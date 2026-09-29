@@ -7,8 +7,10 @@
 _LAZY_LLM_LIB_LOADED=1
 
 # On macOS, tmux run-shell / display-popup or non-login subshells may have a
-# minimal PATH where system tools precede Homebrew.
-if [[ "$(uname -s)" == "Darwin" ]]; then
+# minimal PATH where system tools precede Homebrew. $OSTYPE, not uname: this
+# lib is sourced by every status-bar/border/dashboard poll, which are kept
+# fork-free.
+if [[ "${OSTYPE:-}" == darwin* ]]; then
   [[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && [[ -d /opt/homebrew/bin ]] && export PATH="/opt/homebrew/bin:$PATH"
   [[ ":$PATH:" != *":/usr/local/bin:"* ]] && [[ -d /usr/local/bin ]] && export PATH="/usr/local/bin:$PATH"
 fi
@@ -78,9 +80,18 @@ lazy_llm_read_multi_state() {
 }
 
 # Check if a tmux pane is still alive.
-# Returns 0 if alive, 1 if dead.
+# Returns 0 if alive, 1 if dead. Doesn't trust the exit status: tmux 3.7c's
+# display-message exits 0 with empty output for a pane that no longer exists
+# (confirmed live). A %N id must echo back as itself; any other target form
+# (legacy "session:win.idx", ":.+") must resolve to some pane.
 lazy_llm_validate_pane() {
-  tmux display-message -t "$1" -p '#{pane_id}' &>/dev/null
+  local got
+  got=$(tmux display-message -t "$1" -p '#{pane_id}' 2>/dev/null) || return 1
+  if [[ "$1" == %* ]]; then
+    [[ "$got" == "$1" ]]
+  else
+    [[ -n "$got" ]]
+  fi
 }
 
 # Classify AI pane content into a status.
@@ -96,78 +107,115 @@ lazy_llm_validate_pane() {
 # (claude-tuned) patterns are used; gemini/codex/grok/aider fall through
 # because they typically use similar prompt + permission idioms.
 lazy_llm_detect_status_from_content() {
-  local tool="${1:-claude}"
   local content
-  content=$(cat)
+  IFS= read -rd '' content || true
+  _lazy_llm_classify_content "${1:-claude}" "$content"
+  printf '%s\n' "$REPLY"
+}
+
+# Jetski CLI's classifier. Same fork-free contract as _lazy_llm_classify_content
+# (sets REPLY). Only the live bottom frame (last 12 lines) is inspected:
+# Jetski prints "▸ Thought for 1m 26s, 89 tokens" into permanent scrollback, so
+# claude's "(Nm Ns" pattern matched over the whole capture would read every
+# finished session as working forever.
+#   working  a braille spinner at the start of a line, or the "esc to cancel"
+#            footer — unless that footer is only there because a background
+#            task is running ("N task(s) · /tasks"), which Jetski shows while idle
+#   waiting  a [y/N] prompt or the permission dialog's Allow / Always Allow
+#   idle     Jetski's "> " input box (or its ─── frame)
+# Spinner glyphs are an alternation, not a bracket expression: a multibyte
+# bracket expression misbehaves under a non-UTF-8 locale (tmux run-shell).
+_LAZY_LLM_JETSKI_SPINNER='^[[:space:]]*(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|⣾|⣽|⣻|⢿|⡿|⣟|⣯|⣷)[[:space:]]+'
+_LAZY_LLM_JETSKI_WAITING='\[[yY]/[yYnN]\]|Allow'
+_LAZY_LLM_JETSKI_PROMPT='^>([[:space:]]|$)|^───'
+_lazy_llm_classify_jetski() {
+  local -a lines
+  mapfile -t lines <<< "$1"
+  local n=${#lines[@]} i line
+  local spinner=false cancel=false bg_task=false waiting=false prompt=false
+  for (( i = (n > 12 ? n - 12 : 0); i < n; i++ )); do
+    line="${lines[i]}"
+    [[ "$line" =~ $_LAZY_LLM_JETSKI_SPINNER ]] && spinner=true
+    [[ "$line" == "esc to cancel"* ]] && cancel=true
+    [[ "$line" == *"task(s) · /tasks"* ]] && bg_task=true
+    [[ "$line" =~ $_LAZY_LLM_JETSKI_WAITING ]] && waiting=true
+    [[ "$line" =~ $_LAZY_LLM_JETSKI_PROMPT ]] && prompt=true
+  done
+
+  if $spinner || { $cancel && ! $bg_task; }; then
+    REPLY=working
+  elif $waiting; then
+    REPLY=waiting
+  elif $prompt; then
+    REPLY=idle
+  else
+    REPLY=unknown
+  fi
+}
+
+# The classifier itself. Fork-free (bash regex, no grep/tail): the status
+# bar, pane borders and dashboard run it for every AI pane on every refresh,
+# and each forked grep was a measurable share of the dashboard's open and
+# fold/reorder latency. Sets REPLY instead of echoing.
+# Args: $1 tool_name  $2 pane content
+_lazy_llm_classify_content() {
+  local tool="${1:-claude}" content="$2"
 
   # "ctrl+c to interrupt" was this pattern's original signal but current Claude
   # Code UI versions don't show it — confirmed live against a real busy session:
   # the actual "working" tells are the spinner/duration line ("Boondoggling…
-  # (6m 42s · ↓ 22.4k tokens)") always present while generating, and "esc to
-  # interrupt" specifically while a tool call is running. Match all three so
-  # this survives future UI wording changes better than any single string.
-  local interrupt_pat='ctrl\+c to interrupt|esc to interrupt|\([0-9]+m [0-9]+s'
+  # (6m 42s · ↓ 22.4k tokens)", or "(42s · …" under a minute) always present
+  # while generating, and "esc to interrupt" in the footer. Match all of them
+  # so this survives future UI wording changes better than any single string.
+  local interrupt_pat='ctrl\+c to interrupt|esc to interrupt|\([0-9]+m [0-9]+s|\([0-9]+s ·'
   local waiting_pat='\[[yY]/[yYnN]\]|^[[:space:]]*[1-9][.)][[:space:]]'
   local prompt_pat='❯'
 
-  local tail_content
-  tail_content=$(tail -n 12 <<< "$content")
-
   case "$tool" in
     jetski|jetski-cli)
-      # Jetski CLI prints "▸ Thought for 1m 26s, 89 tokens" in permanent scrollback,
-      # so matching "\([0-9]+m [0-9]+s" across -S -200 would falsely classify finished
-      # sessions as "working" forever. Instead, inspect the live bottom area (tail_content)
-      # for the active braille spinner or the "esc to cancel" footer (when no background
-      # task is keeping the footer visible), and match Jetski's "> " prompt box for idle.
-      if grep -qE '^[[:space:]]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷][[:space:]]+' <<< "$tail_content"; then
-        echo working
-        return 0
-      elif grep -qE '^esc to cancel' <<< "$tail_content" && ! grep -qE 'task\(s\) · /tasks' <<< "$tail_content"; then
-        echo working
-        return 0
-      elif grep -qE '\[[yY]/[yYnN]\]|Allow|Always Allow' <<< "$tail_content"; then
-        echo waiting
-        return 0
-      elif grep -qE '^>([[:space:]]|$)|^───' <<< "$tail_content"; then
-        echo idle
-        return 0
-      else
-        echo unknown
-        return 0
-      fi
+      _lazy_llm_classify_jetski "$content"
+      return 0
       ;;
     claude|*)
       : # use defaults above
       ;;
   esac
 
-  # waiting_pat's numbered-option alternative (matches Claude Code's actual
-  # permission-prompt UI, e.g. "1. Yes  2. Yes, and don't ask again  3. No")
-  # is indistinguishable from an ordinary markdown numbered list in Claude's
-  # own RESPONSE text — confirmed live against a real idle pane: a
-  # completed response ending in "1. A Variant primitive... 2. ... 3. ..."
-  # was misclassified as "waiting" purely from old scrollback, long after
-  # the turn had actually finished (this is why finished sessions kept
-  # showing waiting — not just the hook mapping bug fixed earlier, THIS
-  # too). A genuine interactive prompt is always near the CURRENT input
-  # line at the bottom of the pane; old scrollback several screens up never
-  # is. Scope this specific check to the last ~10 lines instead of the full
-  # capture, so a real prompt still matches but a numbered list left over
-  # from a finished response doesn't — tuned against the exact
-  # false-positive content above: a tail of 15 still caught 2 of its 3 list
-  # lines, 12 and 10 caught none.
-  local claude_tail
-  claude_tail=$(tail -n 10 <<< "$content")
+  # Both patterns are scoped to the bottom of the capture — the current
+  # frame (spinner, input box, footer) — never the whole 200-line capture.
+  #
+  # working: Claude Code's redraws (resizes, popups over the pane, a pane
+  # too short for its frame) push stale frames into scrollback, spinner
+  # line included. Matched over the full capture, one such remnant ("*
+  # Perambulating… (9m 43s", 176 lines up in a pane that had finished) read
+  # as "working" until it scrolled out — confirmed live; that's the "stuck
+  # on working, never shows unread" report (unread only layers on idle).
+  # The live spinner and the footer's "esc to interrupt" are always within
+  # the last 15 lines.
+  #
+  # waiting: the numbered-option alternative (Claude Code's permission
+  # prompt, "1. Yes  2. Yes, and don't ask again  3. No") is
+  # indistinguishable from an ordinary markdown numbered list in a finished
+  # response — confirmed live, a response ending in "1. … 2. … 3. …" read as
+  # "waiting". A real prompt is at the bottom; tuned against that exact
+  # false positive: a tail of 15 still caught 2 of its 3 list lines, 12 and
+  # 10 caught none.
+  local -a lines
+  mapfile -t lines <<< "$content"
+  local n=${#lines[@]} i working=false waiting=false
+  for (( i = (n > 15 ? n - 15 : 0); i < n; i++ )); do
+    [[ "${lines[i]}" =~ $interrupt_pat ]] && working=true
+    (( i >= n - 10 )) && [[ "${lines[i]}" =~ $waiting_pat ]] && waiting=true
+  done
 
-  if grep -qE "$interrupt_pat" <<< "$content"; then
-    echo working
-  elif grep -qE "$waiting_pat" <<< "$claude_tail"; then
-    echo waiting
-  elif grep -qF "$prompt_pat" <<< "$content"; then
-    echo idle
+  if $working; then
+    REPLY=working
+  elif $waiting; then
+    REPLY=waiting
+  elif [[ "$content" == *"$prompt_pat"* ]]; then
+    REPLY=idle
   else
-    echo unknown
+    REPLY=unknown
   fi
 }
 
@@ -179,8 +227,22 @@ lazy_llm_detect_status_from_content() {
 _LAZY_LLM_HOOK_STATUS_MAX_AGE=30
 
 # Read a Claude Code / Jetski CLI hook-written status for a pane, if fresh.
-# Written by dev-env's ~/.claude/hooks/lazy-llm-status-notify.sh (and
-# ~/.gemini/config/hooks/lazy-llm-jetski-hook.sh for Jetski CLI).
+# Written by llm-claude-hook (via lazy-llm's Claude Code plugin) on the
+# UserPromptSubmit (-> working), Notification:permission_prompt (-> waiting —
+# genuinely blocked on a decision) and Notification:idle_prompt / Stop
+# (-> idle) hook events.
+# idle_prompt deliberately maps to "idle", not "waiting" — it's Claude
+# Code's own delayed idle nudge, not a new blocking state; mapping it to
+# "waiting" was overwriting Stop's correct "idle" and is why finished
+# sessions used to get stuck showing waiting (see the hook script's own
+# comment for the full story). "working" comes from UserPromptSubmit: without
+# it, a prompt typed within 30s of the last Stop read as idle/unread until
+# the Stop file aged out. Past the freshness window a long turn falls
+# through to the content scrape, which sees the live spinner/footer.
+# For jetski-cli, llm-jetski-hook (via lazy-llm's Jetski plugin) writes the
+# same file: PreInvocation / PreToolUse (-> working) and Stop (-> idle).
+# Jetski has no permission-prompt event, so "waiting" is never written for it
+# — see lazy_llm_detect_pane_status for how a prompt still shows up.
 # Args:   $1 pane_id
 # Stdout: working | waiting | idle   (only if a fresh file says so)
 # Returns 1 (nothing echoed) if no usable hook file exists.
@@ -195,12 +257,31 @@ _lazy_llm_read_hook_status() {
   [[ "$hook_ts" =~ ^[0-9]+$ ]] || return 1
 
   local now age
-  now=$(date +%s)
+  now=${EPOCHSECONDS:-$(date +%s)}
   age=$((now - hook_ts))
   [[ "$age" -ge 0 && "$age" -le "$_LAZY_LLM_HOOK_STATUS_MAX_AGE" ]] || return 1
 
   echo "$hook_state"
   return 0
+}
+
+# Tools whose status and unread marks are fed by lazy-llm's own hooks
+# (llm-claude-hook, llm-jetski-hook) rather than inferred from the scrape.
+# Returns 0 for those, 1 otherwise.
+lazy_llm_tool_has_hooks() {
+  case "${1:-}" in
+    claude|jetski|jetski-cli) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Canonical tool name: "jetski" (the CLI's own command name) is stored and
+# matched as "jetski-cli", so @AI_TOOLS, manifests and adapters see one name.
+lazy_llm_normalize_tool() {
+  case "${1:-}" in
+    jetski) printf 'jetski-cli' ;;
+    *) printf '%s' "${1:-}" ;;
+  esac
 }
 
 # Capture a pane's recent content and classify it.
@@ -209,26 +290,36 @@ _lazy_llm_read_hook_status() {
 # Stdout: working | waiting | unread | idle | unknown
 # Returns 0 always; emits "unknown" if capture fails.
 #
-# For tool=claude|jetski|jetski-cli, prefers a fresh hook-written status (see
-# _lazy_llm_read_hook_status) over the content scrape below — hooks are
-# event-driven and don't suffer the scrape's timing/UI-text fragility.
-# Every other tool (gemini/opencode/codex/grok/aider) always uses the scrape path.
+# For hook-fed tools (lazy_llm_tool_has_hooks: claude, jetski-cli), prefers a
+# fresh hook-written status (see _lazy_llm_read_hook_status) over the content
+# scrape below — hooks are event-driven and don't suffer the scrape's
+# timing/UI-text fragility. Every other tool (gemini/opencode/codex/grok/aider)
+# always uses the scrape path.
+#
+# jetski-cli exception: Jetski has no permission-prompt hook event, so a pane
+# blocked on "Allow?" still carries the fresh "working" its PreToolUse hook
+# wrote just before. For that one case the scrape gets a say: if it sees the
+# prompt, the pane is waiting.
 #
 # "unread" is layered on top of an "idle" result — see the unread-marker
 # section below for what sets and clears it.
 lazy_llm_detect_pane_status() {
   local pane_id="${1:?pane_id required}"
   local tool="${2:-claude}"
-  local base
+  local base content
 
-  if [[ "$tool" == "claude" || "$tool" == "jetski" || "$tool" == "jetski-cli" ]] && base=$(_lazy_llm_read_hook_status "$pane_id"); then
+  if lazy_llm_tool_has_hooks "$tool" && base=$(_lazy_llm_read_hook_status "$pane_id"); then
     # `if cmd=$(...); then` (not `cmd=$(...) && ...`) — a bare `&&` here would
     # trip callers' `set -e` on the common case of no hook file existing yet.
-    :
+    if [[ "$base" == working && "$tool" != claude ]] \
+      && content=$(tmux capture-pane -p -t "$pane_id" -S -200 2>/dev/null); then
+      _lazy_llm_classify_content "$tool" "$content"
+      if [[ "$REPLY" == waiting ]]; then base=waiting; fi
+    fi
   else
-    local content
     content=$(tmux capture-pane -p -t "$pane_id" -S -200 2>/dev/null) || { echo unknown; return 0; }
-    base=$(printf '%s' "$content" | lazy_llm_detect_status_from_content "$tool")
+    _lazy_llm_classify_content "$tool" "$content"
+    base="$REPLY"
   fi
 
   _lazy_llm_apply_unread "$pane_id" "$tool" "$base"
@@ -247,12 +338,13 @@ lazy_llm_detect_pane_status() {
 # age-out: a turn that finished overnight is still unread in the morning.
 #
 # Set by:
-#   - Claude's Stop hook (dev-env's lazy-llm-status-notify.sh, via
+#   - Claude's / Jetski's Stop hook (llm-claude-hook / llm-jetski-hook, via
 #     lazy_llm_mark_unread) — event-driven, catches even sub-second turns.
 #   - Every other tool: a working -> idle transition seen by the scrape (a
 #     "busy" marker left by an earlier "working" observation). Only as fast
 #     as the pollers (status-interval), so a turn shorter than that can be
-#     missed. Not used for claude: the scrape's working pattern can flicker
+#     missed. Not used for hook-fed tools (claude, jetski-cli): the scrape's
+#     working pattern can flicker
 #     on old scrollback, which would re-mark a pane right after you'd
 #     cleared it; the hook has no such problem.
 #   Both skip a pane that's focused in an attached client — you watched it
@@ -273,12 +365,20 @@ _lazy_llm_pane_pid() {
 }
 
 # Is this the pane the user is looking at right now: the active pane of the
-# active window of a session with a client attached?
+# active window of a session shown by a client whose terminal has focus?
+# The terminal-focus part is tmux's own "focused" client flag (focus-events
+# on; confirmed live that it drops on the terminal's focus-out and returns on
+# focus-in). Without it, a turn that finished while you were in another app
+# was never marked unread, because its pane was still tmux-active. tmux
+# starts a client out as focused, so a terminal that never reports focus
+# behaves as before.
 # Returns 0 if so, 1 otherwise (including when the pane doesn't exist).
 lazy_llm_pane_is_focused() {
-  local flags
-  flags=$(tmux display-message -t "$1" -p '#{pane_active}#{window_active}#{?session_attached,1,0}' 2>/dev/null) || return 1
-  [[ "$flags" == "111" ]]
+  local flags client_flags
+  flags=$(tmux display-message -t "$1" -p '#{pane_active}#{window_active}#{?session_attached,1,0} #{session_id}' 2>/dev/null) || return 1
+  [[ "${flags%% *}" == "111" ]] || return 1
+  client_flags=$(tmux list-clients -t "${flags#* }" -F ',#{client_flags},' 2>/dev/null) || return 1
+  [[ "$client_flags" == *,focused,* ]]
 }
 
 # Mark a pane unread, unless it's focused right now. Always returns 0 — it's
@@ -323,7 +423,7 @@ _lazy_llm_apply_unread() {
   local pane_id="$1" tool="$2" base="$3"
   local busy="$_LAZY_LLM_BUSY_DIR/$pane_id"
 
-  if [[ "$tool" != "claude" ]]; then
+  if ! lazy_llm_tool_has_hooks "$tool"; then
     if [[ "$base" == "working" ]]; then
       { mkdir -p "$_LAZY_LLM_BUSY_DIR" && : > "$busy"; } 2>/dev/null || true
     elif [[ "$base" == "idle" && -f "$busy" ]]; then
@@ -380,18 +480,23 @@ lazy_llm_status_color() {
 lazy_llm_prune_stale_panes() {
   [[ -z "$AI_PANES" ]] && return 0
 
-  local -a pane_arr tool_arr valid_panes valid_tools
+  local -a pane_arr tool_arr name_arr=() valid_panes valid_tools valid_names
   read -ra pane_arr <<< "$AI_PANES"
   read -ra tool_arr <<< "$AI_TOOLS"
+  [[ -n "${AI_PANE_NAMES:-}" ]] && read -ra name_arr <<< "$AI_PANE_NAMES"
   local total=${#pane_arr[@]}
   local current_idx="${AI_PANE_IDX:-0}"
 
+  # @AI_PANE_NAMES is parallel to @AI_PANES by position: it must lose the
+  # same slots, or every later name shifts onto the wrong pane.
   valid_panes=()
   valid_tools=()
+  valid_names=()
   for i in "${!pane_arr[@]}"; do
     if lazy_llm_validate_pane "${pane_arr[$i]}"; then
       valid_panes+=("${pane_arr[$i]}")
       valid_tools+=("${tool_arr[$i]:-unknown}")
+      valid_names+=("${name_arr[$i]:-_}")
     fi
   done
 
@@ -407,6 +512,10 @@ lazy_llm_prune_stale_panes() {
 
   tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANES "$AI_PANES"
   tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOLS "$AI_TOOLS"
+  if [[ -n "${AI_PANE_NAMES:-}" ]]; then
+    AI_PANE_NAMES="${valid_names[*]}"
+    tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_NAMES "$AI_PANE_NAMES"
+  fi
 
   # Adjust current index if out of bounds
   if [[ "$current_idx" -ge "$total" ]] && [[ "$total" -gt 0 ]]; then
@@ -442,7 +551,38 @@ lazy_llm_ensure_gitignore() {
   echo "Added $pat to $gi" >&2
 }
 
-# Find the lazy-llm session (if any) whose first-pane path equals the given path.
+# A workspace's directory: the session's @lazy_llm_dir, else (sessions from
+# before that option existed) the active pane's path in <session:window>.
+# Never read a pane's cwd when the option is set: an isolated AI pane runs in
+# its own worktree, and may be the active pane.
+# Args: $1 session  $2 window (optional)
+# Stdout: the directory
+lazy_llm_workspace_dir() {
+  local session="$1" window="${2:-}" dir
+  dir=$(tmux show-option -qv -t "$session" @lazy_llm_dir 2>/dev/null) || dir=""
+  if [[ -z "$dir" ]]; then
+    dir=$(tmux display-message -t "$session${window:+:$window}" -p '#{pane_current_path}' 2>/dev/null) || dir=""
+  fi
+  printf '%s\n' "$dir"
+}
+
+# Live panes tagged with pane worktree <wt> (llm-add -i/-w set @lazy_llm_wt).
+# Stdout: "session<TAB>pane_id" per pane
+lazy_llm_wt_panes() {
+  local wt="$1"
+  tmux list-panes -a -F $'#{session_name}\t#{pane_id}\t#{@lazy_llm_wt}' 2>/dev/null \
+    | awk -F'\t' -v w="$wt" '$3 == w {print $1 "\t" $2}'
+}
+
+# The pane worktree of the current window's visible AI pane, if it has one.
+lazy_llm_visible_pane_wt() {
+  local ai
+  ai=$(tmux display-message -p '#{@AI_PANE_ID}' 2>/dev/null) || return 0
+  [[ -n "$ai" ]] || return 0
+  tmux show-option -pqv -t "$ai" @lazy_llm_wt 2>/dev/null || true
+}
+
+# Find the lazy-llm session (if any) whose workspace directory is the given path.
 # Compares via realpath so symlinks don't fool the match.
 # Args: $1 target_path
 # Stdout: session name or empty
@@ -462,13 +602,15 @@ lazy_llm_find_session_for_path() {
 # Create or locate a git worktree for the given branch.
 # - If branch exists: create worktree pointing at it (error if already checked out elsewhere)
 # - If branch doesn't exist: create branch from HEAD and create the worktree
-# - Worktree base path: $LAZY_LLM_WORKTREE_DIR or "$repo_root/.worktrees"
+# - Worktree base path: $2, else $LAZY_LLM_WORKTREE_DIR, else "$repo_root/.worktrees"
 # - When using the in-repo default, ensure .worktrees/ is in .gitignore
-# Args: $1 branch_name
+# - A new branch starts at $3 when given, else at HEAD
+# - The worktree's directory is named $4 when given, else after the branch
+# Args: $1 branch_name  $2 base_dir (optional)  $3 start_point (optional)  $4 dir_name (optional)
 # Stdout: absolute worktree path on success
 # Exit: 0 success, non-zero failure (with message on stderr)
 lazy_llm_setup_worktree() {
-  local branch="$1"
+  local branch="$1" base_dir="${2:-}" start_point="${3:-}" dir_name="${4:-}"
   [[ -z "$branch" ]] && { echo "Error: branch name required" >&2; return 2; }
 
   local repo
@@ -476,8 +618,8 @@ lazy_llm_setup_worktree() {
     || { echo "Error: not inside a git repository" >&2; return 2; }
 
   local sanitized="${branch//\//-}"
-  local base="${LAZY_LLM_WORKTREE_DIR:-$repo/.worktrees}"
-  local wt="$base/$sanitized"
+  local base="${base_dir:-${LAZY_LLM_WORKTREE_DIR:-$repo/.worktrees}}"
+  local wt="$base/${dir_name:-$sanitized}"
 
   # If the default in-repo path is in use, make sure .worktrees/ is gitignored
   if [[ "$base" == "$repo/.worktrees" ]]; then
@@ -507,7 +649,7 @@ lazy_llm_setup_worktree() {
     git -C "$repo" worktree add "$wt" "$branch" >&2 \
       || { echo "Error: git worktree add failed" >&2; return 1; }
   else
-    git -C "$repo" worktree add -b "$branch" "$wt" >&2 \
+    git -C "$repo" worktree add -b "$branch" "$wt" ${start_point:+"$start_point"} >&2 \
       || { echo "Error: git worktree add -b failed" >&2; return 1; }
   fi
 
@@ -534,7 +676,7 @@ lazy_llm_default_branch() {
 
 # Internal helper for lazy_llm_gather_worktrees. Skip detached-HEAD worktrees.
 _lazy_llm_emit_worktree_row() {
-  local path="$1" branch="$2" default="$3" is_github="$4"
+  local path="$1" branch="$2" default="$3" is_github="$4" wt_panes="${5:-}"
   [[ -z "$branch" ]] && return 0
 
   local dirty="" ahead="0" behind="0" session="" pr=""
@@ -555,13 +697,27 @@ _lazy_llm_emit_worktree_row() {
             --json state -q .state 2>/dev/null) || pr=""
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$branch" "$dirty" "$ahead" "$behind" "$session" "$pr"
+  # Pane worktrees (llm-wt): owned by the live pane tagged with this path,
+  # else orphaned. Task worktrees have no owner.
+  local owner="" base
+  base=$(git -C "$path" config "branch.$branch.lazyLlmBase" 2>/dev/null) || base=""
+  if [[ -n "$base" ]]; then
+    owner=$(awk -F'\t' -v w="$path" '$1 == w {print "pane:" $2 ":" $3; exit}' <<< "$wt_panes")
+    [[ -n "$owner" ]] || owner="orphaned"
+  fi
+
+  printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+    "$path" "$branch" "$dirty" "$ahead" "$behind" "$session" "$pr" "$owner"
 }
 
-# List worktrees with state. Tab-separated rows:
-#   PATH<TAB>BRANCH<TAB>DIRTY<TAB>AHEAD<TAB>BEHIND<TAB>SESSION<TAB>PR_STATE
+# List worktrees with state. \x1f-separated rows (not tabs: DIRTY, SESSION,
+# PR_STATE and OWNER can be empty, and `read` collapses runs of a whitespace
+# IFS, shifting every field after an empty one):
+#   PATH BRANCH DIRTY AHEAD BEHIND SESSION PR_STATE OWNER
 # DIRTY: "*" or ""; AHEAD/BEHIND: counts vs origin/<default>; SESSION: lazy-llm
-# session attached; PR_STATE: OPEN/MERGED/CLOSED/"" (only when gh+github remote).
+# session attached; PR_STATE: OPEN/MERGED/CLOSED/"" (only when gh+github remote);
+# OWNER: "pane:<session>:<pane_id>" or "orphaned" for a pane worktree (llm-wt),
+# "" for a task worktree.
 # Skips detached-HEAD worktrees.
 lazy_llm_gather_worktrees() {
   local repo default has_gh is_github
@@ -575,6 +731,11 @@ lazy_llm_gather_worktrees() {
       && is_github=true
   fi
 
+  # Every pane's worktree tag, in one tmux call: "wt<TAB>session<TAB>pane".
+  local wt_panes
+  wt_panes=$(tmux list-panes -a -F $'#{@lazy_llm_wt}\t#{session_name}\t#{pane_id}' 2>/dev/null \
+    | awk -F'\t' '$1 != ""') || wt_panes=""
+
   local path="" branch=""
   while IFS= read -r line; do
     if [[ "$line" == worktree\ * ]]; then
@@ -582,11 +743,11 @@ lazy_llm_gather_worktrees() {
     elif [[ "$line" == branch\ * ]]; then
       branch="${line#branch refs/heads/}"
     elif [[ -z "$line" ]]; then
-      _lazy_llm_emit_worktree_row "$path" "$branch" "$default" "$is_github"
+      _lazy_llm_emit_worktree_row "$path" "$branch" "$default" "$is_github" "$wt_panes"
       path=""; branch=""
     fi
   done < <(git -C "$repo" worktree list --porcelain 2>/dev/null)
-  [[ -n "$path" ]] && _lazy_llm_emit_worktree_row "$path" "$branch" "$default" "$is_github"
+  [[ -n "$path" ]] && _lazy_llm_emit_worktree_row "$path" "$branch" "$default" "$is_github" "$wt_panes"
   return 0
 }
 
@@ -633,42 +794,49 @@ lazy_llm_cleanup_worktree() {
 # (ATTACHED is "*" when attached, empty otherwise.)
 # Lists nothing if no sessions exist or no tmux server is running.
 lazy_llm_gather_sessions() {
-  local sessions
-  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 0
-  [[ -z "$sessions" ]] && return 0
+  # One `tmux list-panes -a` for everything (user options resolve in -F
+  # formats), instead of ~5 tmux calls per session: this runs on every
+  # status-bar refresh and every dashboard render, and the per-call cost
+  # (~7ms each on a busy server) was most of the dashboard's latency.
+  # \x1f separates fields, not tabs: `read` collapses runs of a whitespace
+  # IFS, which would shift every field after an empty one.
+  local rows
+  rows=$(tmux list-panes -a -F $'#{session_name}\x1f#{@lazy_llm}\x1f#{window_index}\x1f#{window_name}\x1f#{window_active}#{pane_active}\x1f#{pane_current_path}\x1f#{@AI_TOOLS}\x1f#{@AI_TOOL}\x1f#{session_attached}\x1f#{@lazy_llm_dir}' 2>/dev/null) || return 0
+  [[ -z "$rows" ]] && return 0
 
-  while IFS= read -r session; do
-    # Only include lazy-llm-marked sessions (session-scoped @lazy_llm option)
-    local marker
-    marker=$(tmux show-option -v -t "$session" @lazy_llm 2>/dev/null) || true
-    [[ "$marker" != "1" ]] && continue
-
-    # Directory from first pane of first window
-    local dir
-    dir=$(tmux display-message -t "$session:" -p '#{pane_current_path}' 2>/dev/null) || dir="?"
-
-    # AI tools from the first window's @AI_TOOLS (or legacy @AI_TOOL)
-    local first_win tools
-    first_win=$(tmux list-windows -t "$session" -F '#{window_index}' 2>/dev/null | head -1)
-    tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOLS 2>/dev/null) || true
-    [[ -z "$tools" ]] && tools=$(tmux show-option -wv -t "$session:$first_win" @AI_TOOL 2>/dev/null) || true
-    [[ -z "$tools" ]] && tools="?"
-
-    # Workspace window count (exclude holding windows named _hold_*)
-    local win_count
-    win_count=$(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -cv '^_hold_' || echo 0)
-
-    # Attached marker
-    local attached
-    attached=$(tmux display-message -t "$session" -p '#{session_attached}' 2>/dev/null) || attached=0
-    if [[ "$attached" -gt 0 ]]; then
-      attached="*"
-    else
-      attached=""
+  # Per session, in tmux's own session order: DIR is the session's
+  # @lazy_llm_dir, falling back to the current window's active pane's path
+  # for sessions that predate it. Never the active pane's path when the
+  # option is set: an AI pane in its own worktree can be the active pane,
+  # and find_session_for_path would then bind the whole workspace to that
+  # pane's worktree (and lazy_llm_cleanup_worktree would kill it). TOOLS the first window's @AI_TOOLS (or legacy
+  # @AI_TOOL), WINS the window count minus holding windows (_hold_*).
+  local cur="" dir tools wins attached first_win seen_wins
+  local s mark win wname act path t_multi t_single att ws_dir
+  _lazy_llm_gather_emit() {
+    [[ -n "$cur" ]] || return 0
+    printf '%s\t%s\t%s\t%s\t%s\n' "$cur" "${dir:-?}" "${tools:-?}" "$wins" "$attached"
+  }
+  while IFS=$'\x1f' read -r s mark win wname act path t_multi t_single att ws_dir; do
+    [[ "$mark" == "1" ]] || continue
+    if [[ "$s" != "$cur" ]]; then
+      _lazy_llm_gather_emit
+      cur="$s"; dir=""; tools=""; wins=0; first_win="$win"; seen_wins=" "
+      attached=""; [[ "${att:-0}" -gt 0 ]] && attached="*"
     fi
-
-    printf '%s\t%s\t%s\t%s\t%s\n' "$session" "$dir" "$tools" "$win_count" "$attached"
-  done <<< "$sessions"
+    if [[ "$seen_wins" != *" $win "* ]]; then
+      seen_wins+="$win "
+      [[ "$wname" == _hold_* ]] || wins=$((wins + 1))
+    fi
+    [[ "$win" == "$first_win" && -z "$tools" ]] && tools="${t_multi:-$t_single}"
+    if [[ -n "$ws_dir" ]]; then
+      dir="$ws_dir"
+    elif [[ "$act" == "11" ]]; then
+      dir="$path"
+    fi
+  done <<< "$rows"
+  _lazy_llm_gather_emit
+  unset -f _lazy_llm_gather_emit
 }
 
 # Read the AI pane list for an ARBITRARY session:window, not just the current one.
@@ -765,15 +933,20 @@ lazy_llm_apply_ws_order() {
   local -a order_arr
   read -ra order_arr <<< "$order"
 
+  local -A line_of=()
+  local name rest
+  while IFS=$'\t' read -r name rest; do
+    [[ -n "$name" && -z "${line_of[$name]+set}" ]] && line_of[$name]="$name"$'\t'"$rest"
+  done <<< "$data"
+
   local out="" seen=" "
-  local o line
+  local o
   for o in "${order_arr[@]}"; do
-    line=$(printf '%s\n' "$data" | awk -F'\t' -v n="$o" '$1==n{print; exit}')
-    [[ -z "$line" ]] && continue
-    out+="$line"$'\n'
+    [[ -n "${line_of[$o]+set}" ]] || continue
+    [[ "$seen" == *" $o "* ]] && continue
+    out+="${line_of[$o]}"$'\n'
     seen+="$o "
   done
-  local name rest
   while IFS=$'\t' read -r name rest; do
     [[ -z "$name" ]] && continue
     [[ "$seen" == *" $name "* ]] && continue
@@ -970,7 +1143,7 @@ lazy_llm_validate_hold_win() {
   # Holding window is gone — recreate it
   local hold_win_name="_hold_${_WINDOW}"
   local target_dir
-  target_dir=$(tmux display-message -t "$_SESSION:$_WINDOW" -p '#{pane_current_path}')
+  target_dir=$(lazy_llm_workspace_dir "$_SESSION" "$_WINDOW")
   tmux new-window -d -t "$_SESSION" -n "$hold_win_name" -c "$target_dir"
   AI_HOLD_WIN=$(tmux display-message -t "$_SESSION:$hold_win_name" -p '#{window_id}')
   tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN "$AI_HOLD_WIN"
@@ -1106,4 +1279,619 @@ lazy_llm_clamp_label() {
   [[ "${#label}" -le "$max" ]] && { printf '%s' "$label"; return; }
   [[ "$max" -le 1 ]] && { printf '%s' "${label:0:$max}"; return; }
   printf '%s…' "${label:0:$((max - 1))}"
+}
+
+# Git segment for an AI pane's border (llm-pane-border): branch, short
+# commit, upstream, ahead/behind, dirty (tracked files only), and which
+# worktree the pane is in. Prints nothing outside a git repo.
+#   main tree        main* 1b3dafc origin ↑2↓1   (no upstream: "local")
+#   pane worktree    ⎇ claude-2→main* 1b3dafc ↑3↓1   (counts vs the base branch)
+#   task worktree    ⎇ feat-x feat/x 1b3dafc origin ↑1
+#   detached HEAD    (detached) 1b3dafc
+# GIT_OPTIONAL_LOCKS=0: a border refresh must never take index.lock while an
+# agent in that tree is committing.
+# Args: $1 dir  $2 text color  $3 dim color
+lazy_llm_git_segment() {
+  local dir="$1" c_text="$2" c_dim="$3"
+  local c_wt="#5fafff" c_ahead="#87d787" c_warn="#ffaf00"
+  local out top gitdir common line oid="" head="" upstream="" ab="" dirty=""
+  local ahead=0 behind=0 base="" seg=""
+  [[ -n "$dir" && -d "$dir" ]] || return 0
+  out=$(GIT_OPTIONAL_LOCKS=0 git -C "$dir" rev-parse --path-format=absolute \
+    --show-toplevel --git-dir --git-common-dir 2>/dev/null) || return 0
+  { read -r top; read -r gitdir; read -r common; } <<< "$out"
+  while IFS= read -r line; do
+    case "$line" in
+      "# branch.oid "*) oid="${line#\# branch.oid }" ;;
+      "# branch.head "*) head="${line#\# branch.head }" ;;
+      "# branch.upstream "*) upstream="${line#\# branch.upstream }" ;;
+      "# branch.ab "*) ab="${line#\# branch.ab }" ;;
+      "#"*) ;;
+      *) dirty="*" ;;
+    esac
+  done < <(GIT_OPTIONAL_LOCKS=0 git -C "$dir" status --porcelain=v2 --branch -uno 2>/dev/null)
+  [[ "$oid" == "(initial)" ]] && oid=""
+  oid="${oid:0:7}"
+
+  if [[ "$head" == "(detached)" || -z "$head" ]]; then
+    printf '#[fg=%s](detached) %s' "$c_dim" "$oid"
+    return 0
+  fi
+  if [[ "$gitdir" != "$common" ]]; then
+    base=$(GIT_OPTIONAL_LOCKS=0 git -C "$dir" config "branch.$head.lazyLlmBase" 2>/dev/null) || base=""
+  fi
+
+  local dirty_s=""
+  [[ -n "$dirty" ]] && dirty_s="#[fg=${c_warn}]*"
+  if [[ -n "$base" ]]; then
+    # Pane worktree: named by its branch's last part, counted against base.
+    local counts
+    counts=$(GIT_OPTIONAL_LOCKS=0 git -C "$dir" rev-list --left-right --count "$base...HEAD" 2>/dev/null) || counts="0 0"
+    read -r behind ahead <<< "$counts"
+    seg="#[fg=${c_wt}]⎇ $(lazy_llm_clamp_label "${head##*/}" 24)#[fg=${c_dim}]→#[fg=${c_text}]$(lazy_llm_clamp_label "$base" 24)${dirty_s}"
+    [[ -n "$oid" ]] && seg+=" #[fg=${c_dim}]${oid}"
+  else
+    if [[ "$gitdir" != "$common" ]]; then
+      seg="#[fg=${c_wt}]⎇ $(lazy_llm_clamp_label "${top##*/}" 24) "
+    fi
+    seg+="#[fg=${c_text}]$(lazy_llm_clamp_label "$head" 24)${dirty_s}"
+    [[ -n "$oid" ]] && seg+=" #[fg=${c_dim}]${oid}"
+    if [[ -n "$upstream" ]]; then
+      local remote="${upstream%%/*}" ubranch="${upstream#*/}"
+      [[ "$ubranch" == "$head" ]] && seg+=" #[fg=${c_dim}]${remote}" || seg+=" #[fg=${c_dim}]${upstream}"
+      if [[ "$ab" =~ ^\+([0-9]+)\ -([0-9]+)$ ]]; then
+        ahead="${BASH_REMATCH[1]}"; behind="${BASH_REMATCH[2]}"
+      fi
+    else
+      seg+=" #[fg=${c_dim}]local"
+    fi
+  fi
+  if [[ "$ahead" -gt 0 || "$behind" -gt 0 ]]; then
+    seg+=" "
+    [[ "$ahead" -gt 0 ]] && seg+="#[fg=${c_ahead}]↑${ahead}"
+    [[ "$behind" -gt 0 ]] && seg+="#[fg=${c_warn}]↓${behind}"
+  fi
+  printf '%s' "$seg"
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-pane model — which model an agent pane is running right now, for the
+# AI pane's border (llm-pane-border). Fed by the harness itself, never
+# scraped: for claude, llm-claude-hook (lazy-llm's Claude Code plugin) writes it on
+# SessionStart (payload's `model`), PostModelSwitch (`to_model` — fires on a
+# /model switch), and Stop (last response's model in the transcript, for
+# sessions whose SessionStart payload carried none). For jetski-cli,
+# llm-jetski-hook writes every payload's `modelName`. Other harnesses have no
+# such feed yet, so they simply have no model.
+#
+# ~/.cache/lazy-llm/model/<pane_id> holds "<pane_pid> <model id>" — same
+# pid guard as the unread markers, same reason (%N reuse after a restart).
+# ──────────────────────────────────────────────────────────────────────────
+_LAZY_LLM_MODEL_DIR="$HOME/.cache/lazy-llm/model"
+
+# Args: $1 pane_id  $2 model id (as the harness reports it). Always returns 0.
+lazy_llm_set_pane_model() {
+  local pane_id="${1:-}" model="${2:-}" pid
+  [[ -n "$pane_id" && -n "$model" ]] || return 0
+  pid=$(_lazy_llm_pane_pid "$pane_id") || return 0
+  [[ -n "$pid" ]] || return 0
+  mkdir -p "$_LAZY_LLM_MODEL_DIR" 2>/dev/null || return 0
+  printf '%s %s\n' "$pid" "$model" > "$_LAZY_LLM_MODEL_DIR/$pane_id" 2>/dev/null || true
+  return 0
+}
+
+# Stdout: the pane's model id exactly as the harness reported it, or nothing
+# if unknown. Always returns 0.
+lazy_llm_pane_model_raw() {
+  local pane_id="${1:-}" f saved="" model="" pid
+  f="$_LAZY_LLM_MODEL_DIR/$pane_id"
+  [[ -n "$pane_id" && -f "$f" ]] || return 0
+  read -r saved model < "$f" 2>/dev/null || true
+  pid=$(_lazy_llm_pane_pid "$pane_id") || pid=""
+  if [[ -z "$pid" || "$saved" != "$pid" ]]; then
+    rm -f "$f" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s' "$model"
+  return 0
+}
+
+# Stdout: the pane's model, shortened (lazy_llm_short_model), or nothing if
+# unknown. Always returns 0.
+lazy_llm_pane_model() {
+  lazy_llm_short_model "$(lazy_llm_pane_model_raw "${1:-}")"
+  return 0
+}
+
+# Shorten a model id for a narrow border:
+#   claude-sonnet-5            -> sonnet5
+#   claude-opus-5-5[1m]        -> opus5.5[1m]
+#   claude-haiku-4-5-20251001  -> haiku4.5
+# Anything not shaped like <family>-<version parts> passes through as-is
+# (minus a "claude-" prefix), so an unfamiliar id still shows up.
+lazy_llm_short_model() {
+  local m="${1:-}" suffix=""
+  [[ -n "$m" ]] || return 0
+  if [[ "$m" =~ ^(.*)(\[[^]]*\])$ ]]; then
+    m="${BASH_REMATCH[1]}"; suffix="${BASH_REMATCH[2]}"
+  fi
+  m="${m#claude-}"
+  [[ "$m" =~ ^(.*)-[0-9]{8}$ ]] && m="${BASH_REMATCH[1]}"
+  if [[ "$m" =~ ^([a-z]+)-([0-9]+(-[0-9]+)*)$ ]]; then
+    local ver="${BASH_REMATCH[2]}"
+    m="${BASH_REMATCH[1]}${ver//-/.}"
+  fi
+  printf '%s%s' "$m" "$suffix"
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-pane conversation id — which conversation an agent pane is on, so
+# `lazy-llm restore` can resume it. For claude, llm-claude-hook records the
+# session_id every hook payload carries (SessionStart also fires after /clear,
+# --resume and compaction, so this follows the current conversation). For
+# jetski-cli, llm-jetski-hook records every payload's conversationId.
+#
+# ~/.cache/lazy-llm/conv/<pane_id> holds "<pane_pid> <conversation id>" —
+# same pid guard as the model store, same reason (%N reuse after a restart).
+# ──────────────────────────────────────────────────────────────────────────
+_LAZY_LLM_CONV_DIR="$HOME/.cache/lazy-llm/conv"
+
+# Args: $1 pane_id  $2 conversation id
+# Returns 0 if the recorded id changed, 1 if it was already recorded (or
+# nothing could be recorded) — callers save the manifest only on a change.
+lazy_llm_set_pane_conv() {
+  local pane_id="${1:-}" conv="${2:-}" pid f saved="" old=""
+  [[ -n "$pane_id" && -n "$conv" ]] || return 1
+  pid=$(_lazy_llm_pane_pid "$pane_id") || return 1
+  [[ -n "$pid" ]] || return 1
+  f="$_LAZY_LLM_CONV_DIR/$pane_id"
+  [[ -f "$f" ]] && read -r saved old < "$f" 2>/dev/null
+  [[ "$saved" == "$pid" && "$old" == "$conv" ]] && return 1
+  mkdir -p "$_LAZY_LLM_CONV_DIR" 2>/dev/null || return 1
+  printf '%s %s\n' "$pid" "$conv" > "$f" 2>/dev/null || return 1
+  return 0
+}
+
+# Stdout: the pane's recorded conversation id, or nothing. Always returns 0.
+lazy_llm_pane_conv() {
+  local pane_id="${1:-}" f saved="" conv="" pid
+  f="$_LAZY_LLM_CONV_DIR/$pane_id"
+  [[ -n "$pane_id" && -f "$f" ]] || return 0
+  read -r saved conv < "$f" 2>/dev/null || true
+  pid=$(_lazy_llm_pane_pid "$pane_id") || pid=""
+  if [[ -z "$pid" || "$saved" != "$pid" ]]; then
+    rm -f "$f" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s' "$conv"
+  return 0
+}
+
+# Fallback for claude panes with no hook record (started before the hook
+# learned to record ids, or with lazy-llm's plugin disabled): Claude Code's
+# own registry, ~/.claude/sessions/<claude pid>.json, whose sessionId is the
+# conversation that process is on. Internal to Claude Code, so best effort:
+# the hook record always wins when there is one.
+# Stdout: the conversation id, or nothing. Always returns 0.
+_lazy_llm_claude_registry_conv() {
+  local pane_id="$1" pid c f
+  pid=$(_lazy_llm_pane_pid "$pane_id") || return 0
+  [[ -n "$pid" ]] || return 0
+  for c in $(pgrep -P "$pid" 2>/dev/null); do
+    f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$c.json"
+    [[ -f "$f" ]] || continue
+    jq -r --argjson pid "$c" 'select(.pid == $pid) | .sessionId // empty' "$f" 2>/dev/null
+    return 0
+  done
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tool adapters — the ONLY place that knows how each AI tool is launched.
+# Save/restore and the manifest treat a pane's conversation id and model as
+# opaque strings; supporting resume for another tool means adding a branch
+# here (and to lazy_llm_tool_conv, its capture side).
+# ──────────────────────────────────────────────────────────────────────────
+
+# The conversation an AI pane is on right now.
+# Args: $1 tool  $2 pane_id   Stdout: the id, or nothing. Always returns 0.
+lazy_llm_tool_conv() {
+  local tool="$1" pane_id="$2" conv
+  case "$tool" in
+    claude)
+      conv=$(lazy_llm_pane_conv "$pane_id")
+      [[ -n "$conv" ]] || conv=$(_lazy_llm_claude_registry_conv "$pane_id")
+      printf '%s' "$conv"
+      ;;
+    jetski|jetski-cli)
+      # Recorded by llm-jetski-hook from every payload's conversationId.
+      lazy_llm_pane_conv "$pane_id"
+      ;;
+  esac
+  return 0
+}
+
+# The command line typed into an AI pane's shell.
+# Args: $1 tool  $2 conversation id ("" for a fresh one)  $3 model ("" = default)
+lazy_llm_tool_launch_cmd() {
+  local tool="$1" conv="${2:-}" model="${3:-}"
+  case "$tool" in
+    claude)
+      if [[ -n "$conv" ]]; then
+        printf "claude --resume '%s'" "$conv"
+        [[ -n "$model" ]] && printf " --model '%s'" "$model"
+        printf '\n'
+      else
+        printf 'claude\n'
+      fi
+      ;;
+    jetski|jetski-cli)
+      # jetski-cli, not jetski: the wrapper in ~/.local/bin works from any
+      # shell, including tmux's non-interactive ones. No --model on resume:
+      # the hook's modelName is a display name (or "auto"), not always a value
+      # --model accepts, and the conversation keeps its own model anyway.
+      if [[ -n "$conv" ]]; then
+        printf "jetski-cli --conversation '%s'\n" "$conv"
+      else
+        printf 'jetski-cli\n'
+      fi
+      ;;
+    *)
+      printf '%s\n' "$tool"
+      ;;
+  esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Workspace build — shared by the lazy-llm launcher and `lazy-llm restore`.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Create a new, empty prompt backing file under <dir>/.lazy-llm/prompts.
+# Stdout: its path.
+lazy_llm_create_prompt_file() {
+  local dir="$1" prompt_file
+  mkdir -p "$dir/.lazy-llm/prompts"
+  prompt_file="$dir/.lazy-llm/prompts/prompt-$(date +%Y%m%d-%H%M%S).md"
+  touch "$prompt_file"
+  printf '%s\n' "$prompt_file"
+}
+
+# The prefix-table key that opens the dashboard: tmux option
+# @lazy_llm_dashboard_key, default S. Also read by llm-status's hint.
+lazy_llm_dashboard_key() {
+  local key
+  key=$(tmux show-option -gqv @lazy_llm_dashboard_key 2>/dev/null) || key=""
+  printf '%s' "${key:-S}"
+}
+
+# Server-global hooks and key bindings. Idempotent; called whenever a
+# workspace window is built, so a fresh server gets them with its first one.
+lazy_llm_register_tmux_integration() {
+  # Global hook: keep @AI_PANE_IDX pointing at the AI pane last given real
+  # focus, even after focus later moves to the editor/prompt pane — see
+  # llm-pane-focus-track's own header comment for why tmux's own
+  # #{pane_active} alone isn't enough here. Set globally (fires for every
+  # pane-focus change in every window) rather than per-window, since a
+  # per-window hook would need re-registering on every new lazy-llm
+  # workspace; the script itself no-ops instantly for any non-lazy-llm
+  # window (one cheap show-option call).
+  #
+  # after-select-pane, NOT pane-focus-in: the tmux manual documents
+  # pane-focus-in/pane-focus-out, but they don't actually exist as
+  # registerable hooks in tmux 3.7c (`tmux set-hook -g pane-focus-in ...`
+  # exits 0 and silently never fires — confirmed live; `show-hooks -g`'s
+  # own reference list doesn't include them, only client-focus-in/out,
+  # which are client-level, not per-pane). after-select-pane is the real,
+  # firing hook for "the active pane in a window changed" — confirmed live
+  # across mouse-click-equivalent and prefix-arrow-equivalent transitions.
+  # No -b (backgrounding run-shell): tried first, but produced a real
+  # non-deterministic race — sometimes the update lagged behind the very
+  # next select-pane and got missed. This script is a couple of cheap
+  # show-option/set-option calls; foreground is fast enough not to matter
+  # and removes the race entirely (also confirmed live, repeatedly).
+  tmux set-hook -g after-select-pane \
+    "run-shell '$HOME/.local/bin/llm-pane-focus-track #{pane_id} #{session_name} #{window_index}'"
+
+  # A pane can also come into view with no select-pane at all: switching
+  # window or session, or the terminal window regaining focus. Each clears
+  # the now-visible pane's unread mark if it's really in front of you (see
+  # llm-pane-focus-track --if-viewed). Backgrounded: unlike the @AI_PANE_IDX
+  # update above there's no ordering to protect, and a window switch
+  # shouldn't wait on it.
+  local _viewed_hook
+  for _viewed_hook in session-window-changed client-session-changed client-focus-in; do
+    tmux set-hook -g "$_viewed_hook" \
+      "run-shell -b '$HOME/.local/bin/llm-pane-focus-track --if-viewed #{pane_id}'"
+  done
+
+  # Register keybindings — scoped to lazy-llm windows via if-shell check.
+  # In non-lazy-llm windows, C-n/C-p fall back to next/previous-window;
+  # other bindings are no-ops.
+  tmux bind-key -N "Next AI pane (next window elsewhere)" -T prefix C-n if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell '$HOME/.local/bin/llm-cycle next'" \
+    "next-window"
+  tmux bind-key -N "Previous AI pane (previous window elsewhere)" -T prefix C-p if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell '$HOME/.local/bin/llm-cycle prev'" \
+    "previous-window"
+  tmux bind-key -N "Remove current AI pane" -T prefix C-x if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "confirm-before -p 'Remove current AI pane? (y/n)' \"run-shell '$HOME/.local/bin/llm-remove current'\""
+  tmux bind-key -N "Add AI pane" -T prefix A if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "display-menu -T 'Add AI Pane' \
+      claude     '' \"run-shell '$HOME/.local/bin/llm-add -t claude'\" \
+      jetski-cli '' \"run-shell '$HOME/.local/bin/llm-add -t jetski-cli'\" \
+      gemini     '' \"run-shell '$HOME/.local/bin/llm-add -t gemini'\" \
+      opencode   '' \"run-shell '$HOME/.local/bin/llm-add -t opencode'\" \
+      codex      '' \"run-shell '$HOME/.local/bin/llm-add -t codex'\" \
+      grok       '' \"run-shell '$HOME/.local/bin/llm-add -t grok'\" \
+      aider      '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
+  # Unguarded, unlike the pane keys: the dashboard is useful from any window,
+  # and from a fresh tmux with no workspace at all (its Saved tab restores
+  # them; see llm-tmux-init for registering this at server start).
+  # The key is @lazy_llm_dashboard_key (default S). Set it in tmux.conf
+  # before llm-tmux-init runs; re-binding it there instead wouldn't stick,
+  # since this runs again every time a workspace window is built. Taking a
+  # key tmux already uses (e.g. s, choose-tree) is fine — move that command
+  # to another key in the same tmux.conf.
+  local dash_key
+  dash_key=$(lazy_llm_dashboard_key)
+  tmux bind-key -N "lazy-llm dashboard" -T prefix "$dash_key" \
+    run-shell "$HOME/.local/bin/llm-dashboard-open"
+  tmux bind-key -N "Save lazy-llm workspaces" -T prefix C-s if-shell \
+    "tmux show-option -wqv @AI_PANES" \
+    "run-shell -b '$HOME/.local/bin/llm-persist save --notify'"
+
+  # Re-save on a rename done outside the dashboard (Prefix+$). At its own
+  # array index so a user's own session-renamed hook isn't replaced. No
+  # session-closed hook, on purpose: at shutdown sessions close one by one
+  # while the server is still up, which a save would read as "closed on
+  # purpose" (see llm-persist's retention rule).
+  tmux set-hook -g 'session-renamed[40]' \
+    "run-shell -b '$HOME/.local/bin/llm-persist save --async'"
+  # Prefix+L retired — its surface (Panes tab) lives inside llm-dashboard now,
+  # reachable from any tab via the '3' key.
+}
+
+# Turn an existing (single-pane) window into a lazy-llm workspace window:
+# AI pane (top-left) | editor (top-right) | prompt buffer (bottom).
+# Args: $1 session  $2 window index  $3 dir  $4 tool  $5 AI pane launch command
+#       $6 prompt file to open when there's no prompt snapshot ("" = new file)
+#       $7 "restore" to also restore the editor's snapshot (workspace restore)
+#
+# nvim snapshots (nvim-session-plugin): one rolling file per nvim in
+# <dir>/.lazy-llm/sessions/, keyed by this window's position among the
+# session's lazy-llm windows, so a fresh launch in the same dir finds the
+# prompt pane's last state. Paths already set on the window (restore sets
+# the saved ones) are kept. The prompt pane restores its snapshot whenever
+# one exists; the editor only on workspace restore.
+lazy_llm_build_window() {
+  local session="$1" win_idx="$2" target_dir="$3" ai_tool="$4" launch_cmd="$5"
+  local prompt_file="${6:-}" restore_editor="${7:-}"
+  local lazy_dir="$target_dir/.lazy-llm"
+  mkdir -p "$lazy_dir/prompts" "$lazy_dir/swap" "$lazy_dir/undo" "$lazy_dir/sessions"
+
+  local editor_session prompt_session
+  editor_session=$(tmux show-option -wqv -t "$session:$win_idx" @lazy_llm_editor_session)
+  prompt_session=$(tmux show-option -wqv -t "$session:$win_idx" @lazy_llm_prompt_session)
+  if [[ -z "$editor_session" || -z "$prompt_session" ]]; then
+    # Counted before this window gets @AI_PANES.
+    local nth suffix=""
+    nth=$(tmux list-windows -t "$session" -F '#{@AI_PANES}' | grep -c . || true)
+    [[ "$nth" -gt 0 ]] && suffix="-$((nth + 1))"
+    editor_session="$lazy_dir/sessions/editor${suffix}.vim"
+    prompt_session="$lazy_dir/sessions/prompt${suffix}.vim"
+  fi
+
+  # Get tmux base indexes
+  local pane_base_index
+  pane_base_index=$(tmux show-options -gw | grep pane-base-index | awk '{print $2}')
+
+  # Define pane variables
+  local ai_pane=$pane_base_index
+  local neovim_pane=$((pane_base_index + 1))
+  local prompt_pane=$((pane_base_index + 2))
+
+  # Split horizontally first (left/right)
+  # Use -l percentage syntax for tmux 3.4+ compatibility (replaces -p)
+  tmux split-window -h -l 50% -t "$session:$win_idx" -c "$target_dir"
+
+  # Split vertically with -f flag to create full-width bottom pane
+  tmux split-window -v -f -l 25% -t "$session:$win_idx.$ai_pane" -c "$target_dir"
+
+  # Clear CLAUDECODE env var in the AI pane to prevent nested session detection
+  # (when lazy-llm is invoked from within a Claude Code session)
+  tmux send-keys -t "$session:$win_idx.$ai_pane" "unset CLAUDECODE" C-m
+  tmux send-keys -t "$session:$win_idx.$ai_pane" "$launch_cmd" C-m
+
+  # Configure Neovim pane (top-right)
+  local editor_env="LAZY_LLM_NVIM_ROLE=editor LAZY_LLM_NVIM_SESSION='${editor_session}'"
+  [[ "$restore_editor" == "restore" && -f "$editor_session" ]] && editor_env+=" LAZY_LLM_NVIM_RESTORE=1"
+  tmux send-keys -t "$session:$win_idx.$neovim_pane" "${editor_env} nvim" C-m
+
+  # Configure Prompt Buffer pane (bottom) with swap and undo persistence.
+  # Explicitly cd to target directory to ensure shell and nvim are in sync
+  local prompt_env="LAZY_LLM_NVIM_ROLE=prompt LAZY_LLM_NVIM_SESSION='${prompt_session}'"
+  local prompt_arg=""
+  if [[ -f "$prompt_session" ]]; then
+    prompt_env+=" LAZY_LLM_NVIM_RESTORE=1"
+    prompt_file=""
+  else
+    [[ -n "$prompt_file" && -f "$prompt_file" ]] || prompt_file=$(lazy_llm_create_prompt_file "$target_dir")
+    prompt_arg=" '${prompt_file}'"
+  fi
+  tmux send-keys -t "$session:$win_idx.$prompt_pane" "cd '${target_dir}' && ${prompt_env} nvim --cmd 'set directory=${lazy_dir}/swap// | set undodir=${lazy_dir}/undo// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert'${prompt_arg}" C-m
+
+  # Set pane titles if supported
+  tmux select-pane -t "$session:$win_idx.$ai_pane" -T "AI: $ai_tool"
+  tmux select-pane -t "$session:$win_idx.$neovim_pane" -T "Editor"
+  tmux select-pane -t "$session:$win_idx.$prompt_pane" -T "Prompt"
+
+  # Capture stable pane IDs (survive swap-pane, unlike indices)
+  local ai_pane_id prompt_pane_id
+  ai_pane_id=$(tmux display-message -t "$session:$win_idx.$ai_pane" -p '#{pane_id}')
+  prompt_pane_id=$(tmux display-message -t "$session:$win_idx.$prompt_pane" -p '#{pane_id}')
+
+  # Set pane ID options (preferred by llm-send/llm-pull/llm-append)
+  tmux set-option -w -t "$session:$win_idx" @AI_PANE_ID "$ai_pane_id"
+  tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE_ID "$prompt_pane_id"
+
+  # Initialize multi-pane state (single-element lists)
+  tmux set-option -w -t "$session:$win_idx" @AI_PANES "$ai_pane_id"
+  tmux set-option -w -t "$session:$win_idx" @AI_TOOLS "$ai_tool"
+  tmux set-option -w -t "$session:$win_idx" @AI_PANE_IDX "0"
+
+  # nvim snapshot paths and the prompt file this window started on
+  tmux set-option -w -t "$session:$win_idx" @lazy_llm_editor_session "$editor_session"
+  tmux set-option -w -t "$session:$win_idx" @lazy_llm_prompt_session "$prompt_session"
+  tmux set-option -w -t "$session:$win_idx" @lazy_llm_prompt_file "$prompt_file"
+
+  # Keep legacy index-based options for backward compatibility
+  tmux set-option -w -t "$session:$win_idx" @AI_PANE "$session:$win_idx.$ai_pane"
+  tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE "$session:$win_idx.$prompt_pane"
+  tmux set-option -w -t "$session:$win_idx" @AI_TOOL "$ai_tool"
+
+  # Per-pane status on each pane's own border — window-scoped (-w), so this
+  # only affects lazy-llm windows, nothing else in the user's tmux setup.
+  # The AI pane's border shows tool+glyph+workspace-summary (llm-pane-border
+  # — deliberately separate from llm-status: a pane border is much narrower
+  # than the full status-right segment). The prompt/editor panes get a
+  # plain label. Every branch sets an EXPLICIT fg color (#e4e4e4, this
+  # theme's default text color) — a pane border otherwise inherits
+  # pane-border-style/pane-active-border-style, which dims un-styled text
+  # for an unfocused pane to the point of being barely readable (confirmed
+  # live, user-reported).
+  tmux set-option -w -t "$session:$win_idx" pane-border-status top
+  tmux set-option -w -t "$session:$win_idx" pane-border-format \
+    "#{?#{==:#{pane_id},#{@AI_PANE_ID}},#($HOME/.local/bin/llm-pane-border #{pane_id} #{@AI_TOOL}),#{?#{==:#{pane_id},#{@PROMPT_PANE_ID}},#[fg=#e4e4e4] prompt #[default],#[fg=#e4e4e4] #{pane_current_command} #[default]}}"
+
+  # Mark session as lazy-llm managed and enable mouse. Identity and dir are
+  # set once, by the session's first lazy-llm window (restore presets them).
+  tmux set-option -t "$session" @lazy_llm 1
+  tmux set-option -t "$session" mouse on
+  [[ -n "$(tmux show-option -qv -t "$session" @lazy_llm_ws_id)" ]] \
+    || tmux set-option -t "$session" @lazy_llm_ws_id "$(date +%Y%m%d%H%M%S)-$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
+  [[ -n "$(tmux show-option -qv -t "$session" @lazy_llm_dir)" ]] \
+    || tmux set-option -t "$session" @lazy_llm_dir "$target_dir"
+
+  lazy_llm_register_tmux_integration
+
+  # Set initial focus to prompt buffer pane
+  tmux select-pane -t "$session:$win_idx.$prompt_pane"
+
+  lazy_llm_save_async
+}
+
+# Add an AI pane to <session:window>'s pane list, parked in the window's
+# hidden holding window (created on first use). Doesn't cycle it into view.
+# Args: $1 session  $2 window index  $3 dir  $4 tool  $5 launch command
+# Stdout: the new pane's id
+# Returns 1, changing nothing, when tmux can't create the pane. Callers must
+# check: an empty pane id as a tmux target means the CURRENT pane, so using
+# it would type the launch command into whatever pane has focus.
+lazy_llm_add_ai_pane() {
+  local session="$1" window="$2" target_dir="$3" tool="$4" launch_cmd="$5"
+  local hold_win panes tools names new_pane_id
+  hold_win=$(tmux show-option -wqv -t "$session:$window" @AI_HOLD_WIN)
+  if [[ -n "$hold_win" ]] && ! tmux display-message -t "$hold_win" -p '#{window_id}' &>/dev/null; then
+    hold_win=""
+  fi
+  if [[ -z "$hold_win" ]]; then
+    hold_win=$(tmux new-window -d -t "$session" -n "_hold_${window}" -c "$target_dir" -P -F '#{window_id}')
+    tmux set-option -w -t "$session:$window" @AI_HOLD_WIN "$hold_win"
+    tmux set-option -w -t "$hold_win" @lazy_llm_hold "1"
+  fi
+
+  # Tile the hold window before splitting (and after): split-window halves
+  # the target pane, and the target is always the newest one, so without
+  # re-tiling each held pane is half the last and, a handful of panes in,
+  # tmux has no room left ("no space for new pane"). Held panes' sizes don't
+  # matter otherwise: a pane takes its slot's size when swapped into view.
+  tmux select-layout -t "$hold_win" tiled >/dev/null 2>&1 || true
+  # -d: don't steal focus; -P -F prints the new pane's id
+  new_pane_id=$(tmux split-window -d -t "$hold_win" -c "$target_dir" -P -F '#{pane_id}' 2>/dev/null) || new_pane_id=""
+  if [[ -z "$new_pane_id" ]]; then
+    echo "Error: tmux couldn't create a pane in the hold window $hold_win" >&2
+    return 1
+  fi
+  tmux select-layout -t "$hold_win" tiled >/dev/null 2>&1 || true
+  tmux send-keys -t "$new_pane_id" "$launch_cmd" C-m
+  # select-pane -T also makes it the hold window's active pane; that window
+  # is never displayed, so nothing visible changes.
+  tmux select-pane -t "$new_pane_id" -T "AI: $tool"
+
+  panes=$(tmux show-option -wqv -t "$session:$window" @AI_PANES)
+  tools=$(tmux show-option -wqv -t "$session:$window" @AI_TOOLS)
+  names=$(tmux show-option -wqv -t "$session:$window" @AI_PANE_NAMES)
+  tmux set-option -w -t "$session:$window" @AI_PANES "$panes $new_pane_id"
+  tmux set-option -w -t "$session:$window" @AI_TOOLS "$tools $tool"
+  # @AI_PANE_NAMES is parallel to @AI_PANES by position ("_" = no override):
+  # pad it to the old pane count before appending the new pane's slot.
+  if [[ -n "$names" ]]; then
+    local -a pane_arr name_arr
+    read -ra pane_arr <<< "$panes"
+    read -ra name_arr <<< "$names"
+    while [[ ${#name_arr[@]} -lt ${#pane_arr[@]} ]]; do name_arr+=("_"); done
+    tmux set-option -w -t "$session:$window" @AI_PANE_NAMES "${name_arr[*]:0:${#pane_arr[@]}} _"
+  fi
+  printf '%s\n' "$new_pane_id"
+}
+
+# Launch command for an AI pane isolated in a pane worktree: the tool's
+# command with the env that tells it (and its hooks, and llm-wt) where it is.
+# A prefix rather than `split-window -e`, so the same string serves pane 0 of
+# a restored window, which is created by the window build, not a split.
+# Args: $1 launch command  $2 base branch  $3 main directory
+# Stdout: the prefixed command
+lazy_llm_wt_launch_cmd() {
+  printf 'LAZY_LLM_WORKTREE=1 LAZY_LLM_PRIMARY_DIR=%q LAZY_LLM_BASE_BRANCH=%q %s\n' "$3" "$2" "$1"
+}
+
+# Run a command, killing it after $1 seconds (macOS has no `timeout`).
+# Returns the command's status, or 124 on timeout.
+lazy_llm_with_timeout() {
+  local secs="$1" pid ticks=0
+  shift
+  "$@" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( ticks >= secs * 10 )); then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  wait "$pid"
+}
+
+# Before a session is killed: move every client attached to it onto the most
+# recently used other session, so closing (or killing) the workspace you're
+# in doesn't drop you out of tmux — tmux's default detach-on-destroy would.
+# With no other session there's nowhere to go, and tmux detaches as usual.
+# (No head/early-exit awk in the pipeline: callers run under pipefail.)
+# Always returns 0.
+lazy_llm_move_clients_off() {
+  local target="$1" other client
+  # session_last_attached is empty for a never-attached session: default 0.
+  other=$(tmux list-sessions -F '#{?session_last_attached,#{session_last_attached},0}	#{session_name}' 2>/dev/null \
+    | awk -F'\t' -v t="$target" '$2 != t && (n == "" || $1 + 0 > m + 0) {m = $1; n = $2} END {print n}') || other=""
+  [[ -n "$other" ]] || return 0
+  while IFS= read -r client; do
+    [[ -n "$client" ]] && tmux switch-client -c "$client" -t "=$other" 2>/dev/null
+  done < <(tmux list-clients -t "=$target" -F '#{client_name}' 2>/dev/null)
+  return 0
+}
+
+# Fire-and-forget manifest save (`llm-persist save --async`). Every fd is
+# redirected: the dashboard calls this from fzf transform() subprocesses, and
+# fzf reads a transform's stdout until EOF, so a background child holding it
+# open would stall the UI. Always returns 0.
+lazy_llm_save_async() {
+  [[ -x "$HOME/.local/bin/llm-persist" ]] || return 0
+  ( "$HOME/.local/bin/llm-persist" save --async </dev/null >/dev/null 2>&1 & )
+  return 0
 }

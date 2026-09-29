@@ -67,7 +67,7 @@ fi
 MARKER_CONTEXT=$(echo "$AI_OUTPUT" | grep -A 1 -B 1 "### PROMPT")
 
 # The PROMPT marker should be on its own line (not in middle of text)
-if echo "$AI_OUTPUT" | grep -E "^### PROMPT [0-9-:]+$" > /dev/null; then
+if echo "$AI_OUTPUT" | grep -E "^### PROMPT [0-9-]+ [0-9:]+$" > /dev/null; then
     assert_success "true" "PROMPT marker is on its own line"
 else
     assert_fails "true" "PROMPT marker should be on its own line"

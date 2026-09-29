@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # llm-add - Add a new AI pane to the lazy-llm workspace
-# Usage: llm-add [-t tool_name]
+# Usage: llm-add [-t tool_name] [-i [-n name] | -w worktree_path]
 #
 # Creates a new AI pane in a hidden holding window and swaps it into view.
 # The holding window stores inactive AI panes for swap-pane cycling.
+# -i runs the pane in a new worktree of its own (llm-wt create), named -n
+# or <repo>-wt-<n>; that name is also the pane's label. -w adds the pane to
+# an existing pane worktree. Without either, the pane shares the
+# workspace's directory, as always.
 
 set -euo pipefail
 
 # Default AI tool
 AI_TOOL="claude"
+ISOLATE=false
+JOIN_WT=""
+WT_NAME=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -17,12 +24,29 @@ while [[ $# -gt 0 ]]; do
       AI_TOOL="$2"
       shift 2
       ;;
+    -i|--isolate)
+      ISOLATE=true
+      shift
+      ;;
+    -w|--worktree)
+      JOIN_WT="$2"
+      shift 2
+      ;;
+    -n|--name)
+      WT_NAME="$2"
+      shift 2
+      ;;
     -h|--help)
-      echo "Usage: llm-add [-t tool_name]"
+      echo "Usage: llm-add [-t tool_name] [-i [-n name] | -w worktree_path]"
       echo ""
       echo "Options:"
-      echo "  -t, --tool    AI tool to launch (default: claude)"
-      echo "                Supported: claude, jetski-cli, gemini, opencode, codex, grok, aider"
+      echo "  -t, --tool      AI tool to launch (default: claude)"
+      echo "                  Supported: claude, jetski-cli, gemini, opencode, codex,"
+      echo "                  grok, aider"
+      echo "  -i, --isolate   Run the pane in a new git worktree of its own (see llm-wt)"
+      echo "  -n, --name      With -i: the worktree's name, for its directory, its branch"
+      echo "                  (lazy/<name>) and the pane's label (default <repo>-wt-<n>)"
+      echo "  -w, --worktree  Add the pane to an existing pane worktree"
       exit 0
       ;;
     *)
@@ -32,6 +56,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if $ISOLATE && [[ -n "$JOIN_WT" ]]; then
+  echo "Error: --isolate and --worktree are mutually exclusive" >&2
+  exit 1
+fi
+if [[ -n "$WT_NAME" ]] && ! $ISOLATE; then
+  echo "Error: --name goes with --isolate" >&2
+  exit 1
+fi
+
 # Source shared library for pane resolution
 source "$(dirname "$0")/lazy-llm-lib.sh"
 
@@ -40,11 +73,12 @@ lazy_llm_resolve_pane || { echo "Error: llm-add must be run inside a tmux sessio
 original_pane="$_CURRENT_PANE"
 lazy_llm_resolve_session_window || { echo "Error: Could not determine session/window" >&2; exit 1; }
 
-# Get current working directory from the workspace window
-target_dir=$(tmux display-message -t "$_SESSION:$_WINDOW" -p '#{pane_current_path}')
+# The workspace's directory (not the active pane's cwd, which may be an
+# isolated pane's worktree)
+target_dir=$(lazy_llm_workspace_dir "$_SESSION" "$_WINDOW")
 
 # Save user's chosen tool before reading state (lazy_llm_read_multi_state sets AI_TOOL)
-NEW_AI_TOOL="$AI_TOOL"
+NEW_AI_TOOL=$(lazy_llm_normalize_tool "$AI_TOOL")
 
 # Read current multi-pane state
 lazy_llm_read_multi_state
@@ -54,34 +88,46 @@ if [ -z "$AI_PANES" ]; then
   exit 1
 fi
 
-# Validate holding window (recreates if missing)
-lazy_llm_validate_hold_win
-
-# Create holding window if none exists yet
-if [ -z "$AI_HOLD_WIN" ]; then
-  hold_win_name="_hold_${_WINDOW}"
-  tmux new-window -d -t "$_SESSION" -n "$hold_win_name" -c "$target_dir"
-  AI_HOLD_WIN=$(tmux display-message -t "$_SESSION:$hold_win_name" -p '#{window_id}')
-  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_HOLD_WIN "$AI_HOLD_WIN"
-  tmux set-option -w -t "$AI_HOLD_WIN" @lazy_llm_hold "1"
+launch_cmd=$(lazy_llm_tool_launch_cmd "$NEW_AI_TOOL")
+pane_dir="$target_dir"
+wt=""
+if $ISOLATE || [[ -n "$JOIN_WT" ]]; then
+  llm_wt="$(dirname "$0")/llm-wt"
+  if $ISOLATE; then
+    wt=$("$llm_wt" create "$target_dir" ${WT_NAME:+"$WT_NAME"}) || exit 1
+  else
+    wt="$JOIN_WT"
+  fi
+  wt_info=$("$llm_wt" info "$wt") || { echo "Error: $wt is not a lazy-llm pane worktree" >&2; exit 1; }
+  wt=$(awk -F'\t' '$1 == "worktree" {print $2}' <<< "$wt_info")
+  wt_base=$(awk -F'\t' '$1 == "base" {print $2}' <<< "$wt_info")
+  wt_primary=$(awk -F'\t' '$1 == "primary" {print $2}' <<< "$wt_info")
+  # A workspace opened in a subdirectory of the repo starts its isolated
+  # panes in the same subdirectory of the worktree.
+  prefix=$(git -C "$target_dir" rev-parse --show-prefix 2>/dev/null) || prefix=""
+  pane_dir="$wt/$prefix"
+  [[ -d "$pane_dir" ]] || pane_dir="$wt"
+  launch_cmd=$(lazy_llm_wt_launch_cmd "$launch_cmd" "$wt_base" "$wt_primary")
 fi
 
-# Create new pane in the holding window without stealing focus (-d)
-# -P -F prints the new pane's ID directly
-new_pane_id=$(tmux split-window -d -t "$AI_HOLD_WIN" -c "$target_dir" -P -F '#{pane_id}')
-
-# Launch AI tool in the new pane
-tmux send-keys -t "$new_pane_id" "$NEW_AI_TOOL" C-m
-
-# Set pane title (select-pane -T also selects, so restore focus after)
-tmux select-pane -t "$new_pane_id" -T "AI: $NEW_AI_TOOL"
+# Create the pane in the (hidden) holding window and append it to the lists
+new_pane_id=$(lazy_llm_add_ai_pane "$_SESSION" "$_WINDOW" "$pane_dir" "$NEW_AI_TOOL" "$launch_cmd") \
+  || { echo "Error: could not add the pane" >&2; exit 1; }
+# Pane-scoped, so it follows the pane through swaps in and out of the hold
+# window. The border, the dashboard, llm-remove and llm-persist read it.
+[[ -n "$wt" ]] && tmux set-option -p -t "$new_pane_id" @lazy_llm_wt "$wt"
+# A new worktree's pane is labelled with the worktree's name (its slot in
+# @AI_PANE_NAMES, which lazy_llm_add_ai_pane just appended or padded).
+if $ISOLATE; then
+  read -ra label_panes <<< "$(tmux show-option -wqv -t "$_SESSION:$_WINDOW" @AI_PANES)"
+  read -ra label_names <<< "$(tmux show-option -wqv -t "$_SESSION:$_WINDOW" @AI_PANE_NAMES)"
+  while [[ ${#label_names[@]} -lt ${#label_panes[@]} ]]; do label_names+=("_"); done
+  label_names[${#label_panes[@]} - 1]="${wt##*/}"
+  tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANE_NAMES "${label_names[*]:0:${#label_panes[@]}}"
+fi
+# select-pane -T inside lazy_llm_add_ai_pane selects the new pane; restore focus
 tmux select-pane -t "$original_pane"
-
-# Append to pane and tool lists
 AI_PANES="$AI_PANES $new_pane_id"
-AI_TOOLS="$AI_TOOLS $NEW_AI_TOOL"
-tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_PANES "$AI_PANES"
-tmux set-option -w -t "$_SESSION:$_WINDOW" @AI_TOOLS "$AI_TOOLS"
 
 # Count total panes
 read -ra pane_arr <<< "$AI_PANES"
@@ -91,4 +137,5 @@ total=${#pane_arr[@]}
 new_idx=$((total - 1))
 "$HOME/.local/bin/llm-cycle" "$new_idx"
 
-echo "Added AI pane: $NEW_AI_TOOL ($new_pane_id) [$total total]"
+lazy_llm_save_async
+echo "Added AI pane: $NEW_AI_TOOL ($new_pane_id) [$total total]${wt:+ in worktree $wt}"

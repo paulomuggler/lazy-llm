@@ -35,19 +35,6 @@ local function is_prompt_pane()
 	return prompt_pane ~= "" and tmux_pane == prompt_pane
 end
 
--- Helper: create a new prompt backing file (same convention as
--- lazy-llm-bin's create_prompt_file()) and open it in the current window.
-local function open_new_prompt_file()
-	local prompts_dir = vim.fn.getcwd() .. "/.lazy-llm/prompts"
-	vim.fn.mkdir(prompts_dir, "p")
-
-	local path = prompts_dir .. "/prompt-" .. os.date("%Y%m%d-%H%M%S") .. ".md"
-	if vim.fn.filereadable(path) == 0 then
-		vim.fn.writefile({}, path)
-	end
-
-	vim.cmd("edit " .. vim.fn.fnameescape(path))
-end
 
 -- Helper function to get tmux pane_base_index
 local function get_pane_base_index()
@@ -57,11 +44,25 @@ local function get_pane_base_index()
 	return tonumber(result) or 0
 end
 
+-- Per-pane worktree isolation (lazy_llm_worktree.lua, shipped alongside):
+-- worktree buffers are marked for the winbar, and references from them carry
+-- the repo-relative path the isolated agent sees.
+local wt_ok, lazy_llm_wt = pcall(require, "lazy_llm_worktree")
+if wt_ok then
+	vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
+		group = vim.api.nvim_create_augroup("lazy_llm_worktree", { clear = true }),
+		callback = function(ev)
+			lazy_llm_wt.mark(ev.buf)
+		end,
+	})
+end
+
 -- Helper function for code reference insertion
 -- raw_mode: if true, insert inline; if false, wrap with newlines
 local function add_code_reference(raw_mode)
-	-- Get file path (relative to git root or cwd)
-	local filepath = vim.fn.expand("%:.")
+	-- File path relative to cwd; a file in a pane worktree is given as its
+	-- main copy's path, which resolves to the worktree copy from the agent's cwd
+	local filepath = wt_ok and lazy_llm_wt.reference_path(0) or vim.fn.expand("%:.")
 
 	-- Get line number(s)
 	local mode = vim.fn.mode()
@@ -282,10 +283,17 @@ return {
 			{
 				"<leader>llms",
 				function()
+					-- The selected lines, read while still in visual mode: a Lua
+					-- mapping runs before visual mode ends, so the '< and '> marks
+					-- would still be the PREVIOUS selection (and this used to run
+					-- `<,'>write!`, a malformed range, so it never sent anything).
+					local first, last = vim.fn.line("v"), vim.fn.line(".")
+					if first > last then
+						first, last = last, first
+					end
 					local tmp = vim.fn.tempname() .. ".md"
-					vim.cmd([[
-					<,'>write!
-					]] .. tmp)
+					vim.fn.writefile(vim.api.nvim_buf_get_lines(0, first - 1, last, false), tmp)
+					vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
 					vim.fn.jobstart({
 						"bash",
 						"-lc",
@@ -417,6 +425,16 @@ return {
 				end,
 				mode = { "n", "v" },
 				desc = "LLM: Add Code Reference (wrapped/newlines)",
+			},
+			{
+				"<leader>llmw",
+				function()
+					if wt_ok then
+						lazy_llm_wt.toggle()
+					end
+				end,
+				mode = "n",
+				desc = "LLM: Toggle file ⇄ visible AI pane's worktree copy",
 			},
 			{
 				"<leader>llmp",
@@ -716,7 +734,8 @@ return {
 					vim.schedule(function()
 						vim.keymap.set("n", "<leader>fn", function()
 							if is_prompt_pane() then
-								open_new_prompt_file()
+								-- Shared with session restore (nvim-session-plugin).
+								require("lazy_llm.session").open_new_prompt_file()
 							else
 								vim.cmd("enew")
 							end

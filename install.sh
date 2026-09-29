@@ -15,7 +15,7 @@ echo -e "${GREEN}Starting llm-dev-session installation...${NC}"
 # --- 1. Dependency & Environment Checks ---
 echo "--> Checking dependencies and environment..."
 
-DEPS=("stow" "git" "nvim" "tmux")
+DEPS=("stow" "git" "nvim" "tmux" "jq")
 
 for dep in "${DEPS[@]}"; do
   if ! command -v "$dep" &>/dev/null; then
@@ -41,7 +41,7 @@ echo "    Checks passed."
 # --- 2. Conflict Resolution ---
 echo "--> Checking for conflicting files..."
 
-STOW_PACKAGES=("llm-send-bin" "lazy-llm-bin" "llm-add-bin" "llm-cycle-bin" "llm-remove-bin" "llm-status-bin" "nvim-git-plugin" "nvim-llm-send-plugin" "nvim-dropbar-plugin" "nvim-note-plugin" "nvim-glow-plugin")
+STOW_PACKAGES=("llm-send-bin" "lazy-llm-bin" "llm-add-bin" "llm-cycle-bin" "llm-remove-bin" "llm-status-bin" "llm-wt-bin" "nvim-git-plugin" "nvim-llm-send-plugin" "nvim-dropbar-plugin" "nvim-note-plugin" "nvim-glow-plugin" "nvim-session-plugin")
 CONFLICT_FOUND=false
 for package in "${STOW_PACKAGES[@]}"; do
   # Find every file within the package directory
@@ -50,8 +50,10 @@ for package in "${STOW_PACKAGES[@]}"; do
     target_file="$HOME/$(echo "$file_to_stow" | sed -e "s#^$package/##")"
 
     if [ -e "$target_file" ]; then
-      # Skip symlinks - stow will handle them with --restow
-      if [ -L "$target_file" ]; then
+      # Skip symlinks - stow will handle them with --restow. That includes a
+      # file reached through a symlinked (stow-folded) directory, which
+      # resolves to this very package file.
+      if [ -L "$target_file" ] || [ "$(realpath "$target_file")" = "$(realpath "$file_to_stow")" ]; then
         continue
       fi
 
@@ -94,7 +96,67 @@ for package in "${STOW_PACKAGES[@]}"; do
 done
 echo "    Symlinks created."
 
-# --- 5. Final Instructions ---
+# --- 4. Claude Code plugin ---
+# Registers this repo as a Claude Code marketplace and installs its plugin
+# (claude-plugin/), whose hooks feed pane status (waiting / unread / idle) and
+# the model shown on the AI pane border. Optional: without it, Claude panes
+# fall back to screen-scraped status and show no model.
+#
+# The marketplace source is this checkout's GitHub remote when it has one, not
+# its local path: Claude Code records the source in ~/.claude/settings.json,
+# which is often a dotfiles-managed file shared across machines, and a
+# home-directory path baked in there breaks on the next machine. The plugin
+# itself is only a shim over the stowed llm-claude-hook, so pulling it from
+# GitHub instead of the local checkout costs nothing in freshness.
+echo "--> Setting up the Claude Code plugin..."
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MARKETPLACE_SOURCE="$REPO_DIR"
+origin_url=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)
+if [[ "$origin_url" =~ github\.com[:/]([^/]+/[^/]+)$ ]]; then
+  MARKETPLACE_SOURCE="${BASH_REMATCH[1]%.git}"
+fi
+if ! command -v claude &>/dev/null; then
+  echo -e "    ${YELLOW}claude not found; skipped. Re-run this script after installing Claude Code.${NC}"
+else
+  if claude plugin marketplace list 2>/dev/null | grep -qE '❯ lazy-llm$'; then
+    claude plugin marketplace update lazy-llm >/dev/null 2>&1 \
+      || echo -e "    ${YELLOW}Warning: could not update the lazy-llm marketplace.${NC}"
+  else
+    claude plugin marketplace add "$MARKETPLACE_SOURCE" >/dev/null 2>&1 \
+      || echo -e "    ${YELLOW}Warning: could not add $MARKETPLACE_SOURCE as a marketplace.${NC}"
+  fi
+  if claude plugin list 2>/dev/null | grep -q '❯ lazy-llm@lazy-llm'; then
+    claude plugin update lazy-llm@lazy-llm >/dev/null 2>&1 \
+      || echo -e "    ${YELLOW}Warning: could not update the lazy-llm plugin.${NC}"
+  else
+    claude plugin install lazy-llm@lazy-llm >/dev/null 2>&1 \
+      || echo -e "    ${YELLOW}Warning: could not install the lazy-llm plugin.${NC}"
+  fi
+  echo "    Plugin lazy-llm@lazy-llm installed (takes effect in new Claude sessions)."
+fi
+
+# --- 5. Jetski CLI plugin ---
+# Links jetski-plugin/ into Jetski's global customization root, where it's
+# discovered as the "lazy-llm" plugin. Its hooks (hooks.json) call the stowed
+# llm-jetski-hook, feeding jetski-cli panes' status (working / unread / idle),
+# conversation id (for `lazy-llm restore`) and model. A symlink, not a copy:
+# Jetski reads plugins in place, so this stays current with the checkout.
+# Optional: without it, jetski-cli panes fall back to screen-scraped status.
+echo "--> Setting up the Jetski CLI plugin..."
+JETSKI_PLUGINS_DIR="$HOME/.gemini/config/plugins"
+if ! command -v jetski-cli &>/dev/null && ! command -v jetski &>/dev/null; then
+  echo -e "    ${YELLOW}jetski-cli not found; skipped. Re-run this script after installing Jetski CLI.${NC}"
+else
+  mkdir -p "$JETSKI_PLUGINS_DIR"
+  if [ -e "$JETSKI_PLUGINS_DIR/lazy-llm" ] && [ ! -L "$JETSKI_PLUGINS_DIR/lazy-llm" ]; then
+    echo -e "    ${YELLOW}$JETSKI_PLUGINS_DIR/lazy-llm exists and isn't a symlink; left alone.${NC}"
+  else
+    ln -sfn "$REPO_DIR/jetski-plugin" "$JETSKI_PLUGINS_DIR/lazy-llm"
+    echo "    Plugin lazy-llm linked (takes effect in new jetski-cli sessions)."
+  fi
+fi
+
+# --- 6. Final Instructions ---
 BIN_DIR="$HOME/.local/bin"
 echo "--> Checking user PATH for $BIN_DIR..."
 PATH_INCLUDES_LOCAL_BIN=false

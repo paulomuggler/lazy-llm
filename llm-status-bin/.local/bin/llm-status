@@ -92,7 +92,7 @@ render_summary() {
 
 # Dynamic dashboard hint — "^B+S" derived from whatever this tmux's prefix
 # key ACTUALLY is (not hardcoded), so it stays correct if the user ever
-# rebinds it. tmux's own key names are like "C-b"; render that as the
+# rebinds it; the S is @lazy_llm_dashboard_key's value. tmux's own key names are like "C-b"; render that as the
 # conventional caret notation ("^B"). Falls back to the raw name for a
 # non-Ctrl prefix (rare, but rather than guess a notation for it, just
 # show what tmux itself calls it).
@@ -107,7 +107,7 @@ prefix_hint() {
 }
 
 render_hint() {
-  printf '#[fg=%s,bg=%s]Dash %s' "$C_DIM" "$C_CONTENT_BG" "$(prefix_hint)+S"
+  printf '#[fg=%s,bg=%s]Dash %s' "$C_DIM" "$C_CONTENT_BG" "$(prefix_hint)+$(lazy_llm_dashboard_key)"
 }
 
 # Join content parts with a literal "│" separator (the per-user "AI |

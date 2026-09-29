@@ -1,0 +1,18 @@
+{
+  "lazy-llm-status": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "~/.local/bin/llm-jetski-hook working",
+        "timeout": 5
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "~/.local/bin/llm-jetski-hook idle",
+        "timeout": 5
+      }
+    ]
+  }
+}

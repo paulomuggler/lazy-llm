@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# llm-tmux-init - register lazy-llm's tmux key bindings and hooks.
+#
+# lazy-llm registers them whenever it builds a workspace window, which
+# leaves a fresh tmux server without them until the first workspace exists
+# — so Prefix+S (dashboard, including the Saved tab to restore workspaces
+# from) wouldn't work in a clean tmux. Run this from tmux.conf at server
+# start instead:
+#
+#   if-shell 'test -x "$HOME/.local/bin/llm-tmux-init"' 'run-shell -b "$HOME/.local/bin/llm-tmux-init"'
+#
+# Idempotent; safe to run again (e.g. on a config reload).
+
+set -euo pipefail
+
+_lib_sibling="$(dirname "$0")/lazy-llm-lib.sh"
+if [[ -f "$_lib_sibling" ]]; then
+  # shellcheck source=/dev/null
+  source "$_lib_sibling"
+else
+  # shellcheck source=/dev/null
+  source "$(dirname "$0")/../../../llm-send-bin/.local/bin/lazy-llm-lib.sh"
+fi
+
+lazy_llm_register_tmux_integration

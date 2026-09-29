@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# llm-focus-pane - bring a tmux pane to the front, terminal window included
+#
+# Usage: llm-focus-pane <pane_id> [<tmux socket path>]
+#
+# The click action of llm-claude-hook's desktop notifications, so it runs from
+# the notification daemon, outside tmux: hence the socket argument (the pane's
+# #{socket_path}) rather than relying on $TMUX.
+#
+# Switches the most recently active tmux client to the pane (session, window,
+# pane), then, on Hyprland, focuses the terminal window that client runs in:
+# the first window found walking up the client's parent processes. A terminal
+# that serves several windows from one process (Ghostty) has several matches;
+# the one whose title names the client's session is preferred — that's what
+# tmux's set-titles shows, taken before the switch changes it.
+#
+# Exits 0 without doing anything if the pane or a client is gone.
+
+pane="${1:-}"
+socket="${2:-}"
+[ -n "$pane" ] || exit 0
+
+t=(tmux)
+[ -n "$socket" ] && t=(tmux -S "$socket")
+
+"${t[@]}" display-message -t "$pane" -p '' 2>/dev/null || exit 0
+
+client=$("${t[@]}" list-clients -F '#{client_activity} #{client_name}' 2>/dev/null \
+  | sort -rn | head -1 | cut -d' ' -f2-)
+[ -n "$client" ] || exit 0
+client_pid=$("${t[@]}" display-message -c "$client" -p '#{client_pid}' 2>/dev/null)
+client_session=$("${t[@]}" display-message -c "$client" -p '#{client_session}' 2>/dev/null)
+
+"${t[@]}" switch-client -c "$client" -t "$pane" 2>/dev/null
+"${t[@]}" select-window -t "$pane" 2>/dev/null
+"${t[@]}" select-pane -t "$pane" 2>/dev/null
+
+command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || exit 0
+windows=$(hyprctl clients -j 2>/dev/null) || exit 0
+pid="$client_pid"
+while [ -n "$pid" ] && [ "$pid" -gt 1 ]; do
+  address=$(printf '%s' "$windows" | jq -r --argjson pid "$pid" --arg s "$client_session" '
+    [.[] | select(.pid == $pid)]
+    | (map(select($s != "" and (.title | contains($s)))) + .)[0].address // empty')
+  if [ -n "$address" ]; then
+    hyprctl dispatch focuswindow "address:$address" >/dev/null 2>&1
+    break
+  fi
+  pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+done
+exit 0

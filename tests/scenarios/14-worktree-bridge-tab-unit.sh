@@ -64,12 +64,13 @@ out=$(cd "$REPO" && lazy_llm_gather_worktrees)
 row_count=$(echo "$out" | command grep -c .)
 assert_equals "$row_count" "2" "two worktrees → two rows"
 
-# Confirm columns: each row should be 7 tab-separated fields
-first_cols=$(echo "$out" | head -1 | awk -F'\t' '{print NF}')
-assert_equals "$first_cols" "7" "row has 7 columns"
+# Confirm columns: each row should be 8 \x1f-separated fields (OWNER added
+# by worktree-concurrency-mode; \x1f because empty fields are common)
+first_cols=$(echo "$out" | head -1 | awk -F$'\x1f' '{print NF}')
+assert_equals "$first_cols" "8" "row has 8 columns"
 
 # Branch column for the feature-x worktree
-fx_branch=$(echo "$out" | command grep 'lazy-llm-wbt-test-3-wt' | awk -F'\t' '{print $2}')
+fx_branch=$(echo "$out" | command grep 'lazy-llm-wbt-test-3-wt' | awk -F$'\x1f' '{print $2}')
 assert_equals "$fx_branch" "feature-x" "feature-x worktree branch correct"
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -80,7 +81,7 @@ echo "Test 4: dirty marker present for dirty worktree..."
 # Touch a file in the secondary worktree to make it dirty
 (cd /tmp/lazy-llm-wbt-test-3-wt && printf 'dirty\n' > new-file)
 out=$(cd "$REPO" && lazy_llm_gather_worktrees)
-fx_dirty=$(echo "$out" | command grep 'lazy-llm-wbt-test-3-wt' | awk -F'\t' '{print $3}')
+fx_dirty=$(echo "$out" | command grep 'lazy-llm-wbt-test-3-wt' | awk -F$'\x1f' '{print $3}')
 assert_equals "$fx_dirty" "*" "dirty worktree shows '*'"
 
 # Clean it up to keep test 5 reliable

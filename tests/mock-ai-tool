@@ -16,6 +16,11 @@ log_input() {
 }
 
 # Simple prompt to show tool is ready
+# A real AI TUI reads its input raw, with no terminal echo; without this the
+# pane would show every sent line twice (the tty's echo, then ours), and the
+# tests counting markers would count each twice.
+[ -t 0 ] && stty -echo 2>/dev/null
+
 echo "Mock AI Tool ($MODE mode) ready. Type your prompts..."
 echo ""
 
@@ -125,8 +130,13 @@ while IFS= read -r line; do
 
                 log_input "INTERACTIVE: Waiting for user choice"
 
-                # Wait for and echo the choice
-                read -r choice
+                # Wait for and echo the choice — one keypress, no Enter, as
+                # an AI TUI takes it (and as <leader>llmk forwards it). A bare
+                # Enter is skipped: llm-send's submit keypress is still queued.
+                choice=""
+                while [[ -z "$choice" ]]; do
+                    read -r -n 1 choice || break
+                done
                 log_input "INTERACTIVE: User chose: $choice"
                 echo ""
                 echo "You selected option $choice. Processing..."
