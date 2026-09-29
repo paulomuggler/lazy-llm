@@ -410,6 +410,16 @@ The lazy-llm script supports any of the agentic TUI tools. Just pass it with `-t
 lazy-llm -t your-ai-tool
 ```
 
+### Default AI Tool
+
+Without `-t`, `lazy-llm` and `llm-add` launch `claude`. Set
+`LAZY_LLM_DEFAULT_TOOL` (e.g. `jetski-cli`) to change that, in the shell that
+starts the tmux server so run-shell callers (Prefix+A, the dashboard) get it too:
+
+```bash
+export LAZY_LLM_DEFAULT_TOOL=jetski-cli
+```
+
 ## Git Workflow
 
 The editor pane (top-right) includes git tooling for managing changes:

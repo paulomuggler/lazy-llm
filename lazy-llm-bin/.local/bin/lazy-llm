@@ -17,7 +17,7 @@ fi
 # Default values
 SESSION_NAME=""
 TARGET_DIR="$(pwd)"
-AI_TOOL="claude"
+AI_TOOL=$(lazy_llm_default_tool)  # -t overrides; see lazy_llm_default_tool
 NEW_WINDOW=false
 WORKTREE_BRANCH=""
 
@@ -90,6 +90,8 @@ while getopts "s:d:t:wW:h" opt; do
     echo "  -s  Session name (auto-generated if not provided)"
     echo "  -d  Working directory (default: current directory)"
     echo "  -t  AI tool to launch (claude, jetski-cli, gemini, opencode, codex, grok, etc.)"
+    # shellcheck disable=SC2016 # the variable's name, literally
+    echo '      (default: $LAZY_LLM_DEFAULT_TOOL, else claude)'
     echo "  -w  Force new window mode (otherwise auto-detected when in tmux)"
     echo "  -W  Spawn a session bound to a git worktree for <branch>"
     echo "       Creates branch (from HEAD) and worktree (under .worktrees/<branch>)"

@@ -284,6 +284,13 @@ lazy_llm_normalize_tool() {
   esac
 }
 
+# The AI tool launched when none is given (lazy-llm, llm-add without -t):
+# $LAZY_LLM_DEFAULT_TOOL, else claude. Set it in the shell that starts the tmux
+# server, so run-shell callers (Prefix+A, the dashboard) inherit it too.
+lazy_llm_default_tool() {
+  lazy_llm_normalize_tool "${LAZY_LLM_DEFAULT_TOOL:-claude}"
+}
+
 # Capture a pane's recent content and classify it.
 # Args:   $1 pane_id   (required, %N format)
 #         $2 tool_name (optional, default: claude)

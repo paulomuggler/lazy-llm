@@ -11,8 +11,8 @@
 
 set -euo pipefail
 
-# Default AI tool
-AI_TOOL="claude"
+# AI tool: -t, else lazy_llm_default_tool ($LAZY_LLM_DEFAULT_TOOL or claude)
+AI_TOOL=""
 ISOLATE=false
 JOIN_WT=""
 WT_NAME=""
@@ -40,7 +40,9 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: llm-add [-t tool_name] [-i [-n name] | -w worktree_path]"
       echo ""
       echo "Options:"
-      echo "  -t, --tool      AI tool to launch (default: claude)"
+      # shellcheck disable=SC2016 # the variable's name, literally
+      echo '  -t, --tool      AI tool to launch (default: $LAZY_LLM_DEFAULT_TOOL,'
+      echo "                  else claude)"
       echo "                  Supported: claude, jetski-cli, gemini, opencode, codex,"
       echo "                  grok, aider"
       echo "  -i, --isolate   Run the pane in a new git worktree of its own (see llm-wt)"
@@ -78,7 +80,7 @@ lazy_llm_resolve_session_window || { echo "Error: Could not determine session/wi
 target_dir=$(lazy_llm_workspace_dir "$_SESSION" "$_WINDOW")
 
 # Save user's chosen tool before reading state (lazy_llm_read_multi_state sets AI_TOOL)
-NEW_AI_TOOL=$(lazy_llm_normalize_tool "$AI_TOOL")
+NEW_AI_TOOL=$(lazy_llm_normalize_tool "${AI_TOOL:-$(lazy_llm_default_tool)}")
 
 # Read current multi-pane state
 lazy_llm_read_multi_state
