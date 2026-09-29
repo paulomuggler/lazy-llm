@@ -31,7 +31,8 @@ echo "Selecting first 2 lines visually..."
 
 # Go to first line, enter visual line mode, select 2 lines, send
 tmux send-keys -t "$PROMPT_PANE" Escape "gg" "V" "j" "$(nvim_leader)" 'llms'
-sleep 1
+# Wait for the send instead of a fixed sleep: slower shells/hosts (macOS) need more than 1s.
+wait_for_text_in_pane "$AI_PANE" "### END PROMPT" 10 || true
 
 # Capture AI pane output
 AI_OUTPUT=$(capture_pane "$AI_PANE")

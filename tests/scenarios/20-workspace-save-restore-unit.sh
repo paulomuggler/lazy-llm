@@ -9,8 +9,11 @@
 #
 # Isolation: a private tmux server (TMUX_TMPDIR), a private HOME with the
 # repo's bins symlinked in stow's layout, a private manifest dir
-# (LAZY_LLM_STATE_DIR), and fake `claude`/`nvim` on PATH that just log how
-# they were launched. The sandbox HOME has no shell rc files, so the pane
+# (LAZY_LLM_STATE_DIR), and fake `jetski-cli`/`nvim` on PATH that just log how
+# they were launched. (osx-google-corp: the AI tool is jetski-cli; this host's
+# policy refuses to run anything named `claude`, fakes included, so the
+# claude-only adapter cases — registry fallback, --model on resume — are
+# covered on main.) The sandbox HOME has no shell rc files, so the pane
 # shells keep that PATH. Never touches the user's own server.
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,10 +25,11 @@ REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not installed"; exit 0; }
 
 # Short path: tmux socket paths are limited to ~108 bytes.
-SB=$(mktemp -d /tmp/lazy-llm-test-persist-XXXXXX)
+# Physical path: on macOS /tmp is a symlink, and git reports worktrees by their real path.
+SB=$(cd "$(mktemp -d /tmp/lazy-llm-test-persist-XXXXXX)" && pwd -P)
 mkdir -p "$SB/home/.local/bin" "$SB/fake" "$SB/state" "$SB/a" "$SB/b" "$SB/k"
 for f in "$REPO_ROOT"/*-bin/.local/bin/*; do ln -s "$f" "$SB/home/.local/bin/"; done
-for t in claude nvim; do
+for t in jetski-cli nvim; do
     cat > "$SB/fake/$t" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "$t \$* ROLE=\${LAZY_LLM_NVIM_ROLE:-} SESSION=\${LAZY_LLM_NVIM_SESSION:-} RESTORE=\${LAZY_LLM_NVIM_RESTORE:-} PWD=\$PWD WT=\${LAZY_LLM_WORKTREE:-}" >> "$SB/argv.log"
@@ -34,13 +38,26 @@ EOF
     chmod +x "$SB/fake/$t"
 done
 
-# Run a command inside the sandbox environment.
+# Run a command inside the sandbox environment. The real tools the scripts need
+# (tmux, bash 4+, jq, git) come after the fakes, from wherever they're installed:
+# on macOS jq is /usr/bin/jq but tmux and bash are Homebrew's (a PATH without
+# /opt/homebrew/bin makes lazy-llm-lib.sh prepend it, ahead of the fakes), and
+# /usr/bin/git may be an Xcode shim, so /usr/bin and /bin go last.
+SYS_PATH=""
+for b in tmux bash jq git; do
+    d=$(dirname "$(command -v "$b")")
+    [[ "$d" == /usr/bin || "$d" == /bin || ":$SYS_PATH:" == *":$d:"* ]] || SYS_PATH="$SYS_PATH:$d"
+done
 sbx() {
     env -u TMUX -u TMUX_PANE -u CLAUDECODE HOME="$SB/home" TMUX_TMPDIR="$SB" \
         LAZY_LLM_STATE_DIR="$SB/state" XDG_RUNTIME_DIR="$SB/run" \
-        PATH="$SB/fake:$SB/home/.local/bin:$(dirname "$(command -v jq)"):/usr/bin:/bin" "$@"
+        PATH="$SB/fake:$SB/home/.local/bin$SYS_PATH:/usr/bin:/bin" "$@"
 }
 T() { sbx tmux "$@"; }
+# Tripwire: never let a launch reach a real AI tool, even after the lib's own
+# PATH additions (sourcing it is what the launchers do).
+got=$(sbx bash -c "source '$REPO_ROOT/llm-send-bin/.local/bin/lazy-llm-lib.sh' && command -v jetski-cli")
+[[ "$got" == "$SB/fake/jetski-cli" ]] || { echo "ABORT: sandbox jetski-cli resolves to '$got', not the fake"; rm -rf "$SB"; exit 1; }
 first_win() { T list-windows -t "=$1" -F '#{window_index}' | head -1; }
 wopt() { T show-option -wqv -t "=$1:$(first_win "$1")" "$2"; }
 entry() { grep -l "\"name\": \"$1\"" "$SB"/state/workspaces/*.json 2>/dev/null | head -1; }
@@ -54,25 +71,22 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Test 1: build two workspaces..."
-sbx lazy-llm -s wsA -d "$SB/a" -t claude >/dev/null 2>&1
-sbx lazy-llm -s wsB -d "$SB/b" -t claude >/dev/null 2>&1
+sbx lazy-llm -s wsA -d "$SB/a" -t jetski-cli >/dev/null 2>&1
+sbx lazy-llm -s wsB -d "$SB/b" -t jetski-cli >/dev/null 2>&1
 sleep 1
 PP=$(wopt wsA @PROMPT_PANE_ID)
-sbx env TMUX_PANE="$PP" llm-add -t claude >/dev/null
-sbx env TMUX_PANE="$PP" llm-add -t claude >/dev/null
+sbx env TMUX_PANE="$PP" llm-add -t jetski-cli >/dev/null
+sbx env TMUX_PANE="$PP" llm-add -t jetski-cli >/dev/null
 sbx env TMUX_PANE="$PP" llm-cycle 1
 sleep 1
 read -ra A <<< "$(wopt wsA @AI_PANES)"
 for i in 0 1 2; do
-    printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"conv-a%s"}' "$i" \
-        | sbx env TMUX_PANE="${A[$i]}" llm-claude-hook
+    printf '{"conversationId":"conv-a%s","invocationNum":0}' "$i" \
+        | sbx env TMUX_PANE="${A[$i]}" llm-jetski-hook working >/dev/null
 done
 sbx bash -c "source \$HOME/.local/bin/lazy-llm-lib.sh; lazy_llm_set_pane_model ${A[1]} 'claude-opus-5-5[1m]'"
-# wsB's pane: no hook record, only Claude Code's registry file.
 PB=$(wopt wsB @AI_PANE_ID)
-CPID=$(pgrep -P "$(T display-message -t "$PB" -p '#{pane_pid}')" | head -1)
-mkdir -p "$SB/home/.claude/sessions"
-echo "{\"pid\":$CPID,\"sessionId\":\"conv-b-registry\"}" > "$SB/home/.claude/sessions/$CPID.json"
+printf '{"conversationId":"conv-b","invocationNum":0}' | sbx env TMUX_PANE="$PB" llm-jetski-hook working >/dev/null
 T set-option -w -t "=wsA:$(first_win wsA)" @AI_PANE_NAMES "alpha beta gamma"
 T set-option -t "=wsB:" @lazy_llm_collapsed 1
 sbx bash -c 'source $HOME/.local/bin/lazy-llm-lib.sh; lazy_llm_move_ws_order wsB up'
@@ -91,10 +105,10 @@ out=$(sbx llm-persist save)
 assert_contains "$out" "^lazy-llm: saved 2 workspaces, 4/4 conversations · snapshot [0-9-]+ [0-9:]+ \(2 workspaces\)$" "save summary counts workspaces and conversations, and the manual save's snapshot"
 fA=$(entry wsA); fB=$(entry wsB)
 assert_equals "$(jq -c '[.windows[0].panes[] | [.tool, .name, .conv]]' "$fA")" \
-    '[["claude","alpha","conv-a0"],["claude","beta","conv-a1"],["claude","gamma","conv-a2"]]' "wsA panes: tools, names, hook-recorded conversations"
+    '[["jetski-cli","alpha","conv-a0"],["jetski-cli","beta","conv-a1"],["jetski-cli","gamma","conv-a2"]]' "wsA panes: tools, names, hook-recorded conversations"
 assert_equals "$(jq -r '.windows[0].panes[1].model' "$fA")" "claude-opus-5-5[1m]" "raw model id saved"
 assert_equals "$(jq -r '.windows[0].visible' "$fA")" "1" "visible pane index saved"
-assert_equals "$(jq -r '.windows[0].panes[0].conv' "$fB")" "conv-b-registry" "registry fallback supplies wsB's conversation"
+assert_equals "$(jq -r '.windows[0].panes[0].conv' "$fB")" "conv-b" "wsB's hook-recorded conversation"
 assert_equals "$(jq -r '[.order, .collapsed] | @tsv' "$fB")" "0	true" "wsB saved first in order, folded"
 assert_equals "$(jq -r .server "$fA")" "$(jq -r .server "$fB")" "both entries stamped with the same server"
 
@@ -116,7 +130,7 @@ assert_contains "$out" "Restored wsB" "wsB restored"
 assert_contains "$out" "Restored wsA" "wsA restored"
 assert_equals "$(T show-option -qv -t '=wsA:' @lazy_llm_ws_id)" "$(jq -r .id "$fA")" "workspace id carried over"
 assert_equals "$(T show-option -qv -t '=wsA:' @lazy_llm)" "1" "restored session is lazy-llm managed"
-assert_equals "$(wopt wsA @AI_TOOLS)" "claude claude claude" "wsA tools"
+assert_equals "$(wopt wsA @AI_TOOLS)" "jetski-cli jetski-cli jetski-cli" "wsA tools"
 assert_equals "$(wopt wsA @AI_PANE_NAMES)" "alpha beta gamma" "wsA display names"
 assert_equals "$(wopt wsA @AI_PANE_IDX)" "1" "wsA visible pane"
 read -ra RA <<< "$(wopt wsA @AI_PANES)"
@@ -125,10 +139,10 @@ assert_equals "$(T list-windows -t =wsA -F '#{window_name}:#{@lazy_llm_hold}' | 
 assert_equals "$(T show-option -qv -t '=wsB:' @lazy_llm_collapsed)" "1" "wsB fold state"
 assert_equals "$(T show-option -sv @lazy_llm_ws_order)" "wsB wsA" "dashboard order restored"
 log=$(cat "$SB/argv.log")
-assert_contains "$log" "claude --resume conv-a0 ROLE" "pane 0 resumes its conversation"
-assert_contains "$log" "claude --resume conv-a1 --model claude-opus-5-5\[1m\] ROLE" "pane 1 resumes with its model"
-assert_contains "$log" "claude --resume conv-a2 ROLE" "pane 2 resumes its conversation"
-assert_contains "$log" "claude --resume conv-b-registry ROLE" "wsB resumes the registry-sourced conversation"
+assert_contains "$log" "jetski-cli --conversation conv-a0 ROLE" "pane 0 resumes its conversation"
+assert_contains "$log" "jetski-cli --conversation conv-a1 ROLE" "pane 1 resumes its conversation (no --model: jetski keeps the conversation's own)"
+assert_contains "$log" "jetski-cli --conversation conv-a2 ROLE" "pane 2 resumes its conversation"
+assert_contains "$log" "jetski-cli --conversation conv-b ROLE" "wsB resumes its conversation"
 assert_contains "$log" "nvim  ROLE=editor SESSION=$SB/a/.lazy-llm/sessions/editor.vim RESTORE=1 " "wsA editor restores its snapshot"
 assert_contains "$log" "startinsert $PROMPT_A ROLE=prompt" "wsA prompt nvim reopens the saved prompt file"
 assert_contains "$log" "startinsert ROLE=prompt SESSION=$SB/b/.lazy-llm/sessions/prompt.vim RESTORE=1 " "wsB prompt nvim restores its snapshot, no file argument"
@@ -147,7 +161,7 @@ assert_equals "$(T list-sessions | wc -l | tr -d ' ')" "2" "still exactly two se
 echo ""
 echo "Test 6: a prompt snapshot restores on a plain launch too..."
 : > "$SB/argv.log"
-sbx lazy-llm -s wsC -d "$SB/b" -t claude >/dev/null 2>&1
+sbx lazy-llm -s wsC -d "$SB/b" -t jetski-cli >/dev/null 2>&1
 sleep 1
 log=$(cat "$SB/argv.log")
 assert_contains "$log" "startinsert ROLE=prompt SESSION=$SB/b/.lazy-llm/sessions/prompt.vim RESTORE=1 " "fresh launch in the dir restores the prompt snapshot"
@@ -175,7 +189,7 @@ assert_equals "$(jq -r .closed "$(entry wsA)")" "false" "...and it's no longer c
 
 echo ""
 echo "Test 8: lazy-llm close keeps it, lazy-llm kill drops it..."
-sbx lazy-llm -s wsK -d "$SB/k" -t claude >/dev/null 2>&1
+sbx lazy-llm -s wsK -d "$SB/k" -t jetski-cli >/dev/null 2>&1
 sleep 1
 out=$(sbx llm-persist close wsK 2>&1)
 assert_contains "$out" "Closed workspace wsK \(kept" "close reports it kept the workspace"
@@ -199,8 +213,8 @@ assert_contains "$(sbx llm-persist saved --dropped)" "✕ wsB" "...unless asked 
 echo ""
 echo "Test 8b: closing or killing the workspace you're in keeps you in tmux..."
 if script -qfc true /dev/null >/dev/null 2>&1; then
-    sbx lazy-llm -s wsX -d "$SB/k" -t claude >/dev/null 2>&1
-    sbx lazy-llm -s wsY -d "$SB/k" -t claude >/dev/null 2>&1 </dev/null
+    sbx lazy-llm -s wsX -d "$SB/k" -t jetski-cli >/dev/null 2>&1
+    sbx lazy-llm -s wsY -d "$SB/k" -t jetski-cli >/dev/null 2>&1 </dev/null
     sleep 1
     # Attach to wsY first, so it's the most recently used other session.
     ( sbx script -qfc "tmux attach -t =wsY" /dev/null </dev/null >/dev/null 2>&1 & )
@@ -247,7 +261,7 @@ assert_contains "$out" "^reload-sync\(cat " "z answers with a reload"
 assert_equals "$(T show-option -sqv @lazy_llm_saved_open)" "$idA" "z records the entry as open"
 rows=$(sbx llm-dashboard --emit-saved-rows 2>/dev/null)
 assert_equals "$(grep -c "^saved-pane:$idA:" <<< "$rows")" "3" "an open entry lists its 3 AI panes"
-assert_contains "$rows" "↳ claude   alpha · conv conv-a0 · held" "a pane row shows tool, name, conversation, held/visible"
+assert_contains "$rows" "↳ jetski-cli alpha · conv conv-a0 · held" "a pane row shows tool, name, conversation, held/visible"
 sbx llm-dashboard --saved-fold-transform _ "saved-pane:$idA:0:1" >/dev/null 2>&1
 assert_equals "$(T show-option -sqv @lazy_llm_saved_open)" "" "z on a pane row folds its entry back"
 
@@ -314,9 +328,9 @@ assert_equals "$(wopt wsA @AI_PANE_NAMES)" "alpha gamma" "the removed pane's nam
 echo ""
 echo "Test 13: retention keeps prompt files a snapshot references..."
 mkdir -p "$SB/r/.lazy-llm/prompts" "$SB/r/.lazy-llm/sessions"
-touch -d '20 days ago' "$SB/r/.lazy-llm/prompts/prompt-20200101-000001.md" "$SB/r/.lazy-llm/prompts/prompt-20200101-000002.md"
+touch -t "$(date -d '20 days ago' +%Y%m%d%H%M 2>/dev/null || date -v-20d +%Y%m%d%H%M)" "$SB/r/.lazy-llm/prompts/prompt-20200101-000001.md" "$SB/r/.lazy-llm/prompts/prompt-20200101-000002.md"
 echo 'badd +1 .lazy-llm/prompts/prompt-20200101-000001.md' > "$SB/r/.lazy-llm/sessions/prompt.vim"
-sbx lazy-llm -s wsR -d "$SB/r" -t claude >/dev/null 2>&1
+sbx lazy-llm -s wsR -d "$SB/r" -t jetski-cli >/dev/null 2>&1
 assert_file_exists "$SB/r/.lazy-llm/prompts/prompt-20200101-000001.md" "referenced old prompt file kept"
 assert_file_not_exists "$SB/r/.lazy-llm/prompts/prompt-20200101-000002.md" "unreferenced old prompt file removed"
 
@@ -325,15 +339,15 @@ echo "Test 14: an isolated pane's worktree is saved and restored (worktree-concu
 G="$SB/g"; mkdir -p "$G"
 gitq() { sbx git -c user.name=t -c user.email=t@t "$@"; }
 gitq -C "$G" init -q -b main; echo x > "$G/f"; gitq -C "$G" add f; gitq -C "$G" commit -qm init
-sbx lazy-llm -s wsG -d "$G" -t claude >/dev/null 2>&1
+sbx lazy-llm -s wsG -d "$G" -t jetski-cli >/dev/null 2>&1
 sleep 1
-sbx env TMUX_PANE="$(wopt wsG @PROMPT_PANE_ID)" llm-add -t claude -i >/dev/null 2>&1
+sbx env TMUX_PANE="$(wopt wsG @PROMPT_PANE_ID)" llm-add -t jetski-cli -i >/dev/null 2>&1
 sleep 0.5
 WTG="$G/.worktrees/.panes/g-wt-1"
 read -ra Gp <<< "$(wopt wsG @AI_PANES)"
 assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "$WTG" "setup: an isolated pane"
-printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"conv-g1"}' \
-    | sbx env TMUX_PANE="${Gp[1]}" llm-claude-hook
+printf '{"conversationId":"conv-g1","invocationNum":0}' \
+    | sbx env TMUX_PANE="${Gp[1]}" llm-jetski-hook working >/dev/null
 sbx llm-persist save >/dev/null
 assert_equals "$(jq -c '.windows[0].panes[1].worktree' "$(entry wsG)")" "{\"path\":\"$WTG\",\"branch\":\"lazy/g-wt-1\"}" "the manifest records the pane's worktree"
 assert_equals "$(jq -c '.windows[0].panes[0].worktree' "$(entry wsG)")" "null" "a shared pane has none"
@@ -342,11 +356,11 @@ reopen_g() {
     sleep 1
     read -ra Gp <<< "$(wopt wsG @AI_PANES)"
 }
-last_g1() { grep "conv-g1\|^claude  " "$SB/argv.log" | tail -1; }
+last_g1() { grep "conv-g1\|^jetski-cli  " "$SB/argv.log" | tail -1; }
 sbx llm-persist close wsG >/dev/null 2>&1
 reopen_g
 assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "$WTG" "restored: the pane is tagged with its worktree"
-assert_contains "$(last_g1)" "claude --resume conv-g1 .* PWD=$WTG WT=1" "...resumes its conversation there, with the worktree env"
+assert_contains "$(last_g1)" "jetski-cli --conversation conv-g1 .* PWD=$WTG WT=1" "...resumes its conversation there, with the worktree env"
 
 gsnap=$(find "$SB/state/snapshots" -mindepth 1 -maxdepth 1 -type d -exec basename {} ';' | sort | tail -1)
 out=$(sbx llm-persist restore --snapshot "$gsnap" wsG 2>&1)
@@ -367,7 +381,7 @@ sbx git -C "$G" worktree remove --force "$WTG"
 sbx git -C "$G" branch -qD lazy/g-wt-1
 reopen_g
 assert_equals "$(T show-option -pqv -t "${Gp[1]}" @lazy_llm_wt)" "" "worktree and branch gone: the pane comes back shared"
-assert_contains "$(grep "^claude " "$SB/argv.log" | tail -1)" "PWD=$G WT=$" "...fresh, in the workspace dir (its conversation can't resume elsewhere)"
+assert_contains "$(grep "^jetski-cli " "$SB/argv.log" | tail -1)" "PWD=$G WT=$" "...fresh, in the workspace dir (its conversation can't resume elsewhere)"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -45,6 +45,7 @@ trap cleanup_repos EXIT
 echo "Test 1: New branch creates worktree at .worktrees/<branch>..."
 REPO=/tmp/lazy-llm-wt-test-1
 mk_repo "$REPO"
+REPO=$(cd "$REPO" && pwd -P)  # macOS: /tmp is a symlink to /private/tmp
 
 unset LAZY_LLM_WORKTREE_DIR
 out=$(cd "$REPO" && lazy_llm_setup_worktree feature-x 2>/dev/null)
@@ -67,6 +68,7 @@ echo ""
 echo "Test 2: Pre-existing branch reused as worktree..."
 REPO=/tmp/lazy-llm-wt-test-2
 mk_repo "$REPO"
+REPO=$(cd "$REPO" && pwd -P)  # macOS: /tmp is a symlink to /private/tmp
 (cd "$REPO" && git branch existing-feature)
 
 out=$(cd "$REPO" && lazy_llm_setup_worktree existing-feature 2>/dev/null)
@@ -85,6 +87,7 @@ echo ""
 echo "Test 3: Branch checked out elsewhere → refusal..."
 REPO=/tmp/lazy-llm-wt-test-3
 mk_repo "$REPO"
+REPO=$(cd "$REPO" && pwd -P)  # macOS: /tmp is a symlink to /private/tmp
 (cd "$REPO" && git checkout -q -b in-use)
 # Now the branch is checked out in the main worktree; trying to create
 # another worktree for it should refuse.
@@ -103,6 +106,7 @@ echo ""
 echo "Test 4: Pre-existing worktree returned idempotently..."
 REPO=/tmp/lazy-llm-wt-test-4
 mk_repo "$REPO"
+REPO=$(cd "$REPO" && pwd -P)  # macOS: /tmp is a symlink to /private/tmp
 
 out1=$(cd "$REPO" && lazy_llm_setup_worktree reuse-me 2>/dev/null)
 out2=$(cd "$REPO" && lazy_llm_setup_worktree reuse-me 2>/dev/null)
@@ -133,6 +137,7 @@ echo "Test 6: LAZY_LLM_WORKTREE_DIR override + no gitignore append..."
 REPO=/tmp/lazy-llm-wt-test-6
 EXTERNAL=/tmp/lazy-llm-wt-test-6-external
 mk_repo "$REPO"
+REPO=$(cd "$REPO" && pwd -P)  # macOS: /tmp is a symlink to /private/tmp
 rm -rf "$EXTERNAL"
 
 export LAZY_LLM_WORKTREE_DIR="$EXTERNAL"
@@ -160,6 +165,7 @@ echo ""
 echo "Test 7: Slashed branch names sanitized in path..."
 REPO=/tmp/lazy-llm-wt-test-7
 mk_repo "$REPO"
+REPO=$(cd "$REPO" && pwd -P)  # macOS: /tmp is a symlink to /private/tmp
 
 out=$(cd "$REPO" && lazy_llm_setup_worktree feature/with/slashes 2>/dev/null)
 assert_equals "$out" "$REPO/.worktrees/feature-with-slashes" "slashes → dashes in path"
@@ -175,6 +181,7 @@ echo ""
 echo "Test 8: ensure_gitignore idempotent..."
 REPO=/tmp/lazy-llm-wt-test-8
 mk_repo "$REPO"
+REPO=$(cd "$REPO" && pwd -P)  # macOS: /tmp is a symlink to /private/tmp
 
 lazy_llm_ensure_gitignore "$REPO" "first/" 2>/dev/null
 lazy_llm_ensure_gitignore "$REPO" "first/" 2>/dev/null  # idempotent

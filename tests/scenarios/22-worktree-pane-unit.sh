@@ -17,7 +17,22 @@ LIB_FILE="$REPO_ROOT/llm-send-bin/.local/bin/lazy-llm-lib.sh"
 # script, and pin the sandbox socket explicitly as well.
 unset TMUX TMUX_PANE
 
-sandbox=$(mktemp -d /tmp/lazy-llm-test-wtpane-XXXXXX)
+# Physical path: on macOS /tmp is a symlink, and git reports worktrees by their real path.
+sandbox=$(cd "$(mktemp -d /tmp/lazy-llm-test-wtpane-XXXXXX)" && pwd -P)
+# macOS has no setsid(1): a stand-in with the one form used here (setsid -w CMD),
+# so the no-controlling-terminal cases run there too.
+if ! command -v setsid >/dev/null 2>&1; then
+    mkdir -p "$sandbox/shim"
+    cat > "$sandbox/shim/setsid" <<'SHIM'
+#!/usr/bin/env perl
+use POSIX ();
+shift @ARGV if @ARGV && $ARGV[0] eq '-w';
+POSIX::setsid() or die "setsid: $!\n";
+exec @ARGV or die "setsid: $ARGV[0]: $!\n";
+SHIM
+    chmod +x "$sandbox/shim/setsid"
+    export PATH="$sandbox/shim:$PATH"
+fi
 cleanup_sandbox() {
     env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$sandbox/tmux" tmux kill-server 2>/dev/null || true
     rm -rf "$sandbox"
@@ -538,7 +553,7 @@ ctx=$(printf '%s' "$json" | jq -r '.hookSpecificOutput.additionalContext' 2>/dev
 assert_equals "$(printf '%s' "$json" | jq -r '.hookSpecificOutput.hookEventName' 2>/dev/null)" "SessionStart" "valid hook JSON"
 assert_contains "$ctx" "own worktree, \`$wt\`, on branch \`lazy/r15-wt-1\`" "guidance names the worktree and branch"
 assert_contains "$ctx" "split from \`main\` in the main directory \`$R\`" "...and the base branch and main directory"
-assert_contains "$ctx" "| 7 | The main directory has uncommitted changes" "...and carries the integrate exit codes"
+assert_contains "$ctx" "\\| 7 \\| The main directory has uncommitted changes" "...and carries the integrate exit codes"
 [[ "$ctx" == *"{{"* ]] && r="left" || r="none"
 assert_equals "$r" "none" "no placeholder left"
 assert_contains "$output" "shared=<>" "a shared pane's session gets nothing"

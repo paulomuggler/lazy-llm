@@ -21,7 +21,8 @@ if [ ! -d "$PERSISTENCE" ]; then
     exit 0
 fi
 
-sandbox=$(mktemp -d /tmp/lazy-llm-test-nvs-XXXXXX)
+# Physical path: on macOS /tmp is a symlink to /private/tmp.
+sandbox=$(cd "$(mktemp -d /tmp/lazy-llm-test-nvs-XXXXXX)" && pwd -P)
 proj="$sandbox/proj"
 mkdir -p "$proj/.lazy-llm/prompts" "$sandbox/state" "$sandbox/cfg/nvim/lua/lazy_llm"
 ln -s "$MODULE_RTP/lua/lazy_llm/session.lua" "$sandbox/cfg/nvim/lua/lazy_llm/session.lua"
@@ -147,7 +148,7 @@ rpc_snap="$proj/.lazy-llm/sessions/editor.vim"
     nvim --headless --clean --listen "$sock" \
     .lazy-llm/prompts/prompt-20260101-000003.md >/dev/null 2>&1 &)
 for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.1; done
-rpc=$(timeout 5 nvim --server "$sock" --remote-expr "luaeval('dofile(_A[1]).snapshot(_A[2])', ['$MODULE_RTP/lua/lazy_llm/session.lua', '$rpc_snap'])" 2>&1)
+rpc=$(timeout 5 nvim --server "$sock" --remote-expr "luaeval('dofile(_A[1]).snapshot(_A[2])', ['$MODULE_RTP/lua/lazy_llm/session.lua', '$rpc_snap'])" </dev/null 2>&1)
 timeout 5 nvim --server "$sock" --remote-send '<C-\><C-n>:qa!<CR>' >/dev/null 2>&1
 assert_equals "$rpc" "$rpc_snap" "remote snapshot() returns the path"
 assert_contains "$(cat "$rpc_snap" 2>/dev/null)" "prompt-20260101-000003.md" "remote snapshot holds that nvim's buffer"
