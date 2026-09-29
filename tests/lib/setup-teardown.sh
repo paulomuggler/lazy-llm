@@ -46,8 +46,8 @@ teardown_test_env() {
         if [ -n "$DEBUG" ]; then
             echo ""
             echo "Keeping session $TEST_SESSION for debugging (DEBUG mode)"
-            echo "To inspect: tmux attach -t $TEST_SESSION"
-            echo "To kill: tmux kill-session -t $TEST_SESSION"
+            echo "To inspect: TMUX_TMPDIR=${TMUX_TMPDIR:-} tmux attach -t $TEST_SESSION"
+            echo "To kill: TMUX_TMPDIR=${TMUX_TMPDIR:-} tmux kill-session -t $TEST_SESSION"
         else
             kill_test_session
         fi

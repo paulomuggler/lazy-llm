@@ -12,9 +12,11 @@
 #                   showed the current window's panes anyway — this shows
 #                   every workspace's panes, which is the point).
 #   2. Worktrees  - worktree lifecycle (see worktree-bridge-tab)
-#   3. Help       - the full keybinding reference, reachable via '?' from
-#                   either other tab (not '3' — dropped as a redundant
-#                   second shortcut to the same tab, per direct request).
+#   3. Saved      - llm-persist's saved workspaces: live, restorable (their
+#                   tmux server died), closed; restore / save / forget.
+#   ?  Help       - the full keybinding reference, reachable via '?' from
+#                   any other tab ('3' used to be a second Help shortcut;
+#                   dropped per direct request, and now names the Saved tab).
 #                   A tab rather than a transient popup so it's consistent
 #                   with the rest of the UI and gets the full popup width
 #                   (no preview split needed) — see the header-width
@@ -24,17 +26,17 @@
 # Designed to be launched via `tmux display-popup -E`; binds to Prefix+S.
 # All keybindings inside the popup are popup-scoped, single-letter, dense.
 #
-# Tab keys:            1 (Workspaces), 2 (Worktrees)
+# Tab keys:            1 (Workspaces), 2 (Worktrees), 3 (Saved), ? (Help)
 # Workspaces actions:  Enter (switch, or switch+focus-pane on a pane row),
 #                     K (kill workspace / remove pane), r (rename),
 #                     z (fold/unfold), Ctrl-Up/Ctrl-Down or k/j (reorder
 #                     row, scoped to its own tree level), a (add pane, current
 #                     workspace), ]/[ (cycle pane, current workspace),
-#                     R (refresh), ? (help), q/Esc (quit), / (search),
+#                     s (save now), R (refresh), ? (help), q/Esc (quit), / (search),
 #                     Tab (done searching — NOT Esc, which always quits,
 #                     even mid-search, per direct request)
 #
-# Usage: llm-dashboard [--tab workspaces|worktrees|help] [--help]
+# Usage: llm-dashboard [--tab workspaces|worktrees|saved|help] [--help]
 
 set -euo pipefail
 
@@ -113,6 +115,19 @@ _dashboard_ws_from_id() {
   esac
 }
 
+# The fzf action chain --fold-transform / --reorder-transform print back:
+# reload the tree from the rows they already built (REPLY_ROWS), then put the
+# cursor on row $1. The rows go through a temp file that the reload command
+# itself deletes, rather than reload-sync re-running --emit-rows: that
+# rebuilt the whole tree (a tmux capture per AI pane) a second time on every
+# fold/reorder keypress, for the same rows the transform had just built.
+_dashboard_print_reload() {
+  local pos="$1" rows_file
+  rows_file=$(mktemp "${TMPDIR:-/tmp}/lazy-llm-dashboard-rows.XXXXXX")
+  printf '%s\n' "$REPLY_ROWS" > "$rows_file"
+  printf "reload-sync(cat '%s'; rm -f '%s')+pos(%s)\n" "$rows_file" "$rows_file" "$pos"
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 # Workspaces tab
 # ──────────────────────────────────────────────────────────────────────────
@@ -164,7 +179,7 @@ _dashboard_ws_from_id() {
 # exits fzf, see the fzf --bind list below.)
 
 # Build the Workspaces tree's row list. Factored out of render_sessions_tab so
-# --emit-rows (fzf's reload-sync() target for the fold key) can produce the
+# --emit-rows (standalone row output, used by tests and ad-hoc checks) can produce the
 # exact same rows from a cold, standalone process invocation. Called DIRECTLY
 # (not via command substitution) — a subshell would make the REPLY_START_POS
 # side-output invisible to the caller — same REPLY_* convention
@@ -203,122 +218,148 @@ _dashboard_build_rows() {
 
   REPLY_ROWS=""
   REPLY_START_POS=1
+  [[ -n "$data" ]] || return 0
+
+  # Every workspace's first-window state in ONE tmux call (user options
+  # resolve in -F formats) rather than ~8 tmux calls per workspace: this
+  # function runs on every open, every fold and every reorder, and a tmux
+  # call costs ~7ms on a busy server — measured >1s per fold with 4
+  # workspaces / 8 AI panes before. \x1f, not tab: `read` collapses runs of
+  # a whitespace IFS, shifting every field after an empty one.
+  #   first window    — lowest-index window (list-panes order), as before
+  #   @AI_PANES/...   — that window's pane list, tools, labels, cycle index
+  #   @AI_PANE_ID/@AI_TOOL — legacy single-pane fallback (@AI_PANES unset)
+  #   focused pane    — tmux's own pane_active in that window, see below
+  #   @lazy_llm_collapsed — the session's fold flag
+  #   @lazy_llm_wt    — per PANE (any window, hold windows too): the pane
+  #                     worktree an isolated AI pane runs in (llm-add -i)
+  local -A w_first=() w_panes=() w_tools=() w_names=() w_idx=() w_single=() w_single_tool=() w_focused=() w_collapsed=() pane_wt=()
+  local s win act pane_id o_panes o_tools o_names o_idx o_single o_single_tool o_collapsed o_wt
+  while IFS=$'\x1f' read -r s win act pane_id o_panes o_tools o_names o_idx o_single o_single_tool o_collapsed o_wt; do
+    [[ -n "$o_wt" ]] && pane_wt[$pane_id]="$o_wt"
+    if [[ -z "${w_first[$s]+set}" ]]; then
+      w_first[$s]="$win"; w_panes[$s]="$o_panes"; w_tools[$s]="$o_tools"; w_names[$s]="$o_names"
+      w_idx[$s]="$o_idx"; w_single[$s]="$o_single"; w_single_tool[$s]="$o_single_tool"
+      w_collapsed[$s]="$o_collapsed"
+    fi
+    [[ "$win" == "${w_first[$s]}" && "$act" == "1" ]] && w_focused[$s]="$pane_id"
+  done < <(tmux list-panes -a -F $'#{session_name}\x1f#{window_index}\x1f#{pane_active}\x1f#{pane_id}\x1f#{@AI_PANES}\x1f#{@AI_TOOLS}\x1f#{@AI_PANE_NAMES}\x1f#{@AI_PANE_IDX}\x1f#{@AI_PANE_ID}\x1f#{@AI_TOOL}\x1f#{@lazy_llm_collapsed}\x1f#{@lazy_llm_wt}' 2>/dev/null)
+
+  # Colored glyph per status, computed once rather than two subshells per row.
+  local -A glyph=()
+  local st
+  for st in waiting unread working idle unknown; do
+    glyph[$st]=$(glyph_for_colored "$st")
+  done
+
   local lines="" _line_no=0
-  if [[ -n "$data" ]]; then
-    while IFS=$'\t' read -r name dir tools wins attached; do
-      local first_win
-      first_win=$(tmux list-windows -t "$name" -F '#{window_index}' 2>/dev/null | head -1)
+  local name dir tools wins attached
+  while IFS=$'\t' read -r name dir tools wins attached; do
+    # Full per-pane list for this workspace's first window — every AI pane
+    # gets its own row + glyph, not just the first (the old Sessions tab's
+    # limitation this task exists to fix).
+    local reply_idx="${w_idx[$name]:-0}" reply_names="${w_names[$name]:-}"
+    local -a pane_arr=() tool_arr=() name_arr=()
+    if [[ -n "${w_panes[$name]:-}" ]]; then
+      read -ra pane_arr <<< "${w_panes[$name]}"
+      read -ra tool_arr <<< "${w_tools[$name]:-}"
+    elif [[ -n "${w_single[$name]:-}" ]]; then
+      # Legacy/single-pane fallback: @AI_PANES was never set for this window
+      # (e.g. a workspace that's never had a second pane added).
+      pane_arr=("${w_single[$name]}")
+      tool_arr=("${w_single_tool[$name]:-${tools%% *}}")
+    fi
+    [[ -n "$reply_names" ]] && read -ra name_arr <<< "$reply_names"
 
-      # Full per-pane list for this workspace's first window — every AI pane
-      # gets its own row + glyph, not just the first (the old Sessions tab's
-      # limitation this task exists to fix).
-      local reply_panes reply_tools reply_idx reply_names
-      lazy_llm_read_multi_state_for "$name" "$first_win"
-      reply_panes="$REPLY_PANES"; reply_tools="$REPLY_TOOLS"; reply_idx="${REPLY_IDX:-0}"
-      reply_names="$REPLY_PANE_NAMES"
-
-      local -a pane_arr=() tool_arr=()
-      if [[ -n "$reply_panes" ]]; then
-        read -ra pane_arr <<< "$reply_panes"
-        read -ra tool_arr <<< "$reply_tools"
-      else
-        # Legacy/single-pane fallback: @AI_PANES was never set for this window
-        # (e.g. a workspace that's never had a second pane added).
-        local single_pane_id
-        single_pane_id=$(tmux show-option -wv -t "$name:$first_win" @AI_PANE_ID 2>/dev/null) || single_pane_id=""
-        if [[ -n "$single_pane_id" ]]; then
-          local single_tool
-          single_tool=$(tmux show-option -wv -t "$name:$first_win" @AI_TOOL 2>/dev/null) || single_tool="${tools%% *}"
-          pane_arr=("$single_pane_id")
-          tool_arr=("$single_tool")
-        fi
-      fi
-
-      # "Active pane" heuristic: tmux's OWN per-window pane_active flag —
-      # the pane last given real focus in that window — instead of
-      # @AI_PANE_IDX (only updated by llm-cycle, so it goes stale the moment
-      # focus moves any other way: mouse click, prefix+arrow, etc.).
-      # Reported directly as "still not working" after the @AI_PANE_IDX
-      # version; tmux already tracks this natively and correctly per window,
-      # no extra bookkeeping needed. Falls back to @AI_PANE_IDX only when
-      # the actually-focused pane isn't one of this workspace's AI panes at
-      # all (e.g. focus is on the editor/prompt pane, not an AI one).
-      local focused_pane_id focus_i
-      focused_pane_id=$(tmux list-panes -t "$name:$first_win" -f '#{pane_active}' -F '#{pane_id}' 2>/dev/null | head -1) || focused_pane_id=""
-      if [[ -n "$focused_pane_id" ]]; then
-        for focus_i in "${!pane_arr[@]}"; do
-          [[ "${pane_arr[$focus_i]}" == "$focused_pane_id" ]] && { reply_idx="$focus_i"; break; }
-        done
-      fi
-
-      # Workspace row's aggregate glyph: worst-case across its panes, in the
-      # order a human would want to notice — blocked-on-you beats
-      # your-turn beats busy beats idle.
-      local saw_waiting=false saw_unread=false saw_working=false saw_idle=false
-      local i st
-      for i in "${!pane_arr[@]}"; do
-        st=$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]:-claude}")
-        case "$st" in
-          waiting) saw_waiting=true ;;
-          unread)  saw_unread=true ;;
-          working) saw_working=true ;;
-          idle)    saw_idle=true ;;
-        esac
+    # "Active pane" heuristic: tmux's OWN per-window pane_active flag —
+    # the pane last given real focus in that window — instead of
+    # @AI_PANE_IDX (only updated by llm-cycle, so it goes stale the moment
+    # focus moves any other way: mouse click, prefix+arrow, etc.).
+    # Reported directly as "still not working" after the @AI_PANE_IDX
+    # version; tmux already tracks this natively and correctly per window,
+    # no extra bookkeeping needed. Falls back to @AI_PANE_IDX only when
+    # the actually-focused pane isn't one of this workspace's AI panes at
+    # all (e.g. focus is on the editor/prompt pane, not an AI one).
+    local focused_pane_id="${w_focused[$name]:-}" focus_i
+    if [[ -n "$focused_pane_id" ]]; then
+      for focus_i in "${!pane_arr[@]}"; do
+        [[ "${pane_arr[$focus_i]}" == "$focused_pane_id" ]] && { reply_idx="$focus_i"; break; }
       done
-      local agg_glyph
-      agg_glyph=$(glyph_for_colored unknown)
-      if   [[ "$saw_waiting" == true ]]; then agg_glyph=$(glyph_for_colored waiting)
-      elif [[ "$saw_unread"  == true ]]; then agg_glyph=$(glyph_for_colored unread)
-      elif [[ "$saw_working" == true ]]; then agg_glyph=$(glyph_for_colored working)
-      elif [[ "$saw_idle"    == true ]]; then agg_glyph=$(glyph_for_colored idle)
-      fi
+    fi
 
-      local short_dir="${dir/#$HOME/\~}"
-      [[ ${#short_dir} -gt 40 ]] && short_dir="...${short_dir: -37}"
-      local mark=""
-      [[ -n "$attached" ]] && mark=" *"
+    # Each pane's status, detected once (it feeds both the workspace row's
+    # aggregate glyph and the pane's own row).
+    local -a st_arr=()
+    local i
+    for i in "${!pane_arr[@]}"; do
+      st_arr[i]=$(lazy_llm_detect_pane_status "${pane_arr[$i]}" "${tool_arr[$i]:-claude}")
+    done
 
-      local collapsed
-      collapsed=$(lazy_llm_read_collapsed "$name")
-      local fold_glyph="▾"
-      [[ "$collapsed" == "1" ]] && fold_glyph="▸"
+    # Workspace row's aggregate glyph: worst-case across its panes, in the
+    # order a human would want to notice — blocked-on-you beats
+    # your-turn beats busy beats idle.
+    local agg="unknown"
+    case " ${st_arr[*]} " in
+      *" waiting "*) agg=waiting ;;
+      *" unread "*)  agg=unread ;;
+      *" working "*) agg=working ;;
+      *" idle "*)    agg=idle ;;
+    esac
 
-      local ws_display
-      ws_display=$(printf '%s %-26s  %-40s  %s %-14s %sw%s' \
-        "$fold_glyph" "$name" "$short_dir" "$agg_glyph" "$tools" "$wins" "$mark")
-      lines+="ws:${name}"$'\t'"${ws_display}"$'\n'
-      _line_no=$((_line_no + 1))
-      # Fallback start position: the launch workspace's own row, in case it
-      # has no pane rows to land on below (collapsed, or no panes at all).
-      [[ "$name" == "$launch_ws" ]] && REPLY_START_POS=$_line_no
+    local short_dir="${dir/#$HOME/\~}"
+    [[ ${#short_dir} -gt 40 ]] && short_dir="...${short_dir: -37}"
+    local mark=""
+    [[ -n "$attached" ]] && mark=" *"
 
-      if [[ "$collapsed" != "1" ]]; then
-        for i in "${!pane_arr[@]}"; do
-          local pid="${pane_arr[$i]}" tool="${tool_arr[$i]:-?}" glyph
-          # Display label: the custom rename if one's set (and isn't the
-          # "_" no-override placeholder), else the tool name. Status
-          # detection below always uses $tool, never the display label —
-          # renaming a pane must not change what it's detected as.
-          local display_label
-          display_label=$(lazy_llm_pane_display_label "$tool" "$reply_names" "$i")
-          st=$(lazy_llm_detect_pane_status "$pid" "$tool")
-          glyph=$(glyph_for_colored "$st")
-          local pane_display
-          pane_display=$(printf '    ↳ %-12s %s' "$display_label" "$glyph")
-          # Bold instead of an "(active)" text tag — real ANSI codes (not
-          # tmux's #[..] syntax), since this is plain fzf row text rendered
-          # via --ansi, a different rendering context than status-right/
-          # pane-border-format.
-          [[ "$i" -eq "$reply_idx" ]] && pane_display=$'\033[1m'"${pane_display}"$'\033[0m'
-          lines+="pane:${name}:${i}:${pid}"$'\t'"${pane_display}"$'\n'
-          _line_no=$((_line_no + 1))
-          # Precise start position: this workspace's currently-active pane.
-          [[ "$name" == "$launch_ws" && "$i" -eq "$reply_idx" ]] && REPLY_START_POS=$_line_no
-        done
-      fi
-    done <<< "$data"
-    lines="${lines%$'\n'}"
-  fi
+    local collapsed="${w_collapsed[$name]:-}"
+    local fold_glyph="▾"
+    [[ "$collapsed" == "1" ]] && fold_glyph="▸"
+
+    local ws_display
+    printf -v ws_display '%s %-26s  %-40s  %s %-14s %sw%s' \
+      "$fold_glyph" "$name" "$short_dir" "${glyph[$agg]}" "$tools" "$wins" "$mark"
+    lines+="ws:${name}"$'\t'"${ws_display}"$'\n'
+    _line_no=$((_line_no + 1))
+    # Fallback start position: the launch workspace's own row, in case it
+    # has no pane rows to land on below (collapsed, or no panes at all).
+    [[ "$name" == "$launch_ws" ]] && REPLY_START_POS=$_line_no
+
+    if [[ "$collapsed" != "1" ]]; then
+      for i in "${!pane_arr[@]}"; do
+        local pid="${pane_arr[$i]}" tool="${tool_arr[$i]:-?}"
+        # Display label: the custom rename if one's set (and isn't the
+        # "_" no-override placeholder), else the tool name — same rule as
+        # lazy_llm_pane_display_label, inlined to skip a subshell per row.
+        # Status detection always uses $tool, never the display label —
+        # renaming a pane must not change what it's detected as.
+        local display_label="${name_arr[$i]:-_}"
+        [[ "$display_label" == "_" ]] && display_label="$tool"
+        local pane_display
+        printf -v pane_display '    ↳ %-12s %s' "$display_label" "${glyph[${st_arr[$i]}]:-${glyph[unknown]}}"
+        # Isolated pane: ⎇, plus the worktree's name (its directory) when
+        # the pane's label isn't already that name. Plain ANSI, like the
+        # bold below.
+        if [[ -n "${pane_wt[$pid]:-}" ]]; then
+          local wt_name="${pane_wt[$pid]##*/}"
+          if [[ "$display_label" == "$wt_name" ]]; then
+            pane_display+=$' \033[38;5;75m⎇\033[0m'
+          else
+            pane_display+=$' \033[38;5;75m⎇ '"${wt_name}"$'\033[0m'
+          fi
+        fi
+        # Bold instead of an "(active)" text tag — real ANSI codes (not
+        # tmux's #[..] syntax), since this is plain fzf row text rendered
+        # via --ansi, a different rendering context than status-right/
+        # pane-border-format.
+        [[ "$i" -eq "$reply_idx" ]] && pane_display=$'\033[1m'"${pane_display}"$'\033[0m'
+        lines+="pane:${name}:${i}:${pid}"$'\t'"${pane_display}"$'\n'
+        _line_no=$((_line_no + 1))
+        # Precise start position: this workspace's currently-active pane.
+        [[ "$name" == "$launch_ws" && "$i" -eq "$reply_idx" ]] && REPLY_START_POS=$_line_no
+      done
+    fi
+  done <<< "$data"
+  lines="${lines%$'\n'}"
   REPLY_ROWS="$lines"
 }
 
@@ -366,7 +407,7 @@ render_sessions_tab() {
     # "? unknown" is left to the Help tab — rare, and it kept this line short.
     local _legend="◐ waiting  ◉ unread  ● working  ○ idle"
     if [[ "$_budget" -ge 85 ]]; then
-      header="/:search enter:switch K:kill/rm r:rename z:fold a:add-pane ]/[:cycle-pane R:refresh"
+      header="/:search enter:switch K:kill/rm r:rename z:fold a:add-pane A:add-isolated ]/[:cycle-pane s:save R:refresh"
       [[ "$_budget" -ge 40 ]] && header+=$'\n'"$_legend"
     elif [[ "$_budget" -ge 50 ]]; then
       header="/:search enter:switch K:kill a:add-pane R:refresh"
@@ -374,6 +415,13 @@ render_sessions_tab() {
     else
       header=""
     fi
+  fi
+  [[ -n "$_dashboard_flash" ]] && header="$_dashboard_flash"${header:+$'\n'"$header"}
+  # Workspaces that died with an earlier tmux server, waiting in the Saved tab.
+  local _restorable
+  _restorable=$(_dashboard_restorable_count)
+  if [[ "${_restorable:-0}" -gt 0 ]]; then
+    header="◌ $_restorable saved workspace$([[ $_restorable -eq 1 ]] || echo s) not running — 3: Saved${header:+$'\n'$header}"
   fi
 
   # Preview: branch on the row's hidden id (field 1) to find the right pane —
@@ -430,7 +478,7 @@ render_sessions_tab() {
   # --fold-transform (the command run) toggles this row's workspace's fold
   # flag out-of-process ({1} is the hidden id field — same idiom the preview
   # command above already uses for {1}), rebuilds the row list, and prints
-  # back `reload-sync(... --emit-rows)+pos(N)` — reload-sync() swaps in the
+  # back `reload-sync(cat <rows file>)+pos(N)` — reload-sync() swaps in the
   # new list in the SAME running fzf process (no exit, no relaunch, no
   # flicker — verified live: identical fzf PID across a fold action, via
   # `ps --ppid <popup pane pid> --forest`), and the chained pos(N) explicitly
@@ -493,24 +541,37 @@ render_sessions_tab() {
   # remove every single-letter action key (this pair included) the instant
   # '/' is pressed — 'j'/'k' remain fully typable in a search query, same
   # as any other action letter already is.
+  #
+  # --sync: without it fzf shows the finder and starts reading keys before
+  # the row list has loaded, and a print(KEY)+accept key pressed in that
+  # window accepts with no current row — fzf exits 1, and the `|| echo quit`
+  # below closes the whole dashboard. Reported as "the dashboard crashes if
+  # input comes too soon when opening it"; reproduced with a bare fzf fed
+  # through a `sleep 1` (early '2' → exit 1). --sync holds the finder, and
+  # every keystroke, until the input is read and the load:pos(N) binding has
+  # run, so an early key is queued and then acted on normally. Every tab's
+  # fzf call below sets it for the same reason.
+  # fzf < 0.61 can't bind ctrl-up/ctrl-down (older macOS Homebrew/system
+  # builds): probe once and fall back to alt-up/alt-down for manual reorder.
   local -a _reorder_binds=(
     --bind="ctrl-up:transform($_dashboard_self --reorder-transform up {1})"
     --bind="ctrl-down:transform($_dashboard_self --reorder-transform down {1})"
-    --bind='/:unbind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down,j,k)+show-input+enable-search'
-    --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?,ctrl-up,ctrl-down,j,k)'
+    --bind='/:unbind(1,2,3,K,r,R,s,z,a,A,],[,?,ctrl-up,ctrl-down,j,k)+show-input+enable-search'
+    --bind='tab:clear-query+hide-input+rebind(1,2,3,K,r,R,s,z,a,A,],[,?,ctrl-up,ctrl-down,j,k)'
   )
   if ! fzf --bind='ctrl-up:abort' --filter='' </dev/null >/dev/null 2>&1; then
     _reorder_binds=(
       --bind="alt-up:transform($_dashboard_self --reorder-transform up {1})"
       --bind="alt-down:transform($_dashboard_self --reorder-transform down {1})"
-      --bind='/:unbind(1,2,K,r,R,z,a,],[,?,alt-up,alt-down,j,k)+show-input+enable-search'
-      --bind='tab:clear-query+hide-input+rebind(1,2,K,r,R,z,a,],[,?,alt-up,alt-down,j,k)'
+      --bind='/:unbind(1,2,3,K,r,R,s,z,a,A,],[,?,alt-up,alt-down,j,k)+show-input+enable-search'
+      --bind='tab:clear-query+hide-input+rebind(1,2,3,K,r,R,s,z,a,A,],[,?,alt-up,alt-down,j,k)'
     )
   fi
 
   local selection key
   selection=$(printf '%s\n' "$lines" | fzf \
     --height=100% \
+    --sync \
     --ansi \
     --reverse \
     --border=rounded \
@@ -522,10 +583,11 @@ render_sessions_tab() {
     --preview-window="right:55%:follow" \
     --disabled --no-input \
     --bind='enter:print()+accept' \
-    --bind='1:print(1)+accept' --bind='2:print(2)+accept' \
+    --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
     --bind='K:print(K)+accept' --bind='r:print(r)+accept' --bind='R:print(R)+accept' \
+    --bind='s:print(s)+accept' \
     --bind="z:transform($_dashboard_self --fold-transform {1})" \
-    --bind='a:print(a)+accept' \
+    --bind='a:print(a)+accept' --bind='A:print(A)+accept' \
     --bind=']:print(])+accept' --bind='[:print([)+accept' --bind='?:print(?)+accept' \
     --bind="k:transform($_dashboard_self --reorder-transform up {1})" \
     --bind="j:transform($_dashboard_self --reorder-transform down {1})" \
@@ -595,6 +657,8 @@ render_sessions_tab() {
   case "$key" in
     1)     echo "action:refresh" ;;
     2)     echo "tab:worktrees" ;;
+    3)     echo "tab:saved" ;;
+    s)     echo "action:save-now" ;;
     K)
       if [[ -n "$chosen_pane_idx" ]]; then
         if [[ -n "$launch_ws" && "$chosen_ws" == "$launch_ws" ]]; then
@@ -619,6 +683,7 @@ render_sessions_tab() {
       ;;
     R)     echo "action:refresh" ;;
     a)     echo "action:pane-add" ;;
+    A)     echo "action:pane-add-isolated" ;;
     "]")   echo "action:pane-next" ;;
     "[")   echo "action:pane-prev" ;;
     "?")   echo "tab:help" ;;
@@ -643,11 +708,11 @@ render_worktrees_tab() {
   data=$(lazy_llm_gather_worktrees)
 
   if [[ -z "$data" ]]; then
-    lines="(No worktrees in this repo, or not inside a git repo.)"
+    lines=$'\t\t'"(No worktrees in this repo, or not inside a git repo.)"
     header="no worktrees — n:new"
   else
     lines=""
-    while IFS=$'\t' read -r path branch dirty ahead behind session pr; do
+    while IFS=$'\x1f' read -r path branch dirty ahead behind session pr owner; do
       local short_path="${path/#$HOME/\~}"
       [[ ${#short_path} -gt 38 ]] && short_path="...${short_path: -35}"
 
@@ -662,8 +727,18 @@ render_worktrees_tab() {
         CLOSED) pr_mark="PRx" ;;
       esac
 
-      lines+=$(printf '%-38s  %-24s %s  %-10s %s  %s' \
-        "$short_path" "$branch" "$dirty_mark" "$ab" "$sess_mark" "$pr_mark")
+      # Pane worktrees (llm-wt): ⎇ and the workspace owning them, or orphaned.
+      local owner_mark=""
+      case "$owner" in
+        pane:*) owner_mark=$'\033[38;5;75m⎇\033[0m '"$(cut -d: -f2 <<< "$owner")" ;;
+        orphaned) owner_mark=$'\033[38;5;75m⎇\033[0m orphaned' ;;
+      esac
+
+      # Hidden fields: the FULL path (the display truncates long ones, and
+      # a truncated path is no path at all) and the owner, for the keys.
+      lines+="${path}"$'\t'"${owner}"$'\t'
+      lines+=$(printf '%-38s  %-24s %s  %-10s %s  %s  %s' \
+        "$short_path" "$branch" "$dirty_mark" "$ab" "$sess_mark" "$pr_mark" "$owner_mark")
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
@@ -681,8 +756,7 @@ render_worktrees_tab() {
 
   # Preview: git status -sb + recent log for the selected worktree path.
   local preview_cmd
-  preview_cmd='set -- {1}; '
-  preview_cmd+='wt="$1"; wt="${wt/#\~/$HOME}"; '
+  preview_cmd='wt={1}; '
   preview_cmd+='if git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then '
   preview_cmd+='echo "=== git status ==="; git -C "$wt" -c color.status=always status -sb 2>&1 | head -20; '
   preview_cmd+='echo; echo "=== git log -10 ==="; git -C "$wt" -c color.ui=always log --oneline -10 2>&1; '
@@ -693,47 +767,318 @@ render_worktrees_tab() {
   local selection key
   selection=$(echo "$lines" | fzf \
     --height=100% \
+    --sync \
     --ansi \
     --reverse \
     --border=rounded \
     --prompt="worktree> " \
     --header="$header" \
+    --delimiter=$'\t' \
+    --with-nth=3 \
     --preview="$preview_cmd" \
     --preview-window="right:55%:follow" \
     --disabled --no-input \
     --bind='enter:print()+accept' \
-    --bind='1:print(1)+accept' --bind='2:print(2)+accept' \
+    --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
     --bind='n:print(n)+accept' --bind='g:print(g)+accept' \
     --bind='K:print(K)+accept' --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
-    --bind='/:unbind(1,2,n,g,K,R,?)+show-input+enable-search' \
-    --bind='tab:clear-query+hide-input+rebind(1,2,n,g,K,R,?)' \
+    --bind='/:unbind(1,2,3,n,g,K,R,?)+show-input+enable-search' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,3,n,g,K,R,?)' \
     --bind='q:abort' \
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
-  local chosen_line chosen_path
+  local chosen_line chosen_path chosen_owner
   chosen_line=$(echo "$selection" | tail -1)
-  chosen_path=$(echo "$chosen_line" | awk '{print $1}')
-  chosen_path="${chosen_path/#\~/$HOME}"
+  chosen_path=$(printf '%s' "$chosen_line" | cut -f1)
+  chosen_owner=$(printf '%s' "$chosen_line" | cut -f2)
   [[ -d "$chosen_path" ]] || chosen_path=""
 
   case "$key" in
     1)   echo "tab:workspaces" ;;
     2)   echo "action:refresh" ;;
+    3)   echo "tab:saved" ;;
     n)   echo "action:worktree-new" ;;
     g)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-lazygit:$chosen_path" ;;
-    K)   [[ -z "$chosen_path" ]] && echo "action:refresh" || echo "action:worktree-cleanup:$chosen_path" ;;
+    K)
+      if [[ -z "$chosen_path" ]]; then
+        echo "action:refresh"
+      elif [[ "$chosen_owner" == pane:* ]]; then
+        echo "action:worktree-pane-busy"
+      elif [[ "$chosen_owner" == orphaned ]]; then
+        echo "action:worktree-pane-cleanup:$chosen_path"
+      else
+        echo "action:worktree-cleanup:$chosen_path"
+      fi
+      ;;
     R)   echo "action:refresh" ;;
     "?") echo "tab:help" ;;
     *)
-      [[ -z "$chosen_path" ]] && echo "quit" || echo "action:worktree-open:$chosen_path"
+      if [[ -z "$chosen_path" ]]; then
+        echo "quit"
+      elif [[ "$chosen_owner" == pane:* ]]; then
+        # A live pane worktree: go to its pane (switch-pane wants the pane's
+        # index in its workspace's first window).
+        local o_s o_p o_win o_i=0 o_p2 o_found=""
+        o_s=$(cut -d: -f2 <<< "$chosen_owner"); o_p=$(cut -d: -f3 <<< "$chosen_owner")
+        o_win=$(tmux list-windows -t "$o_s" -F '#{window_index}' 2>/dev/null | head -1)
+        for o_p2 in $(tmux show-option -wqv -t "$o_s:$o_win" @AI_PANES 2>/dev/null); do
+          [[ "$o_p2" == "$o_p" ]] && { o_found=$o_i; break; }
+          o_i=$((o_i + 1))
+        done
+        [[ -n "$o_found" ]] && echo "action:switch-pane:$o_s:$o_found" || echo "action:switch:$o_s"
+      elif [[ "$chosen_owner" == orphaned ]]; then
+        echo "action:worktree-adopt:$chosen_path"
+      else
+        echo "action:worktree-open:$chosen_path"
+      fi
       ;;
   esac
 }
 
 # ──────────────────────────────────────────────────────────────────────────
+# Saved tab — workspaces in llm-persist's manifest (see llm-persist's header)
+# ──────────────────────────────────────────────────────────────────────────
+
+# Dropped entries (killed or forgotten) are hidden unless toggled on with
+# 'd'. The main loop owns this flag: each tab renders in a subshell and can't
+# flip it itself.
+_dashboard_saved_dropped=false
+
+# One-shot status line for the next render's header (e.g. a save's summary),
+# set by dispatch_action — which runs in the main loop's own shell — and
+# cleared by the main loop once a tab has rendered with it.
+_dashboard_flash=""
+
+# Blank the popup with a one-line message while a slow action runs (fzf has
+# exited, so otherwise its last frame just sits there looking current).
+_dashboard_busy() {
+  printf '\033[2J\033[H\n  %s\n' "$1" > /dev/tty 2>/dev/null || true
+}
+
+# Pad stdin (one line) to $1 characters — character-counted, not printf's
+# byte-counted %-*s (see _help_pad).
+_dashboard_pad() {
+  local text pad
+  IFS= read -r text || true
+  pad=$(( $1 - ${#text} ))
+  [[ "$pad" -lt 0 ]] && pad=0
+  printf '%s%*s' "$text" "$pad" ""
+}
+
+# One fzf line per manifest entry, from `llm-persist saved --tsv`:
+#   saved:<id> <TAB> <state> <TAB> <display>
+# live first (dashboard order), then restorable, closed, dropped. Reads only
+# the manifest — no RPC, no save — so it's cheap, and testable via
+# --emit-saved-rows.
+# Args: $1 "--dropped" to include dropped entries
+#
+# Entries are folded by default; 'z' expands one to list its AI panes as
+# child rows ("saved-pane:<id>:<window>:<pane>", carrying the entry's state
+# so Enter/K on a pane row act on its workspace). Which entries are open is a
+# server-scoped tmux option, @lazy_llm_saved_open (space-separated ids), for
+# the same reason fold state is external in the Workspaces tree: 'z' runs as
+# an fzf transform() subprocess (see --saved-fold-transform).
+_dashboard_build_saved_rows() {
+  local flag="${1:-}" state id name _dir panes _held convs _saved ago glyph color open fold
+  local parent_state="" w p tool pname conv where
+  open=" $(tmux show-option -sqv @lazy_llm_saved_open 2>/dev/null) "
+  local -a args=(saved --tsv --expand "$open")
+  [[ "$flag" == "--dropped" ]] && args+=(--dropped)
+  # Compact on purpose: the list column is under half the popup (the preview
+  # takes the rest and shows the dir and every pane).
+  while IFS=$'\t' read -r state id name _dir panes _held convs _saved ago; do
+    [[ -n "$id" ]] || continue
+    if [[ "$state" == pane ]]; then
+      # pane <id> <window> <pane> <tool> <name> <conv> <visible|held>
+      w="$name"; p="$_dir"; tool="$panes"; pname="$_held"; conv="$convs"; where="$_saved"
+      [[ "$pname" == "-" ]] && pname=""
+      [[ "$conv" == "-" ]] && conv="no conversation" || conv="conv ${conv:0:8}"
+      printf 'saved-pane:%s:%s:%s\t%s\t      ↳ %s %s· %s · %s\n' "$id" "$w" "$p" "$parent_state" \
+        "$(_dashboard_pad 8 <<< "$tool")" "${pname:+$(lazy_llm_clamp_label "$pname" 24) }" "$conv" "$where"
+      continue
+    fi
+    if [[ "$state" == snaphdr ]]; then
+      # snaphdr <ts> <pretty date>: a manual save's divider; its workspaces follow
+      printf 'snap-hdr:%s\tsnaphdr\t\033[38;2;138;138;138m── manual save · %s %s\033[0m\n' "$id" "$name" \
+        "────────────────────────────────"
+      continue
+    fi
+    parent_state="$state"
+    case "$state" in
+      live)       glyph="●"; color="#5fff00" ;;
+      restorable) glyph="◌"; color="#ffff00" ;;
+      closed)     glyph="◇"; color="#bcbcbc" ;;
+      snapshot)   glyph="◆"; color="#87afff" ;;
+      *)          glyph="✕"; color="#8a8a8a" ;;
+    esac
+    [[ "$open" == *" $id "* ]] && fold="▾" || fold="▸"
+    printf 'saved:%s\t%s\t%s %s%s\033[0m %s %s · %s/%s conv · %s\n' "$id" "$state" "$fold" \
+      "$(_ansi_fg "$color")" "$glyph" "$(lazy_llm_clamp_label "$name" 20 | _dashboard_pad 20)" \
+      "$panes pane$([[ $panes -eq 1 ]] || echo s)" "$convs" "$panes" "$ago"
+  done < <("$HOME/.local/bin/llm-persist" "${args[@]}" 2>/dev/null || true)
+}
+
+# The entry key behind a Saved-tab row id: "saved:<key>" or
+# "saved-pane:<key>:<w>:<p>", where <key> is an entry id or, for a manual
+# save's entry, "<ts>/<id>"; for a divider ("snap-hdr:<ts>"), the <ts>.
+_dashboard_saved_row_entry() {
+  local rid="$1"
+  case "$rid" in
+    saved:*) printf '%s\n' "${rid#saved:}" ;;
+    saved-pane:*) rid="${rid#saved-pane:}"; printf '%s\n' "${rid%%:*}" ;;
+    snap-hdr:*) printf '%s\n' "${rid#snap-hdr:}" ;;
+  esac
+}
+
+render_saved_tab() {
+  local lines header flag=""
+  $_dashboard_saved_dropped && flag="--dropped"
+  lines=$(_dashboard_build_saved_rows "$flag")
+
+  local _budget
+  _budget=$(_dashboard_header_budget)
+  if [[ -z "$lines" ]]; then
+    header="nothing saved yet — s:save now"
+  elif [[ "$_budget" -ge 60 ]]; then
+    header="enter:restore/switch z:panes c:close(keep) K:drop A:restore-all s:save d:dropped"
+  elif [[ "$_budget" -ge 30 ]]; then
+    header="enter:restore z:panes c:close K:drop s:save"
+  else
+    header=""
+  fi
+  [[ -n "$lines" && "$_budget" -ge 40 ]] && header+=$'\n'"● live  ◌ died  ◇ closed (kept)  ◆ manual save  ✕ dropped"
+  $_dashboard_saved_dropped && header+=$'\n'"(showing dropped workspaces — d to hide)"
+  [[ -n "$_dashboard_flash" ]] && header="$_dashboard_flash"${header:+$'\n'"$header"}
+
+  local preview_cmd
+  preview_cmd='set -- {1}; case "$1" in snap-hdr:*) echo "A manual save (Prefix+C-s, s, lazy-llm save)."; echo; echo "Enter on one of its workspaces brings it back as it was then"; echo "(as a copy if that workspace is running). K here deletes the whole save."; exit 0 ;; esac; '
+  preview_cmd+='id="${1#saved:}"; id="${id#saved-pane:}"; id="${id%%:*}"; '
+  preview_cmd+='"$HOME/.local/bin/llm-persist" saved -v --id "$id" 2>&1'
+
+  # Modal search + --height=100% — see the matching comments on the
+  # Workspaces tab's fzf call.
+  local selection key
+  selection=$(printf '%s\n' "$lines" | fzf \
+    --height=100% \
+    --sync \
+    --ansi \
+    --reverse \
+    --border=rounded \
+    --prompt="saved> " \
+    --header="$header" \
+    --delimiter=$'\t' \
+    --with-nth=3 \
+    --preview="$preview_cmd" \
+    --preview-window="right:50%" \
+    --disabled --no-input \
+    --bind='enter:print()+accept' \
+    --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
+    --bind='A:print(A)+accept' --bind='s:print(s)+accept' --bind='K:print(K)+accept' \
+    --bind='c:print(c)+accept' --bind='d:print(d)+accept' --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
+    --bind="z:transform($_dashboard_self --saved-fold-transform '${flag:-_}' {1})" \
+    --bind='/:unbind(1,2,3,A,s,K,c,d,R,?,z)+show-input+enable-search' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,3,A,s,K,c,d,R,?,z)' \
+    --bind='q:abort' \
+  ) || { echo "quit"; return 0; }
+
+  key=$(echo "$selection" | head -1)
+  local chosen_line chosen_id chosen_state
+  chosen_line=$(echo "$selection" | tail -1)
+  chosen_id=$(_dashboard_saved_row_entry "$(printf '%s' "$chosen_line" | cut -f1)")
+  chosen_state=$(printf '%s' "$chosen_line" | cut -f2)
+  [[ "$chosen_line" == saved* ]] || { chosen_id=""; chosen_state=""; }
+
+  case "$key" in
+    1)   echo "tab:workspaces" ;;
+    2)   echo "tab:worktrees" ;;
+    3|R) echo "action:refresh" ;;
+    A)
+      # Scoped to the highlighted row's section: a manual save (its divider
+      # or one of its entries) restores that save's workspaces; anywhere else,
+      # the rolling entries that died with their tmux server.
+      if [[ "$chosen_state" == snapshot || "$chosen_state" == snaphdr ]]; then
+        echo "action:saved-restore-all:${chosen_id%%/*}"
+      else
+        echo "action:saved-restore-all"
+      fi
+      ;;
+    s)   echo "action:save-now" ;;
+    d)   echo "action:saved-toggle-dropped" ;;
+    "?") echo "tab:help" ;;
+    c)
+      if [[ "$chosen_state" == live ]]; then
+        echo "action:saved-close:$chosen_id"
+      else
+        echo "action:saved-hint:only a running workspace can be closed — Enter restores this one"
+      fi
+      ;;
+    K)
+      if [[ -z "$chosen_id" ]]; then
+        echo "action:refresh"
+      elif [[ "$chosen_state" == live ]]; then
+        echo "action:saved-kill:$chosen_id"
+      elif [[ "$chosen_state" == snapshot || "$chosen_state" == snaphdr ]]; then
+        echo "action:saved-forget-snap:$chosen_id"
+      else
+        echo "action:saved-forget:$chosen_state:$chosen_id"
+      fi
+      ;;
+    *)
+      if [[ -z "$chosen_id" ]]; then
+        echo "quit"
+      elif [[ "$chosen_state" == live ]]; then
+        echo "action:saved-switch:$chosen_id"
+      elif [[ "$chosen_state" == snapshot ]]; then
+        echo "action:saved-restore-snap:$chosen_id"
+      elif [[ "$chosen_state" == snaphdr ]]; then
+        echo "action:saved-hint:pick one of this manual save's workspaces to restore it"
+      else
+        echo "action:saved-restore:$chosen_id"
+      fi
+      ;;
+  esac
+}
+
+# How many saved workspaces are waiting to be restored (for the Workspaces
+# tab's header). Manifest only — cheap enough for every render.
+_dashboard_restorable_count() {
+  "$HOME/.local/bin/llm-persist" saved --tsv 2>/dev/null | grep -c '^restorable' || true
+}
+
+# ──────────────────────────────────────────────────────────────────────────
 # Action dispatch
 # ──────────────────────────────────────────────────────────────────────────
+
+# Close (keep it saved, ◇ in the Saved tab) or kill (drop it) a running
+# workspace. With no $2, asks which; "no" is first so a stray Enter is safe.
+# Args: $1 session name  $2 close|kill (optional)
+_dashboard_close_or_kill() {
+  local name="$1" how="${2:-}" choice
+  if [[ -z "$how" ]]; then
+    choice=$(printf '%s\n' "no" "close — keep it in Saved, restore it later" "kill — drop it from Saved too" | fzf \
+      --height=100% --reverse --border=rounded --header="Close workspace '$name'?" \
+      --prompt="confirm> " || echo no)
+    case "$choice" in
+      close*) how="close" ;;
+      kill*)  how="kill" ;;
+      *)      return 0 ;;
+    esac
+  else
+    choice=$(printf 'no\nyes' | fzf \
+      --height=100% --reverse --border=rounded \
+      --header="$([[ "$how" == close ]] && echo "Close '$name', keeping it saved?" || echo "Kill '$name' and drop it from Saved?")" \
+      --prompt="confirm> " || echo no)
+    [[ "$choice" == yes ]] || return 0
+  fi
+  if [[ "$how" == close ]]; then
+    _dashboard_busy "closing $name…"
+    _dashboard_flash=$("$HOME/.local/bin/llm-persist" close "$name" 2>&1 | tail -1) || true
+  else
+    # llm-sessions --kill: the validated kill path (checks the @lazy_llm marker), and it drops the entry
+    "$HOME/.local/bin/llm-sessions" --kill "$name" >&2 || true
+  fi
+}
 
 dispatch_action() {
   local action="$1"
@@ -770,15 +1115,37 @@ dispatch_action() {
         || echo "Could not switch to $name" >&2
       ;;
     action:kill:*)
-      local name="${action#action:kill:}"
-      # Use llm-sessions --kill for the validated kill path (checks @lazy_llm marker)
-      local confirm
-      confirm=$(printf 'no\nyes' | fzf \
-        --height=100% --reverse --border=rounded --header="Kill workspace '$name'?" \
-        --prompt="confirm> " || echo no)
-      if [[ "$confirm" == "yes" ]]; then
-        "$HOME/.local/bin/llm-sessions" --kill "$name" >&2 || true
+      _dashboard_close_or_kill "${action#action:kill:}"
+      ;;
+    action:saved-close:*|action:saved-kill:*)
+      local sid="${action#action:saved-*:}" sname
+      sname=$(tmux list-sessions -F '#{session_name}	#{@lazy_llm_ws_id}' 2>/dev/null \
+        | awk -F'\t' -v id="$sid" '$2 == id {print $1; exit}') || sname=""
+      [[ -n "$sname" ]] && _dashboard_close_or_kill "$sname" \
+        "$([[ "$action" == action:saved-close:* ]] && echo close || echo kill)"
+      ;;
+    action:saved-hint:*)
+      tmux display-message "${action#action:saved-hint:}"
+      ;;
+    action:saved-restore-snap:*)
+      # Switches the client to the restored workspace (a copy of it if the
+      # original is running), which closes the popup.
+      local out
+      _dashboard_busy "restoring…"
+      out=$("$HOME/.local/bin/llm-persist" restore --snapshot "${action#action:saved-restore-snap:}" 2>&1) \
+        || tmux display-message "lazy-llm: restore failed: $(tail -1 <<< "$out")"
+      ;;
+    action:saved-forget-snap:*)
+      local skey="${action#action:saved-forget-snap:}" question confirm
+      if [[ "$skey" == */* ]]; then
+        question="Delete this workspace from the manual save?"
+      else
+        question="Delete this whole manual save?"
       fi
+      confirm=$(printf 'no\nyes' | fzf \
+        --height=100% --reverse --border=rounded --header="$question" \
+        --prompt="confirm> " || echo no)
+      [[ "$confirm" == "yes" ]] && { "$HOME/.local/bin/llm-persist" forget --snapshot "$skey" >/dev/null 2>&1 || true; }
       ;;
     action:rename:*)
       local name="${action#action:rename:}"
@@ -794,6 +1161,7 @@ dispatch_action() {
       if [[ -n "$new_name" ]] && [[ "$new_name" != "$name" ]]; then
         tmux rename-session -t "$name" "$new_name" 2>/dev/null \
           || echo "Could not rename to $new_name" >&2
+        lazy_llm_save_async
       fi
       ;;
     action:rename-pane:*)
@@ -833,13 +1201,69 @@ dispatch_action() {
         if [[ -n "$new_label" ]] && [[ "$new_label" != "$current_label" ]]; then
           name_arr[$idx]="$new_label"
           tmux set-option -w -t "$name:$win" @AI_PANE_NAMES "${name_arr[*]}"
+          lazy_llm_save_async
         fi
       fi
       ;;
     action:refresh)
       : # outer loop re-renders the current tab
       ;;
-    action:pane-add)
+    action:save-now)
+      local summary
+      _dashboard_busy "saving…"
+      summary=$("$HOME/.local/bin/llm-persist" save 2>&1 | tail -1) || true
+      _dashboard_flash="${summary:-lazy-llm: save failed} ($(date +%H:%M:%S))"
+      ;;
+    action:saved-restore:*)
+      # From inside tmux, restoring exactly one workspace switches the client
+      # to it (llm-persist restore's own behavior), which closes the popup.
+      local out
+      _dashboard_busy "restoring…"
+      out=$("$HOME/.local/bin/llm-persist" restore --id "${action#action:saved-restore:}" 2>&1) \
+        || tmux display-message "lazy-llm: restore failed: $(tail -1 <<< "$out")"
+      ;;
+    action:saved-restore-all|action:saved-restore-all:*)
+      # No ts: the rolling entries that died with their tmux server. A ts:
+      # every workspace of that manual save (running ones come back as copies).
+      local ts="" question confirm out n
+      [[ "$action" == action:saved-restore-all:* ]] && ts="${action#action:saved-restore-all:}"
+      if [[ -n "$ts" ]]; then
+        n=$(find "${LAZY_LLM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lazy-llm}/snapshots/$ts" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+        question="Restore the $n workspace(s) of the manual save of ${ts:0:4}-${ts:4:2}-${ts:6:2} ${ts:9:2}:${ts:11:2}? (running ones come back as copies)"
+      else
+        question="Restore every workspace that died with its tmux server (◌)?"
+      fi
+      confirm=$(printf 'no\nyes' | fzf \
+        --height=100% --reverse --border=rounded --header="$question" \
+        --prompt="confirm> " || echo no)
+      if [[ "$confirm" == "yes" ]]; then
+        _dashboard_busy "restoring…"
+        if [[ -n "$ts" ]]; then
+          out=$("$HOME/.local/bin/llm-persist" restore --snapshot "$ts" 2>&1) || true
+        else
+          out=$("$HOME/.local/bin/llm-persist" restore 2>&1) || true
+        fi
+        _dashboard_flash="lazy-llm: $(grep -c '^Restored' <<< "$out" || true) workspace(s) restored"
+      fi
+      ;;
+    action:saved-switch:*)
+      local sid="${action#action:saved-switch:}" sname
+      sname=$(tmux list-sessions -F '#{session_name}	#{@lazy_llm_ws_id}' 2>/dev/null \
+        | awk -F'\t' -v id="$sid" '$2 == id {print $1; exit}') || sname=""
+      [[ -n "$sname" ]] && tmux switch-client -t "=$sname" 2>/dev/null
+      ;;
+    action:saved-forget:*)
+      local rest="${action#action:saved-forget:}" state sid question confirm
+      state="${rest%%:*}"
+      sid="${rest#*:}"
+      question="Drop this saved workspace? (d shows dropped ones; they're deleted after 30 days)"
+      [[ "$state" == dropped ]] && question="Delete this dropped workspace for good?"
+      confirm=$(printf 'no\nyes' | fzf \
+        --height=100% --reverse --border=rounded --header="$question" \
+        --prompt="confirm> " || echo no)
+      [[ "$confirm" == "yes" ]] && { "$HOME/.local/bin/llm-persist" forget --id "$sid" >/dev/null 2>&1 || true; }
+      ;;
+    action:pane-add|action:pane-add-isolated)
       local tool
       # `|| true`: without it, pressing Esc here makes fzf exit nonzero, and
       # since this is a bare assignment (not tested by any if/while/||),
@@ -851,11 +1275,58 @@ dispatch_action() {
         --height=100% --reverse --border=rounded --prompt="tool> " \
         --header="Pick an AI tool to add (esc to cancel):" \
         --no-info || true)
-      [[ -n "$tool" ]] && "$HOME/.local/bin/llm-add" -t "$tool" >&2 || true
+      [[ -n "$tool" ]] || return 0
+      if [[ "$action" == action:pane-add-isolated ]]; then
+        # One name for the worktree's directory, branch (lazy/<name>) and the
+        # pane's label, set now and never renamed; Enter keeps the default.
+        local ws_dir default_name wt_name add_out
+        ws_dir=$(lazy_llm_workspace_dir "$(tmux display-message -p '#S')")
+        default_name=$("$HOME/.local/bin/llm-wt" default-name "$ws_dir" 2>/dev/null) || default_name=""
+        # A free-text prompt: Enter prints the query and exits. (accept-non-empty
+        # over an empty list never fires once the query is non-empty.)
+        wt_name=$(fzf --query="$default_name" --height=100% --reverse \
+          --border=rounded --prompt="name> " --no-info --bind 'enter:print-query' \
+          --header="Name the new worktree (its directory, branch lazy/<name> and the pane's label). Esc cancels." \
+          < /dev/null || true)
+        [[ -n "$wt_name" ]] || return 0
+        if ! add_out=$("$HOME/.local/bin/llm-add" -t "$tool" -i -n "$wt_name" 2>&1); then
+          tmux display-message "$(tail -1 <<< "$add_out")"
+        fi
+        return 0
+      fi
+      # Spec §3.1: with an isolated pane in view, offer to add into ITS
+      # worktree (preselected); otherwise `a` is exactly what it always was.
+      local vis_wt where
+      vis_wt=$(lazy_llm_visible_pane_wt)
+      if [[ -n "$vis_wt" && -d "$vis_wt" ]]; then
+        where=$(printf '%s\n' "Add in worktree $(git -C "$vis_wt" branch --show-current 2>/dev/null)" \
+            "Add in the main directory" "Cancel" | fzf \
+          --height=100% --reverse --border=rounded --prompt="where> " --no-info \
+          --header="The pane in view runs in its own worktree. Where should the new $tool pane go?" || true)
+        case "$where" in
+          "Add in worktree"*) "$HOME/.local/bin/llm-add" -t "$tool" -w "$vis_wt" >&2 || true ;;
+          "Add in the main directory") "$HOME/.local/bin/llm-add" -t "$tool" >&2 || true ;;
+        esac
+        return 0
+      fi
+      "$HOME/.local/bin/llm-add" -t "$tool" >&2 || true
       ;;
     action:pane-remove:*)
       local idx="${action#action:pane-remove:}"
       [[ -z "$idx" ]] && return 0
+      # The last pane in a pane worktree: llm-remove's own worktree dialog
+      # (Keep / Remove / Cancel) is the confirmation — don't ask twice.
+      local -a rm_panes=()
+      local rm_wt=""
+      read -ra rm_panes <<< "$(tmux display-message -p '#{@AI_PANES}' 2>/dev/null)"
+      if [[ -n "${rm_panes[$idx]:-}" ]]; then
+        rm_wt=$(tmux show-option -pqv -t "${rm_panes[$idx]}" @lazy_llm_wt 2>/dev/null) || rm_wt=""
+        [[ -n "$rm_wt" && "$(lazy_llm_wt_panes "$rm_wt" | wc -l)" -gt 1 ]] && rm_wt=""
+      fi
+      if [[ -n "$rm_wt" ]]; then
+        "$HOME/.local/bin/llm-remove" -f "$idx" >&2 || true
+        return 0
+      fi
       local confirm
       confirm=$(printf 'no\nyes' | fzf \
         --height=100% --reverse --border=rounded --header="Remove pane $idx?" \
@@ -871,6 +1342,24 @@ dispatch_action() {
     action:pane-remove-unsupported)
       tmux display-message "Pane removal only works for the current workspace's panes today — switch to it first (Enter), then K."
       ;;
+    action:worktree-pane-busy)
+      tmux display-message "That worktree's pane is still open — close the pane (K on its row in the Workspaces tab) to clean the worktree up."
+      ;;
+    action:worktree-pane-cleanup:*)
+      # An orphaned pane worktree: the same close dialog a pane gets.
+      local path="${action#action:worktree-pane-cleanup:}" decision
+      decision=$("$HOME/.local/bin/llm-wt" close "$path") || decision=keep
+      [[ "$decision" == remove ]] && { "$HOME/.local/bin/llm-wt" remove "$path" --force >&2 || true; }
+      ;;
+    action:worktree-adopt:*)
+      # An orphaned pane worktree: put an AI pane back in it, in the current
+      # workspace (the one this dashboard was opened from).
+      local path="${action#action:worktree-adopt:}" tool
+      tool=$(printf 'claude\njetski-cli\ngemini\nopencode\ncodex\ngrok\naider' | fzf \
+        --height=100% --reverse --border=rounded --prompt="tool> " --no-info \
+        --header="Orphaned worktree $(git -C "$path" branch --show-current 2>/dev/null): add an AI pane in it, in the current workspace (esc to cancel):" || true)
+      [[ -n "$tool" ]] && { "$HOME/.local/bin/llm-add" -t "$tool" -w "$path" >&2 || true; }
+      ;;
     action:worktree-open:*)
       local path="${action#action:worktree-open:}"
       local branch
@@ -883,10 +1372,10 @@ dispatch_action() {
       local new_branch
       # Same errexit hazard as action:pane-add above — `|| true` needed or
       # Esc here kills the whole dashboard.
-      new_branch=$(echo "" | fzf --print-query --height=100% --reverse --border=rounded \
+      new_branch=$(fzf --height=100% --reverse --border=rounded \
         --header="New worktree — branch name (will be created from HEAD if it doesn't exist):" \
         --prompt="branch> " --no-info \
-        --bind 'enter:accept-non-empty' | head -1 || true)
+        --bind 'enter:print-query' < /dev/null || true)
       if [[ -n "$new_branch" ]]; then
         "$HOME/.local/bin/lazy-llm" -W "$new_branch" >&2 || true
       fi
@@ -983,7 +1472,8 @@ render_help_tab() {
     "TABS"
     " 1   Workspaces"
     " 2   Worktrees"
-    " 3   Help (this tab)"
+    " 3   Saved (save / restore)"
+    " ?   Help (this tab)"
     ""
     "WORKSPACES TAB"
     " Enter  ws row: switch"
@@ -992,21 +1482,40 @@ render_help_tab() {
     " ^Up ^Dn reorder row (own level)"
     " k  j   same, no-Ctrl alternate"
     " r      rename ws / pane label"
-    " K      ws: kill · pane: remove"
+    " K      ws: close/kill · pane: rm"
     "        (current workspace only)"
+    " s      save all workspaces now"
     " R      refresh"
     ""
     "CURRENT WORKSPACE ONLY"
-    " a      add AI pane"
+    " a      add AI pane (asks where"
+    "        if the one in view is ⎇)"
+    " A      add isolated pane: own"
+    "        worktree + branch, named"
+    "        once (default <repo>-wt-N)"
     " ]  [   cycle next/prev pane"
   )
   local -a right=(
     "WORKTREES TAB"
     " Enter  open/attach in worktree"
+    "        ⎇ pane's: go to its pane"
+    "        ⎇ orphaned: add a pane in it"
     " n      new worktree + workspace"
     " g      launch lazygit"
     " K      atomic cleanup"
+    "        (⎇: once its pane is closed)"
     " R      refresh"
+    ""
+    "SAVED  ●live ◌died ◇closed ✕dropped"
+    " Enter  restore (switch if live)"
+    " z      show/hide its panes"
+    " c      close a live one, keep it"
+    " K      live: kill · else: drop"
+    " A      restore all in this section"
+    " s      save now (also Prefix+C-s);"
+    "        adds a ◆ manual save: Enter"
+    "        brings back that version"
+    " d      show/hide dropped ones"
     ""
     "GLOBAL"
     " ?      open this Help tab"
@@ -1061,6 +1570,7 @@ render_help_tab() {
   local selection key
   selection=$(printf '%s\n' "$body" | fzf \
     --height=100% \
+    --sync \
     --reverse \
     --border=rounded \
     --prompt="help> " \
@@ -1073,6 +1583,7 @@ render_help_tab() {
   case "$key" in
     1) echo "tab:workspaces" ;;
     2) echo "tab:worktrees" ;;
+    3) echo "tab:saved" ;;
     *) echo "action:refresh" ;;
   esac
 }
@@ -1083,7 +1594,7 @@ render_help_tab() {
 
 usage() {
   cat <<'EOF'
-Usage: llm-dashboard [--tab workspaces|worktrees|help] [--help]
+Usage: llm-dashboard [--tab workspaces|worktrees|saved|help] [--help]
 
 Tabbed popup dashboard for lazy-llm. Launches Workspaces tab by default. The
 Workspaces tab is a tree: every lazy-llm workspace, with its AI panes nested
@@ -1094,7 +1605,7 @@ either other tab) — the dashboard's own headers only have room for a couple
 of hints (see the Help tab for why), so this is the actual reference.
 
 Inside the dashboard:
-  1, 2, 3    switch tabs (Workspaces, Worktrees, Help)
+  1, 2, 3    switch tabs (Workspaces, Worktrees, Saved); ? opens Help
   Enter      primary action (switch workspace, or workspace+pane on a pane
              row / open worktree)
   n          new worktree+workspace (Worktrees — no workspace-level 'new' from here)
@@ -1105,11 +1616,22 @@ Inside the dashboard:
              same two actions (useful over an SSH/tunneled terminal where
              Ctrl+Arrow doesn't reach the popup cleanly).
   a          add an AI pane to the CURRENT workspace (Workspaces — the one
-             this dashboard was opened from, not whatever's highlighted)
+             this dashboard was opened from, not whatever's highlighted);
+             when the pane in view is isolated, asks: its worktree or the
+             main directory
+  A          add an ISOLATED AI pane to the CURRENT workspace: its own git
+             worktree and branch (Workspaces; see llm-wt)
   g          launch lazygit (Worktrees)
-  K          kill workspace / remove pane / cleanup worktree (with confirmation)
+  K          workspace: close (keep saved) or kill (drop) · pane: remove ·
+             Saved: drop · worktree: cleanup (all with confirmation)
   r          rename (Workspaces)
   ], [       cycle next / prev AI pane in the CURRENT workspace (Workspaces)
+  s          save every workspace now (Workspaces, Saved; also Prefix+C-s)
+  A          restore all in the highlighted section (Saved): the ones that died
+             with their tmux server, or every workspace of one manual save
+  c          close a running workspace but keep it saved (Saved)
+  d          show/hide dropped workspaces (Saved)
+  z          fold/unfold a saved workspace's AI panes (Saved; folded by default)
   R          refresh
   ?          open the Help tab
   q, Esc     close
@@ -1117,7 +1639,7 @@ EOF
 }
 
 # Parse args
-current_tab=workspaces
+current_tab=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tab)
@@ -1126,6 +1648,7 @@ while [[ $# -gt 0 ]]; do
         workspaces) current_tab="workspaces" ;;
         panes) current_tab="workspaces" ;; # compat alias — panes now live in the Workspaces tree
         worktrees) current_tab="worktrees" ;;
+        saved) current_tab="saved" ;;
         help) current_tab="help" ;;
         *) echo "Unknown tab: $1" >&2; exit 2 ;;
       esac
@@ -1142,6 +1665,37 @@ while [[ $# -gt 0 ]]; do
       shift
       _dashboard_build_rows "${LAZY_LLM_LAUNCH_SESSION:-}"
       printf '%s\n' "$REPLY_ROWS"
+      exit 0
+      ;;
+    --saved-fold-transform)
+      # Reload-plumbing for the Saved tab's 'z' (fzf transform(), run out
+      # of process — see --fold-transform for the Workspaces tree's twin).
+      # Args: the tab's --dropped flag ("_" for none), the row id ({1}).
+      # Toggles the row's entry in @lazy_llm_saved_open, rebuilds the rows,
+      # and puts the cursor back on the entry's own row.
+      shift
+      _dashboard_sfold_flag="${1:-_}"; shift
+      [[ "$_dashboard_sfold_flag" == "_" ]] && _dashboard_sfold_flag=""
+      _dashboard_sfold_id=$(_dashboard_saved_row_entry "${1:-}")
+      if [[ -n "$_dashboard_sfold_id" ]]; then
+        _dashboard_sfold_open=" $(tmux show-option -sqv @lazy_llm_saved_open 2>/dev/null) "
+        if [[ "$_dashboard_sfold_open" == *" $_dashboard_sfold_id "* ]]; then
+          _dashboard_sfold_open="${_dashboard_sfold_open/ $_dashboard_sfold_id / }"
+        else
+          _dashboard_sfold_open+="$_dashboard_sfold_id "
+        fi
+        _dashboard_sfold_open=$(xargs <<< "$_dashboard_sfold_open")
+        tmux set-option -s @lazy_llm_saved_open "$_dashboard_sfold_open" 2>/dev/null || true
+      fi
+      REPLY_ROWS=$(_dashboard_build_saved_rows "$_dashboard_sfold_flag")
+      _dashboard_sfold_pos=$(awk -F'\t' -v id="saved:$_dashboard_sfold_id" '$1==id{print NR; exit}' <<< "$REPLY_ROWS") || true
+      _dashboard_print_reload "${_dashboard_sfold_pos:-1}"
+      exit 0
+      ;;
+    --emit-saved-rows)
+      # The Saved tab's row list (testing / plumbing, like --emit-rows).
+      shift
+      _dashboard_build_saved_rows "${1:-}"
       exit 0
       ;;
     --fold-transform)
@@ -1193,7 +1747,10 @@ while [[ $# -gt 0 ]]; do
       # (`man fzf`'s own reload(...) vs reload-sync(...) distinction is
       # about blocking behavior for exactly this kind of chained-action
       # ordering, not just multi-select preservation).
-      printf 'reload-sync(%s --emit-rows)+pos(%s)\n' "$_dashboard_self" "$_dashboard_fold_pos"
+      _dashboard_print_reload "$_dashboard_fold_pos"
+      # After the output, so the manifest save doesn't compete with the
+      # redraw for CPU (it's detached either way).
+      lazy_llm_save_async
       exit 0
       ;;
     --reorder-transform)
@@ -1266,7 +1823,8 @@ while [[ $# -gt 0 ]]; do
       # --fold-transform (a plain reload()'s chained pos(N) can be
       # discarded before the new list actually lands); see its own comment
       # for the full root-cause writeup.
-      printf 'reload-sync(%s --emit-rows)+pos(%s)\n' "$_dashboard_self" "$_dashboard_reorder_pos"
+      _dashboard_print_reload "$_dashboard_reorder_pos"
+      lazy_llm_save_async
       exit 0
       ;;
     --help|-h) usage; exit 0 ;;
@@ -1278,6 +1836,16 @@ done
 # Main outer loop — tab dispatch
 # ──────────────────────────────────────────────────────────────────────────
 
+# No --tab: open on Workspaces, or on Saved when no lazy-llm workspace is
+# running (a fresh tmux after a reboot — Saved is where they come back from).
+if [[ -z "$current_tab" ]]; then
+  if [[ -z "$(lazy_llm_gather_sessions 2>/dev/null)" ]]; then
+    current_tab=saved
+  else
+    current_tab=workspaces
+  fi
+fi
+
 if ! command -v fzf &>/dev/null; then
   echo "Error: fzf is required" >&2
   exit 1
@@ -1287,18 +1855,27 @@ while true; do
   case "$current_tab" in
     workspaces) result=$(render_sessions_tab) ;;
     worktrees) result=$(render_worktrees_tab) ;;
+    saved)      result=$(render_saved_tab) ;;
     help)       result=$(render_help_tab) ;;
     *)         echo "Unknown tab: $current_tab" >&2; exit 1 ;;
   esac
+  # The flash was shown by the render that just returned.
+  _dashboard_flash=""
 
   case "$result" in
     tab:*)
       current_tab="${result#tab:}"
       ;;
-    action:switch:*|action:switch-pane:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*)
+    action:saved-toggle-dropped)
+      if $_dashboard_saved_dropped; then _dashboard_saved_dropped=false; else _dashboard_saved_dropped=true; fi
+      ;;
+    action:switch:*|action:switch-pane:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-add-isolated|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*|action:worktree-pane-busy|action:worktree-pane-cleanup:*|action:worktree-adopt:*|action:save-now|action:saved-*)
       dispatch_action "$result"
-      # Switch action exits the popup; for others we re-enter the current tab
-      [[ "$result" == action:switch:* || "$result" == action:switch-pane:* ]] && break
+      # Switching exits the popup (restoring one workspace switches to it
+      # too); for others we re-enter the current tab
+      [[ "$result" == action:switch:* || "$result" == action:switch-pane:* \
+        || "$result" == action:saved-switch:* || "$result" == action:saved-restore:* \
+        || "$result" == action:saved-restore-snap:* ]] && break
       ;;
     quit|"")
       break

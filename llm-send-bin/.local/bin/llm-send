@@ -105,17 +105,23 @@ case "$AI_TOOL" in
     # 4. Send Enter to submit the prompt now in the Gemini CLI input
     tmux send-keys -t "$TARGET" Enter
     ;;
-  jetski|jetski-cli|*)
-    # Bracketed paste strategy (-p): ensures multiline prompts with ### PROMPT
-    # headers are pasted into Ink/TUI inputs (Jetski, Claude, OpenCode, etc.)
-    # as a single multiline paste rather than raw newline keypresses.
-    echo "$COMPLETE_MESSAGE" | tmux load-buffer -
+  *)
+    # Default strategy: bracketed paste (for Claude, etc.)
+    # -p wraps the paste in bracketed-paste markers when the tool has asked for
+    # them (Claude Code does), so it takes the message as one paste and the
+    # Enter below as a keypress of its own. A plain paste arrives as typed keys:
+    # the tool guesses where the paste ends, and a short prompt's Enter got
+    # swallowed into it (left unsubmitted) or its newlines submitted early.
+    # A named buffer, deleted after the paste (-d), leaves the user's paste
+    # buffers alone.
+    echo "$COMPLETE_MESSAGE" | tmux load-buffer -b lazy-llm-send -
+    tmux paste-buffer -b lazy-llm-send -d -p -t "$TARGET"
 
-    tmux paste-buffer -p -t "$TARGET"
-
-    # Allow Ink/TUI event loop to commit the bracketed paste before sending Enter
-    BUFFER_SIZE=$(tmux show-buffer | wc -c)
-    if [ "$BUFFER_SIZE" -gt 1000 ]; then
+    # Give an Ink/TUI input (Jetski CLI, OpenCode, ...) a moment to commit the
+    # bracketed paste before the Enter below — sent back-to-back, a TUI still
+    # busy rendering a paste can drop the Enter or fold it into the paste.
+    # Sized from the message itself: the named buffer is gone (-d) by now.
+    if [ "${#COMPLETE_MESSAGE}" -gt 1000 ]; then
       sleep 0.5
     else
       sleep 0.15

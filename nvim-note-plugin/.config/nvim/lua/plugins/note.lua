@@ -6,7 +6,9 @@ local config = {
   marker = "[NOTE: ]", -- The marker to insert (cursor placed between : and ])
   pattern = "%[NOTE:.-]", -- Lua pattern to match markers (.- = non-greedy any)
   rg_pattern = "\\[NOTE:.*\\]", -- ripgrep pattern for project-wide search
-  editor_buffer_file = "/tmp/lazy-llm-editor-buffer", -- Track editor pane's current file
+  -- The editor pane's current file, for pulling its notes from the prompt pane.
+  -- A tmux window option, so each lazy-llm window tracks its own editor.
+  editor_file_option = "@LAZY_LLM_EDITOR_FILE",
 }
 
 -- Helper: Get workspace root (git root or cwd)
@@ -15,8 +17,14 @@ local function get_workspace_root()
   return (git_root and git_root ~= "" and vim.v.shell_error == 0) and git_root or vim.fn.getcwd()
 end
 
--- Helper: Get relative path from workspace root
+-- Helper: Get relative path from workspace root. A file in a pane worktree
+-- (lazy_llm_worktree) is given as its main copy's path: the same
+-- repo-relative path the isolated agent sees from its own cwd.
 local function get_relative_path(filepath)
+  local wt_ok, lazy_llm_wt = pcall(require, "lazy_llm_worktree")
+  if wt_ok then
+    filepath = lazy_llm_wt.main_counterpart(filepath) or filepath
+  end
   local root = get_workspace_root()
   if filepath:sub(1, #root) == root then
     return filepath:sub(#root + 2) -- +2 to skip the trailing /
@@ -24,61 +32,35 @@ local function get_relative_path(filepath)
   return filepath
 end
 
--- Helper: Check if we're in the prompt pane (via tmux @PROMPT_PANE_ID window option)
+-- Helper: Check if we're in the prompt pane (tmux @PROMPT_PANE_ID window option)
 local function is_prompt_pane()
   local tmux_pane = vim.env.TMUX_PANE
   if not tmux_pane then
     return false
   end
-
-  -- Get session and window from current pane
-  local session = vim.trim(vim.fn.system("tmux display-message -t " .. tmux_pane .. " -p '#S' 2>/dev/null"))
-  local window = vim.trim(vim.fn.system("tmux display-message -t " .. tmux_pane .. " -p '#I' 2>/dev/null"))
-
-  if session == "" or window == "" then
-    return false
-  end
-
-  -- Use stable pane ID (@PROMPT_PANE_ID) — TMUX_PANE is already a pane ID (%N format)
-  local result = vim.fn.system("tmux show-option -wv -t " .. session .. ":" .. window .. " @PROMPT_PANE_ID 2>/dev/null")
-  local prompt_pane_id = vim.trim(result)
-
-  if prompt_pane_id ~= "" then
-    return tmux_pane == prompt_pane_id
-  end
-
-  -- Fall back to legacy @PROMPT_PANE (index-based, won't match pane ID but try anyway)
-  result = vim.fn.system("tmux show-option -wv -t " .. session .. ":" .. window .. " @PROMPT_PANE 2>/dev/null")
-  local prompt_pane = vim.trim(result)
-  return prompt_pane ~= "" and tmux_pane == prompt_pane
+  -- Formats resolve window options in the pane's context: one tmux call.
+  local result =
+    vim.fn.system({ "tmux", "display-message", "-p", "-t", tmux_pane, "#{==:#{pane_id},#{@PROMPT_PANE_ID}}" })
+  return vim.trim(result) == "1"
 end
 
 -- Helper: Track current buffer for cross-pane access (called on BufEnter)
 -- Only tracks if we're NOT in the prompt pane (to avoid overwriting editor's tracking)
 local function track_editor_buffer()
-  -- Double-check we're not in prompt pane before tracking
-  if is_prompt_pane() then
+  local bufname = vim.api.nvim_buf_get_name(0)
+  -- Only track real files (not special buffers)
+  if bufname == "" or vim.fn.filereadable(bufname) ~= 1 or is_prompt_pane() then
     return
   end
-
-  local bufname = vim.api.nvim_buf_get_name(0)
-  if bufname and bufname ~= "" then
-    -- Only track real files (not special buffers)
-    if vim.fn.filereadable(bufname) == 1 then
-      vim.fn.writefile({ bufname }, config.editor_buffer_file)
-    end
-  end
+  vim.fn.jobstart({ "tmux", "set-option", "-w", "-t", vim.env.TMUX_PANE, config.editor_file_option, bufname })
 end
 
 -- Helper: Get the editor pane's current file (for use from prompt pane)
 local function get_editor_buffer_file()
-  if vim.fn.filereadable(config.editor_buffer_file) == 1 then
-    local lines = vim.fn.readfile(config.editor_buffer_file)
-    if #lines > 0 and lines[1] ~= "" then
-      return lines[1]
-    end
-  end
-  return nil
+  local format = "#{" .. config.editor_file_option .. "}"
+  local result = vim.fn.system({ "tmux", "display-message", "-p", "-t", vim.env.TMUX_PANE, format })
+  local file = vim.trim(result)
+  return file ~= "" and file or nil
 end
 
 -- Collect notes from a specific file path
@@ -106,25 +88,47 @@ local function collect_file_notes(filepath)
   return notes
 end
 
--- Insert NOTE marker at cursor position
-local function insert_note()
-  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-  local line = vim.api.nvim_get_current_line()
-
-  -- Insert marker at cursor position: [NOTE: ]
-  -- Cursor will be positioned between : and ] (where the space is)
-  local before = line:sub(1, col)
-  local after = line:sub(col + 1)
-  local new_line = before .. config.marker .. after
-
-  vim.api.nvim_set_current_line(new_line)
-
-  -- Position cursor after "[NOTE: " (before the closing ])
-  -- marker = "[NOTE: ]" has length 8, position 7 is before ]
+-- Put the cursor inside a marker that starts at column `col` (0-based) of line
+-- `row`, between "[NOTE: " and "]", and start typing there
+local function type_into_marker(row, col)
   vim.api.nvim_win_set_cursor(0, { row, col + #config.marker - 1 })
-
-  -- Enter insert mode
   vim.cmd("startinsert")
+end
+
+-- Insert NOTE marker at the end of the current line, one space after its text
+local function insert_note()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local line = vim.api.nvim_get_current_line()
+  local separator = (line == "" or line:match("%s$")) and "" or " "
+  vim.api.nvim_set_current_line(line .. separator .. config.marker)
+  type_into_marker(row, #line + #separator)
+end
+
+-- The text before and after a marker that makes it a comment in this buffer
+-- ('commentstring', e.g. "-- %s" or "/* %s */"), spaced off the marker; empty
+-- when the filetype has no comment syntax
+local function comment_around_marker()
+  local left, right = vim.bo.commentstring:match("^(.-)%%s(.-)$")
+  if not left then
+    return "", ""
+  end
+  if left ~= "" and not left:match("%s$") then
+    left = left .. " "
+  end
+  if right ~= "" and not right:match("^%s") then
+    right = " " .. right
+  end
+  return left, right
+end
+
+-- Insert NOTE marker as a comment on a new line below, at the current line's
+-- indentation
+local function insert_note_below()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local indent = vim.api.nvim_get_current_line():match("^%s*")
+  local left, right = comment_around_marker()
+  vim.api.nvim_buf_set_lines(0, row, row, false, { indent .. left .. config.marker .. right })
+  type_into_marker(row + 1, #indent + #left)
 end
 
 -- Collect all NOTEs from current buffer
@@ -150,16 +154,21 @@ local function collect_buffer_notes()
   return notes
 end
 
--- Collect all NOTEs from project (using ripgrep)
-local function collect_project_notes()
+-- Collect all NOTEs from project (using ripgrep). Like rg, skips hidden and
+-- gitignored files unless scope.hidden / scope.ignored (the picker toggles them).
+local function collect_project_notes(scope)
+  scope = scope or {}
   local root = get_workspace_root()
-  local cmd = string.format(
-    "rg --no-heading --line-number --column '%s' %s 2>/dev/null",
-    config.rg_pattern,
-    vim.fn.shellescape(root)
-  )
+  local cmd = { "rg", "--no-heading", "--line-number", "--column" }
+  if scope.hidden then
+    vim.list_extend(cmd, { "--hidden", "--glob", "!.git" })
+  end
+  if scope.ignored then
+    table.insert(cmd, "--no-ignore")
+  end
+  vim.list_extend(cmd, { config.rg_pattern, root })
 
-  local output = vim.fn.systemlist(cmd)
+  local output = vim.split(vim.system(cmd, { text = true }):wait().stdout or "", "\n", { trimempty = true })
   local notes = {}
 
   for _, line in ipairs(output) do
@@ -247,13 +256,7 @@ local function pull_buffer_notes()
         return
       end
     else
-      -- Debug: show tracking file status
-      local track_file = config.editor_buffer_file
-      local exists = vim.fn.filereadable(track_file) == 1
-      vim.notify(
-        string.format("No editor buffer tracked. Track file exists: %s", exists and "yes" or "no"),
-        vim.log.levels.WARN
-      )
+      vim.notify("No file tracked for this window's editor pane yet (open one there)", vim.log.levels.WARN)
       return
     end
   else
@@ -331,14 +334,20 @@ local function goto_prev_note()
   vim.notify("No notes found in buffer", vim.log.levels.WARN)
 end
 
--- Navigate project notes with fzf-lua picker
-local function pick_project_notes()
-  local notes = collect_project_notes()
+-- Navigate project notes with fzf-lua picker; alt-h / alt-i reopen it with
+-- hidden / gitignored files included or not (LazyVim's picker toggles)
+local function pick_project_notes(scope)
+  scope = scope or {}
+  local notes = collect_project_notes(scope)
 
-  if #notes == 0 then
-    vim.notify("No notes found in project", vim.log.levels.WARN)
-    return
+  local included = {}
+  if scope.hidden then
+    table.insert(included, "+hidden")
   end
+  if scope.ignored then
+    table.insert(included, "+ignored")
+  end
+  local prompt = #included > 0 and ("Notes (" .. table.concat(included, " ") .. ") > ") or "Notes > "
 
   -- Format for fzf display
   local entries = {}
@@ -348,8 +357,15 @@ local function pick_project_notes()
   end
 
   require("fzf-lua").fzf_exec(entries, {
-    prompt = "Notes > ",
+    prompt = prompt,
+    fzf_opts = { ["--header"] = "alt-h: hidden files · alt-i: gitignored files" },
     actions = {
+      ["alt-h"] = function()
+        pick_project_notes({ hidden = not scope.hidden, ignored = scope.ignored })
+      end,
+      ["alt-i"] = function()
+        pick_project_notes({ hidden = scope.hidden, ignored = not scope.ignored })
+      end,
       ["default"] = function(selected)
         if selected and selected[1] then
           -- Parse selection: file:lnum: text
@@ -421,7 +437,7 @@ if vim.env.TMUX then
   })
 end
 
-return {
+local specs = {
   {
     "LazyVim/LazyVim",
     -- Keymaps only register when inside tmux (lazy-llm context)
@@ -431,7 +447,13 @@ return {
         "<leader>ni",
         insert_note,
         mode = "n",
-        desc = "Note: Insert [NOTE:] marker",
+        desc = "Note: Insert [NOTE:] at end of line",
+      },
+      {
+        "<leader>nI",
+        insert_note_below,
+        mode = "n",
+        desc = "Note: Insert [NOTE:] comment on a new line below",
       },
 
       -- Pull notes to prompt pane
@@ -464,10 +486,10 @@ return {
 
       -- Pick/browse notes
       {
-        "<leader>nf",
+        "<leader>n/",
         pick_project_notes,
         mode = "n",
-        desc = "Note: Find notes in project (fzf)",
+        desc = "Note: Search notes in project (fzf)",
       },
 
       -- Quickfix lists
@@ -486,3 +508,30 @@ return {
     } or {},
   },
 }
+
+-- LazyVim maps <leader>n itself (Notification History). A key that is both a
+-- mapping and a prefix only waits timeoutlen for the rest: pausing after
+-- <leader>n ran the history instead of the note command. It moves into the
+-- group as <leader>nn, and <leader>n becomes a plain group which-key waits on.
+if vim.env.TMUX then
+  table.insert(specs, {
+    "folke/snacks.nvim",
+    keys = {
+      { "<leader>n", false },
+      {
+        "<leader>nn",
+        function()
+          if Snacks.config.picker and Snacks.config.picker.enabled then
+            Snacks.picker.notifications()
+          else
+            Snacks.notifier.show_history()
+          end
+        end,
+        desc = "Notification History",
+      },
+    },
+  })
+  table.insert(specs, { "folke/which-key.nvim", opts = { spec = { { "<leader>n", group = "notes" } } } })
+end
+
+return specs

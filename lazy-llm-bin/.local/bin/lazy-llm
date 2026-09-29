@@ -44,8 +44,16 @@ init_state_dirs() {
 
 # Cleanup old files based on retention policy
 cleanup_old_files() {
-  # Clean up old prompt files (older than PROMPT_RETENTION_DAYS)
-  find "$PROMPTS_DIR" -name "prompt-*.md" -type f -mtime +${PROMPT_RETENTION_DAYS} -delete 2>/dev/null
+  # Clean up old prompt files (older than PROMPT_RETENTION_DAYS), except ones
+  # a prompt-pane session snapshot still has open: the prompt pane restores
+  # them on every launch, so an untouched-for-a-week prompt isn't abandoned.
+  local keep="" snap old
+  for snap in "$STATE_DIR"/sessions/prompt*.vim; do
+    [[ -f "$snap" ]] && keep+=$(grep -oE 'prompt-[0-9]{8}-[0-9]{6}\.md' "$snap")$'\n'
+  done
+  while IFS= read -r old; do
+    grep -qxF "$(basename "$old")" <<< "$keep" || rm -f "$old"
+  done < <(find "$PROMPTS_DIR" -name "prompt-*.md" -type f -mtime +${PROMPT_RETENTION_DAYS} 2>/dev/null)
 
   # Clean up old undo files (older than UNDO_RETENTION_DAYS)
   find "$UNDO_DIR" -type f -mtime +${UNDO_RETENTION_DAYS} -delete 2>/dev/null
@@ -55,19 +63,12 @@ cleanup_old_files() {
 # When opening a file with an existing swap file, nvim will show its
 # built-in recovery prompt directly in the buffer - no need for custom handling
 
-# Create a new prompt temp file
-create_prompt_file() {
-  local timestamp=$(date +%Y%m%d-%H%M%S)
-  local prompt_file="${PROMPTS_DIR}/prompt-${timestamp}.md"
-  touch "$prompt_file"
-  echo "$prompt_file"
-}
-
 # Subcommand dispatch — route to llm-sessions for management commands
 case "${1:-}" in
   list)     shift; exec "$HOME/.local/bin/llm-sessions" --list "$@" ;;
   kill)     shift; exec "$HOME/.local/bin/llm-sessions" --kill "$@" ;;
   sessions) shift; exec "$HOME/.local/bin/llm-sessions" "$@" ;;
+  save|restore|saved|close|forget) exec "$HOME/.local/bin/llm-persist" "$@" ;;
 esac
 
 # Parse named parameters
@@ -75,11 +76,15 @@ while getopts "s:d:t:wW:h" opt; do
   case $opt in
   s) SESSION_NAME="$OPTARG" ;;
   d) TARGET_DIR="$OPTARG" ;;
-  t) AI_TOOL="$OPTARG" ;;
+  t) AI_TOOL=$(lazy_llm_normalize_tool "$OPTARG") ;;
   w) NEW_WINDOW=true ;;
   W) WORKTREE_BRANCH="$OPTARG" ;;
   h)
     echo "Usage: lazy-llm [-s session_name] [-d directory] [-t ai_tool] [-w] [-W branch]"
+    echo "       lazy-llm list | sessions"
+    echo "       lazy-llm close <name>   close a workspace, keep it saved to restore later"
+    echo "       lazy-llm kill <name>    close a workspace and drop it from the saved list"
+    echo "       lazy-llm save | restore [--dry-run] [name...] | saved [-v] | forget <name>"
     echo ""
     echo "Options:"
     echo "  -s  Session name (auto-generated if not provided)"
@@ -97,6 +102,14 @@ while getopts "s:d:t:wW:h" opt; do
     echo "  - With -s <existing>: Adds window to that session (attaches if needed)"
     echo "  - With -W <branch>: Always creates a new session bound to the worktree;"
     echo "    attaches to an existing lazy-llm session there if one exists"
+    echo "  - Opening a dir that has a saved (not running) workspace offers to restore it"
+    echo ""
+    echo "Save/restore:"
+    echo "  Workspaces are saved automatically on every change (and with Prefix+C-s)."
+    echo "  After the tmux server dies, 'lazy-llm restore' rebuilds them: AI panes and"
+    echo "  their conversations, display names, prompt and editor state, folds, order."
+    echo "  A workspace you close stays saved; 'lazy-llm restore <name>' reopens it."
+    echo "  See them all with 'lazy-llm saved' or Prefix+S then 3."
     exit 0
     ;;
   *)
@@ -152,174 +165,6 @@ if [ -z "$SESSION_NAME" ]; then
   NAME_AUTO_GENERATED=true
 fi
 
-# Function to create a new window with 3-pane layout
-# Args: session_name, window_index, target_dir, ai_tool, prompt_file
-create_workspace_window() {
-  local session=$1
-  local win_idx=$2
-  local target_dir=$3
-  local ai_tool=$4
-  local prompt_file=$5
-
-  # Get tmux base indexes
-  local base_index=$(tmux show-options -g | grep base-index | awk '{print $2}')
-  local pane_base_index=$(tmux show-options -gw | grep pane-base-index | awk '{print $2}')
-
-  # Define pane variables
-  local ai_pane=$pane_base_index
-  local neovim_pane=$((pane_base_index + 1))
-  local prompt_pane=$((pane_base_index + 2))
-
-  # Split horizontally first (left/right)
-  # Use -l percentage syntax for tmux 3.4+ compatibility (replaces -p)
-  tmux split-window -h -l 50% -t "$session:$win_idx" -c "$target_dir"
-
-  # Split vertically with -f flag to create full-width bottom pane
-  tmux split-window -v -f -l 25% -t "$session:$win_idx.$ai_pane" -c "$target_dir"
-
-  # Clear CLAUDECODE env var in the AI pane to prevent nested session detection
-  # (when lazy-llm is invoked from within a Claude Code session)
-  tmux send-keys -t "$session:$win_idx.$ai_pane" "unset CLAUDECODE" C-m
-
-  # Configure AI Tools pane (top-left)
-  case "$ai_tool" in
-  claude)
-    tmux send-keys -t "$session:$win_idx.$ai_pane" "claude" C-m
-    ;;
-  jetski|jetski-cli)
-    tmux send-keys -t "$session:$win_idx.$ai_pane" "jetski-cli" C-m
-    ;;
-  gemini)
-    tmux send-keys -t "$session:$win_idx.$ai_pane" "gemini" C-m
-    ;;
-  opencode)
-    tmux send-keys -t "$session:$win_idx.$ai_pane" "opencode" C-m
-    ;;
-  codex)
-    tmux send-keys -t "$session:$win_idx.$ai_pane" "codex" C-m
-    ;;
-  grok)
-    tmux send-keys -t "$session:$win_idx.$ai_pane" "grok" C-m
-    ;;
-  aider)
-    tmux send-keys -t "$session:$win_idx.$ai_pane" "aider" C-m
-    ;;
-  *)
-    tmux send-keys -t "$session:$win_idx.$ai_pane" "# AI Tool: $ai_tool" C-m
-    tmux send-keys -t "$session:$win_idx.$ai_pane" "$ai_tool" C-m
-    ;;
-  esac
-
-  # Configure Neovim pane (top-right)
-  tmux send-keys -t "$session:$win_idx.$neovim_pane" "nvim" C-m
-
-  # Configure Prompt Buffer pane (bottom) with swap and undo persistence
-  # Explicitly cd to target directory to ensure shell and nvim are in sync
-  tmux send-keys -t "$session:$win_idx.$prompt_pane" "cd '${target_dir}' && nvim --cmd 'set directory=${SWAP_DIR}// | set undodir=${UNDO_DIR}// | set undofile' --cmd 'autocmd VimEnter * ++once set filetype=markdown | set showtabline=0 | startinsert' '${prompt_file}'" C-m
-
-  # Set pane titles if supported
-  tmux select-pane -t "$session:$win_idx.$ai_pane" -T "AI: $ai_tool"
-  tmux select-pane -t "$session:$win_idx.$neovim_pane" -T "Editor"
-  tmux select-pane -t "$session:$win_idx.$prompt_pane" -T "Prompt"
-
-  # Capture stable pane IDs (survive swap-pane, unlike indices)
-  local ai_pane_id
-  local prompt_pane_id
-  ai_pane_id=$(tmux display-message -t "$session:$win_idx.$ai_pane" -p '#{pane_id}')
-  prompt_pane_id=$(tmux display-message -t "$session:$win_idx.$prompt_pane" -p '#{pane_id}')
-
-  # Set pane ID options (preferred by llm-send/llm-pull/llm-append)
-  tmux set-option -w -t "$session:$win_idx" @AI_PANE_ID "$ai_pane_id"
-  tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE_ID "$prompt_pane_id"
-
-  # Initialize multi-pane state (single-element lists)
-  tmux set-option -w -t "$session:$win_idx" @AI_PANES "$ai_pane_id"
-  tmux set-option -w -t "$session:$win_idx" @AI_TOOLS "$ai_tool"
-  tmux set-option -w -t "$session:$win_idx" @AI_PANE_IDX "0"
-
-  # Keep legacy index-based options for backward compatibility
-  tmux set-option -w -t "$session:$win_idx" @AI_PANE "$session:$win_idx.$ai_pane"
-  tmux set-option -w -t "$session:$win_idx" @PROMPT_PANE "$session:$win_idx.$prompt_pane"
-  tmux set-option -w -t "$session:$win_idx" @AI_TOOL "$ai_tool"
-
-  # Per-pane status on each pane's own border — window-scoped (-w), so this
-  # only affects lazy-llm windows, nothing else in the user's tmux setup.
-  # The AI pane's border shows tool+glyph+workspace-summary (llm-pane-border
-  # — deliberately separate from llm-status: a pane border is much narrower
-  # than the full status-right segment). The prompt/editor panes get a
-  # plain label. Every branch sets an EXPLICIT fg color (#e4e4e4, this
-  # theme's default text color) — a pane border otherwise inherits
-  # pane-border-style/pane-active-border-style, which dims un-styled text
-  # for an unfocused pane to the point of being barely readable (confirmed
-  # live, user-reported).
-  tmux set-option -w -t "$session:$win_idx" pane-border-status top
-  tmux set-option -w -t "$session:$win_idx" pane-border-format \
-    "#{?#{==:#{pane_id},#{@AI_PANE_ID}},#($HOME/.local/bin/llm-pane-border #{pane_id} #{@AI_TOOL}),#{?#{==:#{pane_id},#{@PROMPT_PANE_ID}},#[fg=#e4e4e4] prompt #[default],#[fg=#e4e4e4] #{pane_current_command} #[default]}}"
-
-  # Mark session as lazy-llm managed and enable mouse
-  tmux set-option -t "$session" @lazy_llm 1
-  tmux set-option -t "$session" mouse on
-
-  # Global hook: keep @AI_PANE_IDX pointing at the AI pane last given real
-  # focus, even after focus later moves to the editor/prompt pane — see
-  # llm-pane-focus-track's own header comment for why tmux's own
-  # #{pane_active} alone isn't enough here. Set globally (fires for every
-  # pane-focus change in every window) rather than per-window, since a
-  # per-window hook would need re-registering on every new lazy-llm
-  # workspace; the script itself no-ops instantly for any non-lazy-llm
-  # window (one cheap show-option call). Idempotent — safe to set on every
-  # `lazy-llm` invocation, not just the first.
-  #
-  # after-select-pane, NOT pane-focus-in: the tmux manual documents
-  # pane-focus-in/pane-focus-out, but they don't actually exist as
-  # registerable hooks in tmux 3.7c (`tmux set-hook -g pane-focus-in ...`
-  # exits 0 and silently never fires — confirmed live; `show-hooks -g`'s
-  # own reference list doesn't include them, only client-focus-in/out,
-  # which are client-level, not per-pane). after-select-pane is the real,
-  # firing hook for "the active pane in a window changed" — confirmed live
-  # across mouse-click-equivalent and prefix-arrow-equivalent transitions.
-  # No -b (backgrounding run-shell): tried first, but produced a real
-  # non-deterministic race — sometimes the update lagged behind the very
-  # next select-pane and got missed. This script is a couple of cheap
-  # show-option/set-option calls; foreground is fast enough not to matter
-  # and removes the race entirely (also confirmed live, repeatedly).
-  tmux set-hook -g after-select-pane \
-    "run-shell '$HOME/.local/bin/llm-pane-focus-track #{pane_id} #{session_name} #{window_index}'"
-
-  # Register keybindings — scoped to lazy-llm windows via if-shell check.
-  # In non-lazy-llm windows, C-n/C-p fall back to next/previous-window;
-  # other bindings are no-ops.
-  tmux bind-key -T prefix C-n if-shell \
-    "tmux show-option -wqv @AI_PANES" \
-    "run-shell '$HOME/.local/bin/llm-cycle next'" \
-    "next-window"
-  tmux bind-key -T prefix C-p if-shell \
-    "tmux show-option -wqv @AI_PANES" \
-    "run-shell '$HOME/.local/bin/llm-cycle prev'" \
-    "previous-window"
-  tmux bind-key -T prefix C-x if-shell \
-    "tmux show-option -wqv @AI_PANES" \
-    "confirm-before -p 'Remove current AI pane? (y/n)' \"run-shell '$HOME/.local/bin/llm-remove current'\""
-  tmux bind-key -T prefix A if-shell \
-    "tmux show-option -wqv @AI_PANES" \
-    "display-menu -T 'Add AI Pane' \
-      claude     '' \"run-shell '$HOME/.local/bin/llm-add -t claude'\" \
-      jetski-cli '' \"run-shell '$HOME/.local/bin/llm-add -t jetski-cli'\" \
-      gemini     '' \"run-shell '$HOME/.local/bin/llm-add -t gemini'\" \
-      opencode   '' \"run-shell '$HOME/.local/bin/llm-add -t opencode'\" \
-      codex      '' \"run-shell '$HOME/.local/bin/llm-add -t codex'\" \
-      grok       '' \"run-shell '$HOME/.local/bin/llm-add -t grok'\" \
-      aider      '' \"run-shell '$HOME/.local/bin/llm-add -t aider'\""
-  tmux bind-key -T prefix S if-shell \
-    "tmux show-option -wqv @AI_PANES" \
-    "run-shell '$HOME/.local/bin/llm-dashboard-open'"
-  # Prefix+L retired — its surface (Panes tab) lives inside llm-dashboard now,
-  # reachable from any tab via the '3' key.
-
-  # Set initial focus to prompt buffer pane
-  tmux select-pane -t "$session:$win_idx.$prompt_pane"
-}
-
 # Auto-detect if we're inside tmux or if -w flag is set
 # If so, add a window to current/specified session instead of creating new session
 IN_TMUX=false
@@ -332,7 +177,7 @@ TARGET_SESSION=""
 if [ "$NEW_WINDOW" = true ] || [ "$IN_TMUX" = true ]; then
   # Check if user provided -s with an existing session name
   SESSION_EXISTS=false
-  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  if tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
     SESSION_EXISTS=true
   fi
 
@@ -362,11 +207,8 @@ if [ "$NEW_WINDOW" = true ] || [ "$IN_TMUX" = true ]; then
     # Create new window
     tmux new-window -t "$TARGET_SESSION:$NEXT_WIN" -n "dev" -c "$TARGET_DIR"
 
-    # Create prompt file (nvim handles swap recovery natively)
-    PROMPT_FILE=$(create_prompt_file)
-
     # Set up the 3-pane layout
-    create_workspace_window "$TARGET_SESSION" "$NEXT_WIN" "$TARGET_DIR" "$AI_TOOL" "$PROMPT_FILE"
+    lazy_llm_build_window "$TARGET_SESSION" "$NEXT_WIN" "$TARGET_DIR" "$AI_TOOL" "$(lazy_llm_tool_launch_cmd "$AI_TOOL")"
 
     # Switch to the new window
     tmux select-window -t "$TARGET_SESSION:$NEXT_WIN"
@@ -382,11 +224,11 @@ fi
 
 # Handle existing session: auto-generated names get a counter suffix,
 # explicitly named sessions (-s) just attach
-if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+if tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
   if [ "$NAME_AUTO_GENERATED" = true ]; then
     BASE_NAME="$SESSION_NAME"
     COUNTER=2
-    while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
+    while tmux has-session -t "=$SESSION_NAME" 2>/dev/null; do
       SESSION_NAME="${BASE_NAME}-${COUNTER}"
       COUNTER=$((COUNTER + 1))
     done
@@ -397,12 +239,40 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   fi
 fi
 
+# A saved workspace for this dir that isn't running (e.g. after the tmux
+# server died): offer to bring it back instead of starting a fresh one.
+if [ -t 0 ] && [ -x "$HOME/.local/bin/llm-persist" ]; then
+  SAVED=$("$HOME/.local/bin/llm-persist" find-dir "$TARGET_DIR" 2>/dev/null || true)
+  if [ -n "$SAVED" ]; then
+    SAVED_COUNT=$(grep -c . <<< "$SAVED")
+    if [ "$SAVED_COUNT" -eq 1 ]; then
+      IFS=$'\t' read -r SAVED_ID SAVED_NAME SAVED_SUMMARY <<< "$SAVED"
+      printf "Saved workspace '%s' for this dir (%s).\nRestore it instead? [Y/n] " "$SAVED_NAME" "$SAVED_SUMMARY"
+      read -r ANSWER
+      case "$ANSWER" in
+        n|N|no|No) ;;
+        *) exec "$HOME/.local/bin/llm-persist" restore --id "$SAVED_ID" ;;
+      esac
+    else
+      echo "Saved workspaces for this dir:"
+      i=1
+      while IFS=$'\t' read -r _ SAVED_NAME SAVED_SUMMARY; do
+        echo "  $i) $SAVED_NAME ($SAVED_SUMMARY)"
+        i=$((i + 1))
+      done <<< "$SAVED"
+      printf "Restore which? [1-%s, n = new workspace] " "$SAVED_COUNT"
+      read -r ANSWER
+      if [[ "$ANSWER" =~ ^[0-9]+$ ]] && [ "$ANSWER" -ge 1 ] && [ "$ANSWER" -le "$SAVED_COUNT" ]; then
+        SAVED_ID=$(sed -n "${ANSWER}p" <<< "$SAVED" | cut -f1)
+        exec "$HOME/.local/bin/llm-persist" restore --id "$SAVED_ID"
+      fi
+    fi
+  fi
+fi
+
 echo "Creating session: $SESSION_NAME"
 echo "Directory: $TARGET_DIR"
 echo "AI Tool: $AI_TOOL"
-
-# Create prompt file (nvim handles swap recovery natively)
-PROMPT_FILE=$(create_prompt_file)
 
 # Create new tmux session
 tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
@@ -411,7 +281,7 @@ tmux new-session -d -s "$SESSION_NAME" -n "dev" -c "$TARGET_DIR"
 WIN_INDEX=$(tmux show-options -g | grep base-index | awk '{print $2}')
 
 # Set up the 3-pane layout using shared function
-create_workspace_window "$SESSION_NAME" "$WIN_INDEX" "$TARGET_DIR" "$AI_TOOL" "$PROMPT_FILE"
+lazy_llm_build_window "$SESSION_NAME" "$WIN_INDEX" "$TARGET_DIR" "$AI_TOOL" "$(lazy_llm_tool_launch_cmd "$AI_TOOL")"
 
 # Attach to the session
 tmux attach-session -t "$SESSION_NAME"

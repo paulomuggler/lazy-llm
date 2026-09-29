@@ -54,17 +54,19 @@ else
 fi
 
 echo ""
-echo "Test 4: '3' is NOT bound anywhere — '?' is the only help shortcut..."
+echo "Test 4: '3' never routes to Help — '?' is the only help shortcut..."
 # '3' used to be a redundant second shortcut to the Help tab, alongside '?'.
 # Dropping it from the title bar's displayed hint (a prior round) but
 # leaving the KEY still bound was reported directly as a bug ('3' still
 # opened the help pane despite the hint being gone) — the fix has to remove
 # the binding itself, not just its display text, or a user who typed '3'
 # expecting it to filter/do nothing gets silently yanked into another tab.
-bind3_count=$(command grep -coE -- "--bind='3:print\(3\)\+accept'" "$DASHBOARD") || bind3_count=0
-assert_equals "0" "$bind3_count" "no tab fzf call binds 3 to an action"
-dispatch3_count=$(command grep -cE '^\s*3\)\s+echo "tab:help"' "$DASHBOARD") || dispatch3_count=0
-assert_equals "0" "$dispatch3_count" "no tab dispatch case routes key 3 to tab:help"
+# '3' is the Saved tab's key now (workspace-save-restore), consistent with
+# 1/2 naming tabs — but it must never lead to Help again.
+dispatch3_help=$(command grep -cE '^\s*3\)\s+echo "tab:help"' "$DASHBOARD") || dispatch3_help=0
+assert_equals "0" "$dispatch3_help" "no tab dispatch case routes key 3 to tab:help"
+dispatch3_saved=$(command grep -cE '^\s*3\)\s+echo "tab:saved"' "$DASHBOARD") || dispatch3_saved=0
+assert_equals "3" "$dispatch3_saved" "3 routes to the Saved tab from Workspaces, Worktrees and Help"
 # ,ctrl-up,ctrl-down,j,k appended by dashboard-manual-list-reordering (same
 # unbind/rebind list 'z' already lives in, plus j/k as no-Ctrl reorder
 # alternates) — pattern updated to match. Grep the whole unbind(...) call
@@ -72,9 +74,9 @@ assert_equals "0" "$dispatch3_count" "no tab dispatch case routes key 3 to tab:h
 # list doesn't require touching this test again (the brittleness this
 # exact regex already caused once).
 ws_unbind=$(command grep -oE -- "unbind\([^)]*\)" "$DASHBOARD" | command grep 'ctrl-up' | head -1)
-assert_contains "$ws_unbind" "1,2,K" "Workspaces tab's unbind(...) set excludes 3"
-wt_unbind=$(command grep -oE -- "unbind\(1,2,n,g,K,R,\?\)" "$DASHBOARD")
-assert_contains "$wt_unbind" "1,2,n" "Worktrees tab's unbind(...) set excludes 3"
+assert_contains "$ws_unbind" "1,2,3,K" "Workspaces tab's unbind(...) set covers the tab keys"
+wt_unbind=$(command grep -oE -- "unbind\(1,2,3,n,g,K,R,\?\)" "$DASHBOARD")
+assert_contains "$wt_unbind" "1,2,3,n" "Worktrees tab's unbind(...) set covers the tab keys"
 
 # ──────────────────────────────────────────────────────────────────────────
 # 3. Main loop dispatches the help tab; --tab help is a valid CLI value

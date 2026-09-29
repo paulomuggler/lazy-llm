@@ -1,0 +1,6 @@
+{
+  "name": "lazy-llm",
+  "displayName": "lazy-llm",
+  "description": "Feeds lazy-llm's tmux pane status (working / unread / idle), conversation id (for workspace restore) and model display from Jetski CLI hooks.",
+  "version": "0.3.0"
+}

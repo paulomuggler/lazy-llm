@@ -208,8 +208,10 @@ fi
 
 echo ""
 echo "Test 8: --reorder-transform uses reload-sync (not plain reload) for the printed action chain..."
-if command grep -A80 -- '--reorder-transform)' "$DASHBOARD" | command grep -qE "printf 'reload-sync\(%s --emit-rows\)\+pos\(%s\)"; then
-    print_pass "--reorder-transform prints reload-sync(...)+pos(N)"
+# _dashboard_print_reload's own output is checked in scenario 13.
+if command grep -A80 -- '--reorder-transform)' "$DASHBOARD" | command grep -qE '^\s*_dashboard_print_reload "\$_dashboard_reorder_pos"' \
+   && command grep -qE "reload-sync\(cat '%s'; rm -f '%s'\)\+pos\(%s\)" "$DASHBOARD"; then
+    print_pass "--reorder-transform prints reload-sync(...)+pos(N) via _dashboard_print_reload"
 else
     print_fail "--reorder-transform does not print reload-sync(...)+pos(N)"
 fi
