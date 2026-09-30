@@ -364,6 +364,16 @@ The user's feedback, and what changed:
   another session's standalone scenario run killed the user's tmux server.
 - Scenario 20: 111/111.
 
+### Round 6 (2026-10-01)
+
+- **`K` on a manual save's divider did nothing**, and `A` on a divider restored the rolling
+  entries instead of that save. The Saved tab's key handler blanked every row that didn't start
+  with `saved`, and divider rows start with `snap-hdr:`. `K` there now deletes the whole save
+  (the confirmation names its date and how many workspaces it holds; running workspaces aren't
+  touched). The key-to-action mapping is its own function, `--saved-key-action`, and scenario 20
+  covers it. Checked in a sandbox TUI.
+- Scenario 20: 117/117.
+
 ## Human Validation
 
 - [ ] Right before rebooting, press Prefix+C-s (or run `lazy-llm save`). It should report 3 workspaces, 6/6 conversations.
