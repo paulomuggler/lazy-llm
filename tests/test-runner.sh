@@ -42,14 +42,50 @@ source "$LIB_DIR/assertions.sh"
 source "$LIB_DIR/tmux-helpers.sh"
 source "$LIB_DIR/setup-teardown.sh"
 
+# Every process under pid $1.
+descendants() {
+    local child
+    for child in $(pgrep -P "$1"); do
+        echo "$child"
+        descendants "$child"
+    done
+}
+
+# Kill our processes whose cwd is under $1, older than $2 seconds, that have
+# been reparented to init or the user's service manager: whatever started
+# them is gone. An nvim server blocked on a prompt when its pane dies is one
+# (it would never exit, and grows for days). The age floor spares another
+# run's processes that were started detached on purpose (`( ... &)`).
+reap_orphans_in() {
+    local prefix=$1 min_age=$2 pid cwd ppid age
+    for pid in $(pgrep -u "$(id -u)"); do
+        cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+        [[ $cwd == "$prefix"* ]] || continue
+        read -r ppid age <<<"$(ps -o ppid=,etimes= -p "$pid")" || continue
+        [ "${age:-0}" -ge "$min_age" ] || continue
+        [ "$ppid" = 1 ] || [ "$(ps -o comm= -p "$ppid")" = systemd ] || continue
+        kill -9 "$pid" 2>/dev/null
+    done
+    return 0
+}
+
+# Leftovers of runs that were killed before their cleanup could run.
+reap_orphans_in /tmp/lazy-llm-test- 600
+
 cleanup_run() {
     if [ -n "${DEBUG:-}" ]; then
         echo "Test tmux server kept (DEBUG): TMUX_TMPDIR=$TEST_TMUX_TMPDIR tmux attach"
     else
+        local server_pid="" tree=""
+        server_pid=$(tmux display -p '#{pid}' 2>/dev/null) || true
+        [ -n "$server_pid" ] && tree=$(descendants "$server_pid")
         tmux kill-server 2>/dev/null || true
         # The killed nvims write their session snapshot on the way out (and
         # mkdir -p would recreate the dirs): let them finish first.
         sleep 1
+        # Anything still up by now isn't exiting on its own.
+        [ -n "$tree" ] && kill -9 $tree 2>/dev/null
+        reap_orphans_in "$LAZY_LLM_TEST_WORKROOT" 0
         rm -rf "$TEST_TMUX_TMPDIR" "$LAZY_LLM_TEST_WORKROOT"
     fi
     [ -n "$OWN_STATE_DIR" ] && rm -rf "$OWN_STATE_DIR"

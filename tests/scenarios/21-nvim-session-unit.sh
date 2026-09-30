@@ -171,7 +171,27 @@ if command -v tmux >/dev/null 2>&1; then
     ms=$(( ($(date +%s%N) - t0) / 1000000 ))
     assert_pattern "$ms" "^[0-9]{1,3}$" "snapshotting a blocked nvim returns at once (${ms}ms), not after the 2s timeout"
     assert_file_not_exists "$blk/snap.vim" "...and skips it"
+    # Still blocked on the pager, that nvim's server would outlive the tmux
+    # server (--clean: no lazy_llm.orphan to end it). Kill it with its pane.
+    kill -9 $(pgrep -P "$(bt display -t b -p '#{pane_pid}')") 2>/dev/null
     bt kill-server 2>/dev/null
+
+    echo ""
+    echo "Test 8: a server stuck on that pager exits once its pane is gone..."
+    # Same setup, with lazy_llm.orphan started as lazy-llm's nvims start it.
+    rm -rf "$blk"; mkdir -p "$blk"; echo hi > "$blk/f.md"
+    guard="--cmd 'set rtp^=$MODULE_RTP' --cmd 'lua require(\"lazy_llm.orphan\").start()'"
+    bt -f /dev/null new-session -d -s a -c "$blk" "nvim --clean --cmd 'set directory=$blk//' f.md"; sleep 1
+    bt send-keys -t a ihi Escape; sleep 0.3
+    kill -9 $(pgrep -P "$(bt display -t a -p '#{pane_pid}')") 2>/dev/null; sleep 0.5
+    bt new-session -d -s b -x 80 -y 8 -c "$blk" "nvim --clean --cmd 'set directory=$blk//' $guard f.md"; sleep 1.5
+    assert_contains "$(bt capture-pane -p -t b)" "More" "the reopened nvim is waiting in the pager"
+    server=$(pgrep -P "$(bt display -t b -p '#{pane_pid}')")
+    assert_pattern "$server" "^[0-9]+$" "found its --embed server"
+    bt kill-server 2>/dev/null
+    for _ in $(seq 1 30); do kill -0 "$server" 2>/dev/null || break; sleep 0.5; done
+    assert_fails "kill -0 $server" "the orphaned server exits within 15s"
+    kill -9 "$server" 2>/dev/null
 fi
 
 rm -rf "$sandbox"

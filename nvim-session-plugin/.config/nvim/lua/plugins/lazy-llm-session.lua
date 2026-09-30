@@ -9,6 +9,9 @@ return {
 		if not role then
 			return
 		end
+		-- Started here, before the file arguments are read: the swap-file
+		-- prompt they can raise is the usual way a server gets stuck.
+		require("lazy_llm.orphan").start()
 		local session = require("lazy_llm.session")
 		if role == "prompt" then
 			session.use_prompt_session_dir()
