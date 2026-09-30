@@ -3,8 +3,9 @@
 
 ## Pending (0)
 
-## Done (12)
+## Done (13)
 
+- [x] [orphaned-nvim-servers](done/orphaned-nvim-servers.md) - Orphaned nvim --embed servers stuck on a prompt after their pane dies (24 GB leak)
 - [x] [claude-notify-click-finished](done/claude-notify-click-finished.md) - Notifications — click to jump to the pane, "finished" notices, elicitation/subagent prompts
 - [x] [worktree-concurrency-mode](done/worktree-concurrency-mode.md) - Optional per-pane worktree isolation for concurrent AI panes in one workspace
 - [x] [claude-notify-detail](done/claude-notify-detail.md) - Permission notifications name the conversation, the pending command, and the pane
