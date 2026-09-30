@@ -7,6 +7,11 @@
 # the notification daemon, outside tmux: hence the socket argument (the pane's
 # #{socket_path}) rather than relying on $TMUX.
 #
+# A lazy-llm AI pane that isn't the one in view sits in its workspace's hidden
+# holding window; it is first swapped into the three-pane layout (the same swap
+# the dashboard's pane picker does), since landing on it in the holding window
+# leaves the workspace in a state that's hard to get back out of.
+#
 # Switches the most recently active tmux client to the pane (session, window,
 # pane), then, on Hyprland, focuses the terminal window that client runs in:
 # the first window found walking up the client's parent processes. A terminal
@@ -20,20 +25,37 @@ pane="${1:-}"
 socket="${2:-}"
 [ -n "$pane" ] || exit 0
 
-t=(tmux)
-[ -n "$socket" ] && t=(tmux -S "$socket")
+# Every tmux call, the lib's included, goes to the pane's server.
+[ -n "$socket" ] && tmux() { command tmux -S "$socket" "$@"; }
 
-"${t[@]}" display-message -t "$pane" -p '' 2>/dev/null || exit 0
+# tmux 3.7c's display-message exits 0 for a gone pane, so compare the id.
+[ "$(tmux display-message -t "$pane" -p '#{pane_id}' 2>/dev/null)" = "$pane" ] || exit 0
 
-client=$("${t[@]}" list-clients -F '#{client_activity} #{client_name}' 2>/dev/null \
+client=$(tmux list-clients -F '#{client_activity} #{client_name}' 2>/dev/null \
   | sort -rn | head -1 | cut -d' ' -f2-)
 [ -n "$client" ] || exit 0
-client_pid=$("${t[@]}" display-message -c "$client" -p '#{client_pid}' 2>/dev/null)
-client_session=$("${t[@]}" display-message -c "$client" -p '#{client_session}' 2>/dev/null)
+client_pid=$(tmux display-message -c "$client" -p '#{client_pid}' 2>/dev/null)
+client_session=$(tmux display-message -c "$client" -p '#{client_session}' 2>/dev/null)
 
-"${t[@]}" switch-client -c "$client" -t "$pane" 2>/dev/null
-"${t[@]}" select-window -t "$pane" 2>/dev/null
-"${t[@]}" select-pane -t "$pane" 2>/dev/null
+# The workspace window listing the pane in its @AI_PANES, and the pane's index
+# there; cycling to that index is a no-op when it's already in view.
+if source "$(dirname "$0")/lazy-llm-lib.sh" 2>/dev/null; then
+  session=$(tmux display-message -t "$pane" -p '#{session_name}' 2>/dev/null)
+  [ -n "$session" ] || exit 0
+  while IFS=$'\t' read -r win panes; do
+    read -ra arr <<< "$panes"
+    for i in "${!arr[@]}"; do
+      if [ "${arr[$i]}" = "$pane" ]; then
+        lazy_llm_cycle_to_index "$session" "$win" "$i"
+        break 2
+      fi
+    done
+  done < <(tmux list-windows -t "$session" -F $'#{window_index}\t#{@AI_PANES}' 2>/dev/null)
+fi
+
+tmux switch-client -c "$client" -t "$pane" 2>/dev/null
+tmux select-window -t "$pane" 2>/dev/null
+tmux select-pane -t "$pane" 2>/dev/null
 
 command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || exit 0
 windows=$(hyprctl clients -j 2>/dev/null) || exit 0
