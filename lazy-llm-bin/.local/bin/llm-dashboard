@@ -961,11 +961,19 @@ render_saved_tab() {
   ) || { echo "quit"; return 0; }
 
   key=$(echo "$selection" | head -1)
-  local chosen_line chosen_id chosen_state
-  chosen_line=$(echo "$selection" | tail -1)
+  _dashboard_saved_key_action "$key" "$(echo "$selection" | tail -1)"
+}
+
+# What a key pressed on a Saved-tab row does, as an action for dispatch_action.
+# Args: $1 key (fzf's --expect output; empty for Enter), $2 the highlighted
+# row as fzf prints it. Separate from the fzf call so it's testable
+# (--saved-key-action).
+_dashboard_saved_key_action() {
+  local key="$1" chosen_line="$2" chosen_id chosen_state
   chosen_id=$(_dashboard_saved_row_entry "$(printf '%s' "$chosen_line" | cut -f1)")
   chosen_state=$(printf '%s' "$chosen_line" | cut -f2)
-  [[ "$chosen_line" == saved* ]] || { chosen_id=""; chosen_state=""; }
+  # A manual save's divider is a row too ("snap-hdr:<ts>"): K and A act on its save.
+  [[ "$chosen_line" == saved* || "$chosen_line" == snap-hdr:* ]] || { chosen_id=""; chosen_state=""; }
 
   case "$key" in
     1)   echo "tab:workspaces" ;;
@@ -1118,7 +1126,9 @@ dispatch_action() {
       if [[ "$skey" == */* ]]; then
         question="Delete this workspace from the manual save?"
       else
-        question="Delete this whole manual save?"
+        local n
+        n=$(find "${LAZY_LLM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lazy-llm}/snapshots/$skey" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+        question="Delete the manual save of ${skey:0:4}-${skey:4:2}-${skey:6:2} ${skey:9:2}:${skey:11:2} and its $n workspace(s)? (running workspaces aren't touched)"
       fi
       confirm=$(printf 'no\nyes' | fzf \
         --height=100% --reverse --border=rounded --header="$question" \
@@ -1674,6 +1684,11 @@ while [[ $# -gt 0 ]]; do
       # The Saved tab's row list (testing / plumbing, like --emit-rows).
       shift
       _dashboard_build_saved_rows "${1:-}"
+      exit 0
+      ;;
+    --saved-key-action)
+      # The action a key maps to on a Saved-tab row (testing). $2 key, $3 row.
+      _dashboard_saved_key_action "${2:-}" "${3:-}"
       exit 0
       ;;
     --fold-transform)

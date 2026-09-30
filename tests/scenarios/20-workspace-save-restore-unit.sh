@@ -275,6 +275,16 @@ assert_equals "$(jq -r '[.windows[].panes[]] | length' "$(entry wsA)")" "2" "the
 rows=$(sbx llm-dashboard --emit-saved-rows 2>/dev/null)
 assert_contains "$rows" "snap-hdr:$ts1	snaphdr	" "the Saved tab has a divider per manual save"
 assert_contains "$rows" "saved:$ts1/$idA	snapshot	" "...with its workspaces under it"
+# Keys on a divider act on its whole save; on its entries, on that one.
+hdr=$(grep "^snap-hdr:$ts1	" <<< "$rows")
+snaprow=$(grep "^saved:$ts1/$idA	" <<< "$rows")
+rollrow=$(grep "^saved:$idA	" <<< "$rows")
+assert_equals "$(sbx llm-dashboard --saved-key-action K "$hdr")" "action:saved-forget-snap:$ts1" "K on a manual save's divider deletes that whole save"
+assert_equals "$(sbx llm-dashboard --saved-key-action A "$hdr")" "action:saved-restore-all:$ts1" "A on a divider restores that save's workspaces"
+assert_equals "$(sbx llm-dashboard --saved-key-action A "$snaprow")" "action:saved-restore-all:$ts1" "A on one of its entries: that save too"
+assert_equals "$(sbx llm-dashboard --saved-key-action K "$snaprow")" "action:saved-forget-snap:$ts1/$idA" "K on an entry deletes just that one from the save"
+assert_equals "$(sbx llm-dashboard --saved-key-action A "$rollrow")" "action:saved-restore-all" "A on a rolling entry: the rolling ones"
+assert_contains "$(sbx llm-dashboard --saved-key-action "" "$hdr")" "^action:saved-hint:" "Enter on a divider only hints"
 out=$(sbx llm-persist restore --snapshot "$ts1" wsA 2>&1)
 assert_contains "$out" "as wsA-2 \(a copy: wsA is running\)" "restoring a snapshot of a running workspace makes a copy"
 assert_equals "$(wopt wsA-2 @AI_PANE_NAMES)" "alpha beta gamma" "the copy has all 3 panes of that moment"
