@@ -287,6 +287,17 @@ assert_equals "$(owner_of "$R")" "" "main checkout: no owner"
 tmux set-option -p -t "$P" @lazy_llm_wt "$WT_PANE"
 assert_equals "$(owner_of "$WT_PANE")" "pane:cws:$P" "...and pane:<session>:<pane> once a pane runs in it"
 assert_equals "$(owner_of "$WT_LIVE")" "claude:cws:$P" "a pane can own both kinds at once"
+# A Claude worktree adopted into a pane (Enter → llm-add -w sets the new
+# pane's @lazy_llm_wt) belongs to that live pane: K busy, I keeps it.
+# Verification found it was still claude:… (and I deleted the pane's cwd).
+WT_ADOPT=$(claude_wt "$R" agent-adopt "%9998")
+tmux split-window -d -t cws -c "$WT_ADOPT" "exec sleep 300"
+P2=$(tmux list-panes -t cws -F '#{pane_id}' | grep -vxF "$P" | head -1)
+tmux set-option -p -t "$P2" @lazy_llm_wt "$WT_ADOPT"
+assert_equals "$(owner_of "$WT_ADOPT")" "pane:cws:$P2" "a Claude worktree a live pane runs in: pane:<session>:<pane>"
+WT_UNTR=$(claude_wt "$R" agent-untr "")
+printf 'u\n' > "$WT_UNTR/u.txt" && git -C "$WT_UNTR" add u.txt && git -C "$WT_UNTR" commit -qm "untracked-case work"
+printf 'junk\n' > "$WT_UNTR/scratch.log"
 cols=$( (cd "$R" && lazy_llm_gather_worktrees) | awk -F$'\x1f' '{print NF}' | sort -u)
 assert_equals "$cols" "8" "rows still have 8 columns"
 
@@ -347,6 +358,17 @@ assert_has "$screen" "lazy/pw: integrated into main; worktree kept (its pane is 
 assert_dir_exists "$WT_PANE" "...and still there for its pane"
 assert_equals "$(git -C "$R" log -1 --format=%s main)" "pane work" "...its commit landed"
 check "main moved" test "$commit_before" != "$(git -C "$R" rev-parse main)"
+printf 'a\n' > "$WT_ADOPT/ad.txt" && git -C "$WT_ADOPT" add ad.txt && git -C "$WT_ADOPT" commit -qm "adopted work"
+dash_key_on "$WT_ADOPT" I
+dash_wait "lazy/agent-adopt:"
+assert_has "$(tmux capture-pane -p -t dash | strip)" "lazy/agent-adopt: integrated into main; worktree kept (its pane is open)" "adopted Claude worktree: integrated, kept for its pane"
+assert_dir_exists "$WT_ADOPT" "...the live pane's directory still exists"
+dash_key_on "$WT_UNTR" I
+dash_wait "NOT removed"
+screen=$(tmux capture-pane -p -t dash | strip)
+assert_has "$screen" "lazy/agent-untr: integrated into main; worktree NOT removed" "landed but not removable (untracked file): says it landed"
+assert_lacks "$screen" "agent-untr not integrated" "...not 'not integrated'"
+assert_equals "$(git -C "$R" log -1 --format=%s main)" "untracked-case work" "...and the commit is on main"
 dash_key_on "$R" I
 dash_wait "(exit 2)"
 assert_has "$(tmux capture-pane -p -t dash | strip)" "not integrated (exit 2): not a pane or Claude worktree" "main checkout: exit 2, explained"

@@ -645,17 +645,22 @@ _lazy_llm_emit_worktree_row() {
   # with this path, else orphaned. Task worktrees have no owner.
   local owner="" base kind pane
   kind=$(git -C "$path" config "branch.$branch.lazyLlmKind" 2>/dev/null) || kind=""
-  if [[ "$kind" == claude ]]; then
+  base=$(git -C "$path" config "branch.$branch.lazyLlmBase" 2>/dev/null) || base=""
+  # A live pane running IN the worktree (its @lazy_llm_wt) owns it, whatever
+  # the kind: a Claude worktree adopted into a pane (Enter) must get the same
+  # live-pane guards (K busy, I keeps it) as a pane worktree.
+  if [[ "$kind" == claude || -n "$base" ]]; then
+    owner=$(awk -F'\t' -v w="$path" '$1 != "" && $1 == w {print "pane:" $2 ":" $3; exit}' <<< "$wt_panes")
+  fi
+  if [[ -n "$owner" ]]; then
+    :
+  elif [[ "$kind" == claude ]]; then
     pane=$(git -C "$path" config "branch.$branch.lazyLlmPane" 2>/dev/null) || pane=""
     [[ -n "$pane" ]] \
       && owner=$(awk -F'\t' -v p="$pane" '$3 == p {print "claude:" $2 ":" $3; exit}' <<< "$wt_panes")
     [[ -n "$owner" ]] || owner="claude:orphaned"
-  else
-    base=$(git -C "$path" config "branch.$branch.lazyLlmBase" 2>/dev/null) || base=""
-    if [[ -n "$base" ]]; then
-      owner=$(awk -F'\t' -v w="$path" '$1 == w {print "pane:" $2 ":" $3; exit}' <<< "$wt_panes")
-      [[ -n "$owner" ]] || owner="orphaned"
-    fi
+  elif [[ -n "$base" ]]; then
+    owner="orphaned"
   fi
 
   printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \

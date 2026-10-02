@@ -1400,17 +1400,26 @@ dispatch_action() {
       # llm-wt integrate (--remove unless a live pane runs in the worktree).
       # The outcome goes in the next render's header: a non-zero exit is
       # explained from llm-wt's exit code, plus llm-wt's own last message.
+      # Integrate and remove are two calls, so a removal llm-wt refuses
+      # (untracked files left, say) isn't reported as a failed integrate:
+      # by then the commits have landed.
       local path="${action#action:worktree-integrate*:}" rc=0 out branch
-      local -a args=(integrate "$path")
-      [[ "$action" == action:worktree-integrate:* ]] && args+=(--remove)
       branch=$(git -C "$path" branch --show-current 2>/dev/null) || branch=""
-      out=$("$HOME/.local/bin/llm-wt" "${args[@]}" 2>&1 < /dev/null) || rc=$?
+      out=$("$HOME/.local/bin/llm-wt" integrate "$path" 2>&1 < /dev/null) || rc=$?
       if [[ $rc -eq 0 ]]; then
         local first
-        first=$(head -1 <<< "$out")
+        # The outcome line, not a warning (llm-wt: …) printed before it.
+        first=$(grep -v '^llm-wt: ' <<< "$out" | head -1) || first=""
         _dashboard_flash="⎇ ${branch:-$path}: ${first%:}"
         if [[ "$action" == action:worktree-integrate:* ]]; then
-          _dashboard_flash+="; worktree removed"
+          local rout rrc=0
+          rout=$("$HOME/.local/bin/llm-wt" remove "$path" 2>&1 < /dev/null) || rrc=$?
+          if [[ $rrc -eq 0 ]]; then
+            _dashboard_flash+="; worktree removed"
+          else
+            rout=$(grep '^llm-wt: ' <<< "$rout" | tail -1) || rout=""
+            _dashboard_flash+="; worktree NOT removed: ${rout#llm-wt: }"
+          fi
         else
           _dashboard_flash+="; worktree kept (its pane is open)"
         fi
