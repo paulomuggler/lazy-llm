@@ -2,15 +2,15 @@
 slug: claude-subagent-worktrees
 title: Claude Code's subagent / EnterWorktree worktrees go through llm-wt (hooks, parent integration, guidance)
 priority: P1
-status: in-progress
+status: done
 created: 2026-10-02_18:25
-updated: 2026-10-02_18:49
+updated: 2026-10-02_19:46
 depends-on: []
 tags: [worktree, claude-plugin, hooks, concurrency]
 spec: ../specs/claude-subagent-worktrees.md
 model: inline
-owner: homelab-zrh-dev-2409537
 commits: [e99b6d0, b86940d, aae105f, f74c8e2, dbe876e, 85b0b98, 48e11dc]
+human-validation: pending
 ---
 
 # Claude Code's own worktrees go through llm-wt
@@ -75,7 +75,7 @@ Full design: [`specs/claude-subagent-worktrees.md`](specs/claude-subagent-worktr
 - [x] Scenario 24 passes, covering every §12.1 case; 22/19/12 still pass
 - [x] Scenario 25 passes live (§12.2) — 30/30 on the final run
 - [x] README + USAGE updated (incl. §11 limits)
-- [ ] Deployed: install.sh run, plugin 0.4.0 active for new sessions; lazy-llm pushed; dev-env submodule pointer bumped and pushed
+- [x] Deployed: install.sh run, plugin 0.4.0 active for new sessions; lazy-llm pushed; dev-env submodule pointer bumped and pushed
 
 ## Work Report
 
@@ -143,6 +143,7 @@ Full design: [`specs/claude-subagent-worktrees.md`](specs/claude-subagent-worktr
 - `claude-subagent-worktrees-ui` (already filed): Worktrees tab tag + `I`, border `⎇×N`, llmw picker.
 - `claude-worktree-cleanup-sweep` (backlog): Claude's `cleanupPeriodDays` sweep was not observed (spec §11).
 - `test-runner-exit-status` (backlog): the runner exits 1 even when all scenarios pass (pre-existing).
+- `install-updates-project-scope-plugins` (backlog): install.sh misses project-scope installs (found at deploy).
 
 ## Verify Plan
 - [x] Tests: `tests/test-runner.sh 24-claude-worktrees-unit.sh` passes; regressions 22, 19, 12, 14 pass
@@ -538,3 +539,33 @@ Not sent for a 4th verify round: the protocol's two-round bound was reached; the
 deterministic, the fix is a 4-line guard covered by a regression test, and it was checked with
 the verifier's own repro. The theoretical lock holes round 3 listed (a breaker stalled more than
 5s mid-break, pid reuse) are accepted for the macOS-only fallback lock.
+
+## Deploy
+
+**Date:** 2026-10-02_19:46
+
+- After round-3 rework: full suite 25/25; live scenario 25 **30/30** again; gitleaks clean.
+- lazy-llm `main` pushed (`48e11dc` + todo commits). `./install.sh` ran: stow OK, plugin user scope
+  **0.4.0** (cache `~/.claude/plugins/cache/lazy-llm/lazy-llm/0.4.0/hooks/hooks.json` has
+  WorktreeCreate/Remove, SubagentStart/Stop, PostToolUse, SessionStart).
+- Found: dev-env had a **project-scope** install pinned at 0.3.0 (from its `.claude/settings.json`),
+  which `install.sh` doesn't update. Updated by hand (`claude plugin update lazy-llm@lazy-llm
+  --scope project` in dev-env → 0.4.0). Four more 0.3.0 project entries point at deleted pane
+  worktrees (inert). Filed `install-updates-project-scope-plugins`.
+- Post-deploy smoke test with the **installed** plugin (no test settings): a real `claude -p`
+  session's isolated subagent got `.worktrees/.claude/agent-…` from `feature`, and the parent
+  landed `add z` on `feature`; no worktree or branch left; `/.worktrees/` in info/exclude.
+- dev-env: submodule pointer bumped (`6a654bf`) and pushed to `origin/omarchy-4`.
+- Running Claude sessions keep the old hooks until restarted.
+
+## Human Validation
+
+Agent-verified: the unit scenarios, three verify rounds, and a live end-to-end test. What's left
+is judgment in your real workflow:
+
+- [ ] In a real lazy-llm Claude pane (start a **new** session so plugin 0.4.0 loads), ask for
+      two independent edits "each in its own isolated worktree subagent, in parallel". Confirm
+      both land on the workspace branch, and that `llm-wt list` is empty afterwards.
+- [ ] Judge the guidance volume: the parent gets ~25 lines per landed subagent
+      (`~/.local/share/lazy-llm/worktree-parent.md`). Too chatty, or about right? It's a live
+      file, so edit it freely.
