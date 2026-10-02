@@ -526,6 +526,29 @@ assert_equals "$rc" "1" "a subdirectory path: refused"
 assert_dir_exists "$w" "...the worktree survives"
 
 echo ""
+echo "Test 23b: WorktreeRemove never drops commits on a detached HEAD (verify round 3)..."
+R="$sandbox/r23b"; mk_repo "$R"
+w=$(hook "$(p_create "$R" agent-d23)")
+git -C "$w" checkout -q --detach
+commit_file "$w" det.txt precious
+hook "$(p_remove "$w")" >/dev/null; rc=$?
+assert_equals "$rc" "1" "detached HEAD with commits no branch has: refused"
+assert_dir_exists "$w" "...the worktree (and its commits) survive"
+out=$(printf '%s' "$(p_remove "$w")" | LAZY_LLM_WT_BIN="$LLMWT" bash "$SHIM" 2>/dev/null); rc=$?
+assert_equals "$rc" "1" "...through the plugin shim too"
+git -C "$w" checkout -q lazy/agent-d23 2>/dev/null
+git -C "$w" checkout -q --detach
+GIT_SEQUENCE_EDITOR=true git -C "$w" rebase -q -i --exec true HEAD~1 >/dev/null 2>&1
+commit_file "$w" det2.txt also
+GIT_SEQUENCE_EDITOR="sed -i '1i break'" git -C "$w" rebase -q -i HEAD~1 >/dev/null 2>&1
+hook "$(p_remove "$w")" >/dev/null; rc=$?
+assert_equals "$rc" "1" "detached HEAD with a rebase stopped in progress: refused"
+git -C "$w" rebase --abort 2>/dev/null
+git -C "$w" checkout -q --detach lazy/agent-d23
+hook "$(p_remove "$w")" >/dev/null; rc=$?
+assert_equals "$rc" "0" "detached HEAD whose commits a branch has: removed"
+assert_file_not_exists "$w" "...gone"
+echo ""
 echo "Test 24: the portable (symlink) lock..."
 R="$sandbox/r24"; mk_repo "$R"
 common=$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)

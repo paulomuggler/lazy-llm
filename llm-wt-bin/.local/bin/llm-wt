@@ -650,9 +650,15 @@ hook_worktree_remove() {
     [[ "$KIND" == claude ]] || die 1 "$path is a lazy-llm pane's worktree; close the pane to remove it"
     cmd_remove "$path" >&2
   else
-    # Not one of ours (made by the plugin's fallback), or one with nothing to
-    # integrate into: plain removal, which refuses a dirty tree and keeps the
-    # branch, so commits survive either way.
+    # Not one of ours (made by the plugin's fallback), one with nothing to
+    # integrate into, or one on a detached HEAD: plain removal, which refuses
+    # a dirty tree and keeps any branch. Commits only HEAD holds (detached)
+    # would go with it, and so would a rebase in progress: refuse those.
+    local orphans
+    orphans=$(git -C "$path" rev-list --count HEAD --not --branches 2>/dev/null) || orphans=1
+    [[ "$orphans" -eq 0 ]] \
+      || die 1 "$path has $orphans commit(s) on a detached HEAD that no branch has; put them on a branch first"
+    rebase_in_progress "$path" && die 1 "$path has a rebase in progress; finish or abort it first"
     git -C "$path" worktree remove "$path" >&2
   fi
 }
