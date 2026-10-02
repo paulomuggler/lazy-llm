@@ -2,7 +2,7 @@
 -- Requires the glow CLI (installed via install-glow.sh).
 --   :Glow         glow.nvim's own full-window preview
 --   <leader>mg / <leader>uM
---                 toggle a full-screen glow overlay of the current buffer
+--                 toggle a glow overlay of the current buffer over its window
 --                 (see lua/glow_overlay.lua; q / <Esc> or buffer switch closes)
 
 return {
@@ -27,7 +27,7 @@ return {
         function()
           require("glow_overlay").toggle()
         end,
-        desc = "Glow overlay (full screen)",
+        desc = "Glow overlay (current window)",
         ft = "markdown",
       },
     },
