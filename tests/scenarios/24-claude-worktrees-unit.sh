@@ -421,6 +421,117 @@ git -C "$R" config branch.lazy/p17.lazyLlmName agent-zz
 hook "$(p_sstop "$pane" zz)" >/dev/null
 assert_dir_exists "$pane" "an empty PANE worktree with a matching name isn't removed by SubagentStop"
 
+# ──────────────────────────────────────────────────────────────────────────
+# Regressions from the first verification round (each was a real defect).
+echo ""
+echo "Test 18: nested parent — removal deletes the branch too..."
+R="$sandbox/r18"; mk_repo "$R"
+pane=$("$LLMWT" create "$R" p18 2>/dev/null)
+commit_file "$pane" pane.txt own
+n1=$(hook "$(p_create "$pane" agent-n18)")
+commit_file "$n1" n.txt nested
+"$LLMWT" integrate --remove "$n1" >/dev/null 2>&1; rc=$?
+assert_equals "$rc" "0" "integrate --remove from a pane-parented worktree: exit 0"
+assert_file_not_exists "$n1" "...worktree removed"
+assert_fails "git -C '$R' show-ref --verify --quiet refs/heads/lazy/agent-n18" "...branch deleted (merged into the pane's branch, not main's HEAD)"
+assert_empty "$(git -C "$R" config --get-regexp '^branch\.lazy/agent-n18\.' 2>/dev/null)" "...and its lazyLlm* config"
+n2=$(hook "$(p_create "$pane" agent-m18)")
+hook "$(p_sstop "$n2" m18)" >/dev/null
+assert_file_not_exists "$n2" "SubagentStop removes an empty nested worktree"
+assert_fails "git -C '$R' show-ref --verify --quiet refs/heads/lazy/agent-m18" "...with its branch"
+
+echo ""
+echo "Test 19: a renamed/deleted base never lets work be removed..."
+R="$sandbox/r19"; mk_repo "$R"
+w=$(hook "$(p_create "$R" agent-b19)")
+commit_file "$w" w.txt work
+git -C "$R" branch -m feature feature2
+assert_equals "$("$LLMWT" status "$w" --porcelain | awk -F'\t' '$1=="base-missing"{print $2}')" "1" "status reports base-missing"
+assert_equals "$("$LLMWT" status "$w" --porcelain | awk -F'\t' '$1=="unintegrated"{print $2}')" "1" "...and counts the commit no other branch has"
+hook "$(p_sstop "$w" b19)" >/dev/null
+assert_dir_exists "$w" "SubagentStop keeps it"
+hook "$(p_remove "$w")" >/dev/null; rc=$?
+assert_equals "$rc" "1" "WorktreeRemove refuses"
+assert_dir_exists "$w" "...it survives"
+e=$(hook "$(p_create "$R" agent-c19)")
+git -C "$R" branch -m feature2 feature3
+hook "$(p_sstop "$e" c19)" >/dev/null
+assert_file_not_exists "$e" "an empty one (its commits are on another branch) is still cleaned up"
+
+echo ""
+echo "Test 20: git hooks that leave a process running don't hold the repo lock..."
+R="$sandbox/r20"; mk_repo "$R"
+printf '#!/bin/sh\n(sleep 6) >/dev/null 2>&1 &\nexit 0\n' > "$R/.git/hooks/post-checkout"; chmod +x "$R/.git/hooks/post-checkout"
+start=$(date +%s)
+hook "$(p_create "$R" agent-h1)" >/dev/null
+hook "$(p_create "$R" agent-h2)" >/dev/null
+elapsed=$(( $(date +%s) - start ))
+[[ $elapsed -lt 5 ]] && r=fast || r="slow (${elapsed}s)"
+assert_equals "$r" "fast" "two creates don't wait on the hook's background job"
+rm -f "$R/.git/hooks/post-checkout"
+
+echo ""
+echo "Test 21: a bootstrap failure still yields exactly one worktree..."
+R="$sandbox/r21"; mk_repo "$R"
+printf 'secret\n' > "$R/locked.conf"; chmod 000 "$R/locked.conf"
+printf 'locked.conf\n' > "$R/.worktreeinclude"
+out=$(printf '%s' "$(p_create "$R" agent-f1)" | LAZY_LLM_WT_BIN="$LLMWT" bash "$SHIM" 2>"$sandbox/err"); rc=$?
+chmod 600 "$R/locked.conf"
+assert_equals "$rc" "0" "exit 0"
+assert_equals "$out" "$R/.worktrees/.claude/agent-f1" "llm-wt's worktree, not the fallback's"
+assert_file_not_exists "$R/.claude/worktrees" "no second (fallback) worktree"
+assert_equals "$(git -C "$R" worktree list | wc -l | tr -d ' ')" "2" "git knows main + one"
+assert_has "$(cat "$sandbox/err")" "bootstrapping" "stderr says the bootstrap failed"
+
+echo ""
+echo "Test 22: paths with a quote, a backslash or & ..."
+R="$sandbox/r22 \"q\\b&"; mk_repo "$R"
+cwdj=$(jq -Rn --arg c "$R" '$c')
+payload=$(printf '{"session_id":"s","cwd":%s,"hook_event_name":"WorktreeCreate","name":"agent-q1"}' "$cwdj")
+out=$(hook "$payload"); rc=$?
+assert_equals "$rc" "0" "llm-wt: create succeeds"
+assert_equals "$out" "$R/.worktrees/.claude/agent-q1" "...at the decoded path"
+c=$(ctx "$(hook "$(printf '{"cwd":%s,"agent_id":"q1","hook_event_name":"SubagentStart"}' "$(jq -Rn --arg c "$out" '$c')")")")
+assert_has "$c" "You run in \`$out\`" "guidance carries the path verbatim"
+payload2=$(printf '{"session_id":"s","cwd":%s,"hook_event_name":"WorktreeCreate","name":"agent-q2"}' "$cwdj")
+out=$(printf '%s' "$payload2" | LAZY_LLM_WT_BIN="$sandbox/missing" bash "$SHIM" 2>/dev/null); rc=$?
+assert_equals "$out" "$R/.claude/worktrees/agent-q2" "shim fallback decodes it too"
+
+echo ""
+echo "Test 23: WorktreeRemove only takes a Claude worktree's top directory..."
+R="$sandbox/r23"; mk_repo "$R"
+pane=$("$LLMWT" create "$R" p23 2>/dev/null)
+hook "$(p_remove "$pane")" >/dev/null; rc=$?
+assert_equals "$rc" "1" "a pane's worktree: refused"
+assert_dir_exists "$pane" "...it survives"
+w=$(hook "$(p_create "$R" agent-t23)")
+mkdir -p "$w/sub"
+hook "$(p_remove "$w/sub")" >/dev/null; rc=$?
+assert_equals "$rc" "1" "a subdirectory path: refused"
+assert_dir_exists "$w" "...the worktree survives"
+
+echo ""
+echo "Test 24: the portable mkdir lock..."
+R="$sandbox/r24"; mk_repo "$R"
+common=$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)
+for i in 1 2 3 4 5 6; do
+    ( printf '%s' "$(p_create "$R" "agent-mk$i")" | env LAZY_LLM_WT_LOCK=mkdir "$LLMWT" claude-hook > "$sandbox/mk$i.out" 2>/dev/null; echo $? > "$sandbox/mk$i.rc" ) &
+done
+wait
+ok=0; for i in 1 2 3 4 5 6; do [[ "$(cat "$sandbox/mk$i.rc")" == 0 && -d "$(cat "$sandbox/mk$i.out")" ]] && ok=$((ok + 1)); done
+assert_equals "$ok" "6" "6 parallel creates under the mkdir lock all succeed"
+assert_file_not_exists "$common/lazy-llm-wt.lock.d" "...and leave no lock dir"
+mkdir "$common/lazy-llm-wt.lock.d"; echo 999999 > "$common/lazy-llm-wt.lock.d/pid"
+out=$(printf '%s' "$(p_create "$R" agent-dead)" | env LAZY_LLM_WT_LOCK=mkdir "$LLMWT" claude-hook 2>/dev/null)
+assert_dir_exists "$out" "a lock held by a dead pid is broken"
+mkdir "$common/lazy-llm-wt.lock.d"
+start=$(date +%s)
+out=$(printf '%s' "$(p_create "$R" agent-nopid)" | env LAZY_LLM_WT_LOCK=mkdir "$LLMWT" claude-hook 2>/dev/null)
+elapsed=$(( $(date +%s) - start ))
+assert_dir_exists "$out" "a lock dir with no pid is broken..."
+[[ $elapsed -lt 15 ]] && r=ok || r="took ${elapsed}s"
+assert_equals "$r" "ok" "...after a few seconds, not the 60s timeout"
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"

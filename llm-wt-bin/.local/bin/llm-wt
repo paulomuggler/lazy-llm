@@ -78,7 +78,8 @@ lock_repo() {
   local common owner waited=0
   common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
     || die 1 "not in a git repository: $1"
-  if command -v flock >/dev/null 2>&1; then
+  # LAZY_LLM_WT_LOCK=mkdir forces the portable lock (tests).
+  if [[ "${LAZY_LLM_WT_LOCK:-}" != mkdir ]] && command -v flock >/dev/null 2>&1; then
     exec {_LOCK_FD}>>"$common/lazy-llm-wt.lock"
     flock -w 60 "$_LOCK_FD" || die 1 "timed out after 60s waiting for $common/lazy-llm-wt.lock"
     return 0
@@ -86,10 +87,24 @@ lock_repo() {
   # No flock (macOS): a lock directory holding its owner's pid, broken when
   # that process is gone.
   _LOCK_DIR="$common/lazy-llm-wt.lock.d"
+  local nopid=0 stale
   until mkdir "$_LOCK_DIR" 2>/dev/null; do
     owner=$(cat "$_LOCK_DIR/pid" 2>/dev/null) || owner=""
-    if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
-      rm -rf "$_LOCK_DIR"
+    # Stale: its owner is dead, or it has had no pid for 5s (its owner died
+    # between mkdir and writing it). Broken by renaming it away, which only
+    # one waiter can do; a waiter that finds a different pid in what it
+    # renamed (a new owner got in between) puts it back.
+    [[ -z "$owner" ]] && nopid=$((nopid + 1)) || nopid=0
+    if { [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; } || [[ $nopid -gt 50 ]]; then
+      stale="$_LOCK_DIR.stale.$$"
+      if mv "$_LOCK_DIR" "$stale" 2>/dev/null; then
+        if [[ "$(cat "$stale/pid" 2>/dev/null)" == "$owner" ]]; then
+          rm -rf "$stale"
+        else
+          mv "$stale" "$_LOCK_DIR" 2>/dev/null || rm -rf "$stale"
+        fi
+      fi
+      nopid=0
       continue
     fi
     waited=$((waited + 1))
@@ -98,6 +113,24 @@ lock_repo() {
   done
   echo $$ > "$_LOCK_DIR/pid"
   trap 'rm -rf "$_LOCK_DIR"' EXIT
+}
+
+# Run a command with the flock fd closed, so nothing it starts inherits the
+# lock (the lock lives as long as any process holds that fd open).
+# In a subshell: a {var}>&- redirection on the command itself may outlive it
+# and close the parent's copy, releasing the lock.
+no_lock_fd() {
+  if [[ -n "$_LOCK_FD" ]]; then
+    ( exec {_LOCK_FD}>&-; "$@" )
+  else
+    "$@"
+  fi
+}
+
+# lazy_llm_setup_worktree from <dir>: <dir> <branch> <base dir> <start> <name>
+sh_cd_setup() {
+  local dir="$1"; shift
+  (cd "$dir" && lazy_llm_setup_worktree "$@")
 }
 
 unlock_repo() {
@@ -390,7 +423,7 @@ cmd_create() {
   # Ignore .worktrees/ via info/exclude rather than the tracked .gitignore:
   # creating a pane must not leave an uncommitted change in the main directory.
   [[ "$pane_base" == "$repo/.worktrees/"* ]] && add_exclude "$repo" "/.worktrees/"
-  wt=$(cd "$repo" && lazy_llm_setup_worktree "$branch" "$pane_base" "$base" "$name") || die 1 "could not create the worktree"
+  wt=$(no_lock_fd sh_cd_setup "$repo" "$branch" "$pane_base" "$base" "$name") || die 1 "could not create the worktree"
   git -C "$repo" config "branch.$branch.lazyLlmBase" "$base"
   git -C "$repo" config "branch.$branch.lazyLlmPrimary" "$repo"
   unlock_repo
@@ -445,19 +478,30 @@ claude_create() {
   branch="lazy/$name"
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || die 1 "invalid branch name: $branch"
   [[ "$wt_base" == "$root/.worktrees/"* ]] && add_exclude "$root" "/.worktrees/"
-  wt=$(cd "$parent" && lazy_llm_setup_worktree "$branch" "$wt_base" HEAD "$name") || die 1 "could not create the worktree"
-  git -C "$parent" config "branch.$branch.lazyLlmKind" claude
-  [[ -n "$raw" ]] && git -C "$parent" config "branch.$branch.lazyLlmName" "$raw"
-  [[ -n "$session" ]] && git -C "$parent" config "branch.$branch.lazyLlmSession" "$session"
-  [[ -n "${TMUX_PANE:-}" ]] && git -C "$parent" config "branch.$branch.lazyLlmPane" "$TMUX_PANE"
-  if [[ -n "$base" ]]; then
-    git -C "$parent" config "branch.$branch.lazyLlmBase" "$base"
-    git -C "$parent" config "branch.$branch.lazyLlmPrimary" "$parent"
-  fi
+  # The lock fd is closed for `git worktree add`: its post-checkout hook (and
+  # anything that hook leaves running) must not hold the repo lock.
+  wt=$(no_lock_fd sh_cd_setup "$parent" "$branch" "$wt_base" HEAD "$name") || die 1 "could not create the worktree"
+  # A failed config write undoes the worktree: exiting non-zero with it in
+  # place would leave it orphaned, and the plugin shim would make another.
+  local -a kv=("lazyLlmKind=claude")
+  [[ -n "$raw" ]] && kv+=("lazyLlmName=$raw")
+  [[ -n "$session" ]] && kv+=("lazyLlmSession=$session")
+  [[ -n "${TMUX_PANE:-}" ]] && kv+=("lazyLlmPane=$TMUX_PANE")
+  [[ -n "$base" ]] && kv+=("lazyLlmBase=$base" "lazyLlmPrimary=$parent")
+  local e
+  for e in "${kv[@]}"; do
+    if ! git -C "$parent" config "branch.$branch.${e%%=*}" "${e#*=}"; then
+      git -C "$parent" worktree remove --force "$wt" >&2 || true
+      git -C "$parent" branch -D "$branch" >&2 || true
+      die 1 "could not record ${e%%=*} for $branch; the worktree was rolled back"
+    fi
+  done
   unlock_repo
 
   if [[ -n "$base" ]]; then
-    cmd_bootstrap "$wt" >&2
+    # In a child process: a bootstrap failure (an unreadable file to copy,
+    # say) is reported, but the worktree exists and is what Claude gets.
+    "$0" bootstrap "$wt" >&2 || warn "bootstrapping $wt failed (exit $?); the worktree is usable, but untracked files may be missing"
   else
     warn "$parent has a detached HEAD: $wt has nothing to integrate into (no bootstrap, no llm-wt integrate)"
   fi
@@ -523,10 +567,20 @@ find_agent_wt() {
 #                   worktree of any kind (isolated panes, claude -w)
 # Fields are read with grep/sed, like llm-claude-hook: no jq dependency.
 
+# The first "<name>": "<string>" in the payload, JSON escapes decoded
+# (\" \\ \/ \t \n; \uXXXX is left as is).
 hook_field() {
-  printf '%s' "$HOOK_INPUT" \
-    | grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 \
-    | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true
+  local v
+  v=$(printf '%s' "$HOOK_INPUT" \
+    | grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"([^\"\\\\]|\\\\.)*\"" | head -1 \
+    | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*"//; s/"$//') || true
+  v=${v//\\\\/$'\x01'}
+  v=${v//\\\"/\"}
+  v=${v//\\\//\/}
+  v=${v//\\t/$'\t'}
+  v=${v//\\n/$'\n'}
+  v=${v//$'\x01'/\\}
+  printf '%s' "$v"
 }
 
 json_escape() {
@@ -582,7 +636,11 @@ hook_worktree_remove() {
   path=$(hook_field worktree_path)
   [[ -n "$path" ]] || die 1 "WorktreeRemove without a worktree_path"
   [[ -e "$path" ]] || return 0
+  local top
+  top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || die 1 "$path is not a git worktree"
+  [[ "$top" == "$(cd "$path" && pwd -P)" ]] || die 1 "$path is not a worktree's top directory; not removing $top"
   if probe_ctx "$path"; then
+    [[ "$KIND" == claude ]] || die 1 "$path is a lazy-llm pane's worktree; close the pane to remove it"
     cmd_remove "$path" >&2
   else
     # Not one of ours (made by the plugin's fallback), or one with nothing to
@@ -791,8 +849,19 @@ cmd_status() {
     fi
   done < <(git -C "$WT" status --porcelain=v1 -z --untracked-files=all)
 
-  unintegrated=$(git -C "$WT" rev-list --count "$BASE..HEAD" 2>/dev/null || echo 0)
-  behind=$(git -C "$WT" rev-list --count "HEAD..$BASE" 2>/dev/null || echo 0)
+  # Fail safe: a base that's gone (deleted, renamed) or a rev-list error must
+  # never read as "nothing unintegrated" -- hooks remove worktrees on that.
+  # Without a base, count the commits no other local branch has: what
+  # removing the branch would lose.
+  local base_missing=0
+  if git -C "$WT" rev-parse --verify -q "refs/heads/$BASE^{commit}" >/dev/null; then
+    unintegrated=$(git -C "$WT" rev-list --count "$BASE..HEAD" 2>/dev/null) || unintegrated=1
+    behind=$(git -C "$WT" rev-list --count "HEAD..$BASE" 2>/dev/null) || behind=0
+  else
+    base_missing=1
+    unintegrated=$(git -C "$WT" rev-list --count HEAD --not --exclude="$BRANCH" --branches 2>/dev/null) \
+      || unintegrated=1
+  fi
   rebase_in_progress "$WT" && rebasing=1
 
   while IFS= read -r p; do
@@ -816,11 +885,13 @@ cmd_status() {
     printf 'worktree\t%s\nbranch\t%s\nbase\t%s\nprimary\t%s\n' "$WT" "$BRANCH" "$BASE" "$PRIMARY"
     printf 'dirty\t%s\nuntracked\t%s\nunintegrated\t%s\nbehind\t%s\n' "$dirty" "$untracked" "$unintegrated" "$behind"
     printf 'rebasing\t%s\ncopies-changed\t%s\nignored-extra\t%s\n' "$rebasing" "${#changed[@]}" "$ignored_extra"
+    printf 'base-missing\t%s\n' "$base_missing"
     for p in ${changed[@]+"${changed[@]}"}; do printf 'copy-changed\t%s\n' "$p"; done
     return 0
   fi
   printf 'worktree        %s\n' "$WT"
   printf 'branch          %s  (base %s, main directory %s)\n' "$BRANCH" "$BASE" "$PRIMARY"
+  [[ $base_missing -eq 1 ]] && printf 'base missing    yes — %s no longer exists; unintegrated counts commits no other branch has\n' "$BASE"
   [[ $rebasing -eq 1 ]] && printf 'rebasing        yes — resolve, git rebase --continue\n'
   printf 'uncommitted     %s\n' "$dirty"
   printf 'untracked       %s\n' "$untracked"
@@ -1020,7 +1091,13 @@ cmd_remove() {
       die 1 "$WT has work that would be lost (llm-wt status $WT): integrate it with llm-wt integrate, or use llm-wt remove --force to drop it"
     fi
   fi
-  lazy_llm_cleanup_worktree "$WT" yes "$force"
+  # The branch goes with -D, from here: the status check above already proved
+  # nothing is unintegrated (or --force said to drop it). `git branch -d`
+  # would judge "merged" against the main directory's HEAD, which isn't the
+  # base when this worktree's parent is itself a worktree (nested).
+  local branch="$BRANCH" keep="$PRIMARY"
+  lazy_llm_cleanup_worktree "$WT" no "$force"
+  git -C "$keep" branch -D "$branch" >&2 || warn "could not delete branch $branch"
   unlock_repo
 }
 

@@ -16,9 +16,20 @@
 
 input=$(cat)
 
+# The first "<name>": "<string>" in the payload, JSON escapes decoded (a
+# cwd may hold a quote or a backslash).
 field() {
-  printf '%s' "$input" | grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 \
-    | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/'
+  local v
+  v=$(printf '%s' "$input" \
+    | grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"([^\"\\\\]|\\\\.)*\"" | head -1 \
+    | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*"//; s/"$//')
+  v=${v//\\\\/$'\x01'}
+  v=${v//\\\"/\"}
+  v=${v//\\\//\/}
+  v=${v//\\t/$'\t'}
+  v=${v//\\n/$'\n'}
+  v=${v//$'\x01'/\\}
+  printf '%s' "$v"
 }
 
 wt_bin="${LAZY_LLM_WT_BIN:-$HOME/.local/bin/llm-wt}"
