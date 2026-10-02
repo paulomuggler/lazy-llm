@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test: Claude's worktrees shown by lazy-llm (claude-subagent-worktrees-ui,
 # spec .agents/TODO/specs/claude-subagent-worktrees.md §10): the AI pane
-# border's ⎇×N and the dashboard tree row's.
+# border's ⎇×N, the dashboard tree row's, and <leader>llmw's candidates.
 # The Worktrees tab (owners, I) is covered in 14-worktree-bridge-tab-unit.
 # Claude worktrees come from `llm-wt claude-hook` payloads with TMUX_PANE set
 # to a sandbox pane: no Claude needed.
@@ -138,6 +138,89 @@ tmux set-option -g @lazy_llm_border_git off
 assert_lacks "$(border "$P")" "⎇×" "@lazy_llm_border_git off drops it with the git segment"
 tmux set-option -g @lazy_llm_border_git on
 git -C "$R" worktree prune
+
+# ──────────────────────────────────────────────────────────────────────────
+echo ""
+echo "Test 4: <leader>llmw candidates and picker..."
+WD=$(claude_wt "$R" agent-d "$P")
+cat > "$sandbox/nvim-test.lua" <<LUA
+local out = {}
+local function log(k, v) table.insert(out, k .. "=" .. tostring(v)) end
+local M = require("lazy_llm_worktree")
+local pane_wt = ""
+M.visible_ai_pane = function() return "$P" end
+M.visible_pane_worktree = function() return pane_wt end
+local picked, notes = nil, {}
+vim.notify = function(msg) table.insert(notes, msg) end
+vim.ui.select = function(items, opts, cb)
+  local labels = {}
+  for _, c in ipairs(items) do table.insert(labels, opts.format_item(c)) end
+  log("select", table.concat(labels, "|"))
+  cb(items[picked])
+end
+local function names(list) local t = {} for _, c in ipairs(list) do table.insert(t, c.dir) end return table.concat(t, "|") end
+
+local cw = M.claude_worktrees("$R", "$P")
+log("claude", #cw)
+log("claude1", cw[1] and (cw[1].branch .. "@" .. cw[1].path))
+log("claude-q", #M.claude_worktrees("$R", "$Q"))
+log("claude-none", #M.claude_worktrees("$R", ""))
+
+vim.cmd("edit src/x.lua")
+local list, rel = M.candidates(vim.api.nvim_buf_get_name(0), cw)
+log("cands-main", names(list))
+log("rel", rel)
+pane_wt = "$WP"
+list = M.candidates(vim.api.nvim_buf_get_name(0), cw)
+log("cands-iso", names(list))
+
+vim.api.nvim_win_set_cursor(0, { 3, 0 })
+picked = 2
+M.toggle()
+log("picked-2", vim.api.nvim_buf_get_name(0))
+log("cursor", vim.api.nvim_win_get_cursor(0)[1])
+list = M.candidates(vim.api.nvim_buf_get_name(0), cw)
+log("cands-from-a", names(list))
+picked = nil
+M.toggle()
+log("cancel-stays", vim.api.nvim_buf_get_name(0))
+
+pane_wt = ""
+vim.cmd("edit $R/src/x.lua")
+log("before-one", "x")
+M.claude_worktrees = function() return { cw[1] } end
+M.toggle()
+log("one-direct", vim.api.nvim_buf_get_name(0))
+log("lines", vim.api.nvim_buf_line_count(0))
+
+M.claude_worktrees = function() return {} end
+vim.cmd("edit $R/src/x.lua")
+M.toggle()
+log("none-stays", vim.api.nvim_buf_get_name(0))
+log("none-note", notes[#notes])
+vim.fn.writefile(out, "$sandbox/nvim-out.txt")
+vim.cmd("qa!")
+LUA
+(cd "$R" && nvim --headless --clean \
+    --cmd "set rtp^=$REPO_ROOT/nvim-llm-send-plugin/.config/nvim" \
+    -c "luafile $sandbox/nvim-test.lua" >/dev/null 2>&1)
+nv=$(cat "$sandbox/nvim-out.txt" 2>/dev/null)
+assert_has "$nv" "claude=2" "the pane's live Claude worktrees: agent-a and agent-d (agent-b deleted, agent-c removed)"
+assert_has "$nv" "claude1=lazy/agent-a@$WA" "{ branch, path }, sorted by path"
+assert_has "$nv" "claude-q=0" "another pane's: none left"
+assert_has "$nv" "claude-none=0" "no AI pane: none"
+assert_has "$nv" "cands-main=$WA|$WD"$'\n' "from the main copy: the Claude worktrees (main is the current side)"
+assert_has "$nv" "rel=/src/x.lua" "the repo-relative path"
+assert_has "$nv" "cands-iso=$WP|$WA|$WD"$'\n' "isolated pane: its worktree first, then Claude's"
+assert_has "$nv" "select=⎇ pw (this pane's worktree)|⎇ lazy/agent-a (Claude worktree)|⎇ lazy/agent-d (Claude worktree)" "more than one other side: a picker, labelled"
+assert_has "$nv" "picked-2=$WA/src/x.lua" "picking opens that worktree's copy"
+assert_has "$nv" "cursor=3" "...on the same line"
+assert_has "$nv" "cands-from-a=$R|$WP|$WD"$'\n' "from a Claude worktree: main, the pane's, the other Claude one"
+assert_has "$nv" "cancel-stays=$WA/src/x.lua" "cancelling the picker stays put"
+assert_has "$nv" "one-direct=$WA/src/x.lua" "only one other side: opened directly, no picker"
+assert_has "$nv" "lines=5" "...the worktree's own copy"
+assert_has "$nv" "none-stays=$R/src/x.lua" "no Claude worktrees: unchanged (shared pane: stays)"
+assert_has "$nv" "none-note=The AI pane in view shares the main directory" "...with today's message"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

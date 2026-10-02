@@ -3,7 +3,9 @@
 -- An isolated AI pane runs in its own git worktree of the workspace's repo;
 -- nvim stays in the main directory and never changes its cwd. This module:
 --   * toggles the current buffer between the main copy of a file and the copy
---     in the visible AI pane's worktree (<leader>llmw, set up in llm-send.lua)
+--     in the visible AI pane's worktree (<leader>llmw, set up in llm-send.lua);
+--     when that pane's Claude session has worktrees of its own (subagents,
+--     llm-wt claude-hook), it picks among all of them
 --   * gives code references and notes a worktree buffer's path as the SAME
 --     repo-relative path its main copy has, which is what the agent sees from
 --     its own cwd (not ".worktrees/.panes/…/src/x")
@@ -69,27 +71,142 @@ local function tmux(args)
 	return vim.v.shell_error == 0 and vim.trim(out) or ""
 end
 
--- The worktree the window's visible AI pane runs in ("" when it shares the
--- main directory).
-function M.visible_pane_worktree()
+-- The window's visible AI pane ("" outside lazy-llm).
+function M.visible_ai_pane()
 	local pane = vim.env.TMUX_PANE
 	if not pane then
 		return ""
 	end
-	local ai = tmux({ "display-message", "-p", "-t", pane, "#{@AI_PANE_ID}" })
+	return tmux({ "display-message", "-p", "-t", pane, "#{@AI_PANE_ID}" })
+end
+
+-- The worktree the window's visible AI pane runs in ("" when it shares the
+-- main directory).
+function M.visible_pane_worktree()
+	local ai = M.visible_ai_pane()
 	if ai == "" then
 		return ""
 	end
 	return tmux({ "show-option", "-pqv", "-t", ai, "@lazy_llm_wt" })
 end
 
+-- Claude's worktrees (llm-wt claude-hook: lazyLlmKind=claude) whose
+-- lazyLlmPane is tmux pane `ai`, in the repo of `dir`, that still exist:
+-- { { path, branch }, ... } sorted by path. One git config call for the
+-- repo, plus a for-each-ref only when some are found.
+function M.claude_worktrees(dir, ai)
+	if not ai or ai == "" then
+		return {}
+	end
+	local lines = vim.fn.systemlist({
+		"git", "-C", dir, "config", "--get-regexp", [[^branch\..*\.lazyllm(kind|pane)$]],
+	})
+	if vim.v.shell_error ~= 0 then
+		return {}
+	end
+	local kind, pane = {}, {}
+	for _, l in ipairs(lines) do
+		local b, k, v = l:match("^branch%.(.+)%.(lazyllm%a+) (.*)$")
+		if k == "lazyllmkind" then
+			kind[b] = v
+		elseif k == "lazyllmpane" then
+			pane[b] = v
+		end
+	end
+	local refs = {}
+	for b, p in pairs(pane) do
+		if p == ai and kind[b] == "claude" then
+			table.insert(refs, "refs/heads/" .. b)
+		end
+	end
+	if #refs == 0 then
+		return {}
+	end
+	local out = vim.fn.systemlist(vim.list_extend({
+		"git", "-C", dir, "for-each-ref", "--format=%(refname:lstrip=2)%09%(worktreepath)",
+	}, refs))
+	local wts = {}
+	for _, l in ipairs(out) do
+		local b, path = l:match("^(.-)\t(.*)$")
+		if path and path ~= "" and vim.fn.isdirectory(path) == 1 then
+			table.insert(wts, { path = path, branch = b })
+		end
+	end
+	table.sort(wts, function(a, b)
+		return a.path < b.path
+	end)
+	return wts
+end
+
+-- Where <leader>llmw can take file `name` when the visible AI pane's Claude
+-- session has worktrees: the main copy, the pane's own worktree when it's
+-- isolated, and each of those Claude worktrees, minus the side `name` is on.
+-- Returns { { dir, label }, ... }, the repo-relative path ("/src/x"); or
+-- nil, a message.
+function M.candidates(name, claude)
+	local cwd = git_info(vim.fn.getcwd())
+	local buf = git_info(vim.fn.fnamemodify(name, ":h"))
+	if not cwd or not buf or buf.common ~= cwd.common or not under(name, buf.top) then
+		return nil, "This file isn't in the workspace's repository"
+	end
+	local list, seen = {}, { [buf.top] = true }
+	local function add(dir, label)
+		if dir ~= "" and not seen[dir] then
+			seen[dir] = true
+			table.insert(list, { dir = dir, label = label })
+		end
+	end
+	add(cwd.top, "main copy")
+	local wt = M.visible_pane_worktree()
+	add(wt, "⎇ " .. vim.fn.fnamemodify(wt, ":t") .. " (this pane's worktree)")
+	for _, c in ipairs(claude) do
+		add(c.path, "⎇ " .. c.branch .. " (Claude worktree)")
+	end
+	return list, name:sub(#buf.top + 1)
+end
+
+-- Open `target` in the current window, keeping the cursor line.
+local function open_counterpart(target)
+	if vim.fn.filereadable(target) == 0 then
+		notify("No counterpart (new on one side only): " .. vim.fn.fnamemodify(target, ":~:."), vim.log.levels.WARN)
+		return
+	end
+	local line = vim.fn.line(".")
+	vim.cmd.edit(vim.fn.fnameescape(target))
+	pcall(vim.api.nvim_win_set_cursor, 0, { math.min(line, vim.api.nvim_buf_line_count(0)), 0 })
+end
+
 -- Flip the current buffer between its main copy and the visible AI pane's
 -- worktree copy, keeping the cursor line. The buffer is a normal, editable
--- one: writing it writes that worktree's file.
+-- one: writing it writes that worktree's file. When the pane's Claude session
+-- has worktrees too, pick among them all (directly, when only one other is
+-- left).
 function M.toggle()
 	local name = vim.api.nvim_buf_get_name(0)
 	if name == "" then
 		notify("No file in this buffer")
+		return
+	end
+	local cwd = git_info(vim.fn.getcwd())
+	local claude = cwd and M.claude_worktrees(cwd.top, M.visible_ai_pane()) or {}
+	if #claude > 0 then
+		local list, rel = M.candidates(name, claude)
+		if not list then
+			notify(rel)
+		elseif #list == 1 then
+			open_counterpart(list[1].dir .. rel)
+		else
+			vim.ui.select(list, {
+				prompt = "Open " .. rel:sub(2) .. " in",
+				format_item = function(c)
+					return c.label
+				end,
+			}, function(c)
+				if c then
+					open_counterpart(c.dir .. rel)
+				end
+			end)
+		end
 		return
 	end
 	local target = M.main_counterpart(name)
@@ -99,20 +216,13 @@ function M.toggle()
 			notify("The AI pane in view shares the main directory; it has no worktree copy")
 			return
 		end
-		local cwd = git_info(vim.fn.getcwd())
 		if not cwd or not under(name, cwd.top) then
 			notify("This file isn't in the workspace's repository")
 			return
 		end
 		target = wt .. name:sub(#cwd.top + 1)
 	end
-	if vim.fn.filereadable(target) == 0 then
-		notify("No counterpart (new on one side only): " .. vim.fn.fnamemodify(target, ":~:."), vim.log.levels.WARN)
-		return
-	end
-	local line = vim.fn.line(".")
-	vim.cmd.edit(vim.fn.fnameescape(target))
-	pcall(vim.api.nvim_win_set_cursor, 0, { math.min(line, vim.api.nvim_buf_line_count(0)), 0 })
+	open_counterpart(target)
 end
 
 -- Set b:lazy_llm_wt (the worktree's branch) on a buffer of another worktree

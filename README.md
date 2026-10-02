@@ -159,7 +159,7 @@ One Claude session can also fan work out to subagents that each run in their own
 - **Where:** `.worktrees/.claude/<name>` on branch `lazy/<name>` (`<name>` is Claude's, `agent-<id>` for a subagent), started from the session's **current HEAD**. Claude's own creation would branch from `origin`'s default branch instead. The same untracked-file bootstrap and init hook as isolated panes apply. A session that's itself in an isolated pane nests: its subagents merge into the pane's branch, and the pane merges onward.
 - **The parent session lands the work.** Each subagent is told to commit and to leave merging alone. When it returns, the parent is told where the work is, and lands each worktree in turn with `llm-wt integrate --remove <path>` (rebase, fast-forward, then delete the worktree and branch). `llm-wt list` shows what's still waiting.
 - **Cleanup:** a subagent that changed nothing has its worktree removed as soon as it finishes. Nothing automatic ever force-removes a worktree holding commits or changes: leftovers stay, visible in the Worktrees tab.
-- **Seeing them:** the AI pane whose session made them shows `⎇×N` (how many still exist) on its border and its dashboard tree row. The Worktrees tab tags them `⎇ claude` with that pane's workspace, or `orphaned` once the pane is gone. There, `I` lands one (`llm-wt integrate --remove`), `Enter` puts an AI pane in it, and `K` asks what to do with it, listing anything that would be lost.
+- **Seeing them:** the AI pane whose session made them shows `⎇×N` (how many still exist) on its border and its dashboard tree row. The Worktrees tab tags them `⎇ claude` with that pane's workspace, or `orphaned` once the pane is gone. There, `I` lands one (`llm-wt integrate --remove`), `Enter` puts an AI pane in it, and `K` asks what to do with it, listing anything that would be lost. `<leader>llmw` in the editor then picks among the main copy, the pane's own worktree if it's isolated, and each of these.
 - **`EnterWorktree` / `claude -w`:** the session itself moves into such a worktree. It gets the isolated-pane guidance and integrates for itself.
 - **Everywhere:** the plugin is installed for your user, so this applies to every Claude session, in any repo, in tmux or not. If `llm-wt` is missing or fails, the hook falls back to a plain `git worktree add` from HEAD under `.claude/worktrees/`, so a subagent never fails to start.
 - **Limits:** Claude's `worktree.sparsePaths` and `worktree.symlinkDirectories` settings no longer apply, because they configure the creation this replaces. Use `worktree-files` links instead.
@@ -181,7 +181,7 @@ All keymaps are under the `<leader>llm` prefix:
 | `<leader>llmk` | n | **Keypress** - Forward next keypress to AI pane |
 | `<leader>llmr` | n/v | **Reference** - Add inline code reference (raw) |
 | `<leader>llmR` | n/v | **Reference** - Add code reference (wrapped) |
-| `<leader>llmw` | n | **Worktree** - Toggle file ⇄ the visible AI pane's worktree copy |
+| `<leader>llmw` | n | **Worktree** - Toggle file ⇄ the visible AI pane's worktree copy (a picker when its Claude session has subagent worktrees) |
 | `<leader>llmp` | n | **Pull** - Pull latest AI response into buffer |
 | `<leader>llm]` | n | **Next AI** - Cycle to next AI pane |
 | `<leader>llm[` | n | **Prev AI** - Cycle to previous AI pane |
