@@ -20,12 +20,14 @@
 - [x] [claude-notify-detail](done/claude-notify-detail.md) - Permission notifications name the conversation, the pending command, and the pane
 - [x] [claude-notify-click-finished](done/claude-notify-click-finished.md) - Notifications — click to jump to the pane, "finished" notices, elicitation/subagent prompts
 
-## Backlog (6)
+## Backlog (8)
 
 ### P3 - Low
 - [-] [lazy-llm-refinement-pass](backlog/lazy-llm-refinement-pass.md) - Refinement pass over lazy-llm feature space and codebase
 - [-] [pane-auto-naming-from-conversation](backlog/pane-auto-naming-from-conversation.md) - Auto-rename AI panes/workspaces from conversation content (hook and/or LLM call)
 - [-] [resume-adapters-codex-grok](backlog/resume-adapters-codex-grok.md) - Resume adapters for codex and grok in lazy-llm restore
+- [-] [claude-worktree-cleanup-sweep](backlog/claude-worktree-cleanup-sweep.md) - Observe whether Claude Code's cleanupPeriodDays sweep touches llm-wt's .worktrees/.claude/ worktrees
+- [-] [test-runner-exit-status](backlog/test-runner-exit-status.md) - tests/test-runner.sh exits 1 even when every scenario passes
 
 ### P4 - Someday
 - [-] [per-pane-cache-cross-server](backlog/per-pane-cache-cross-server.md) - Per-pane cache files are keyed by %N and shared across tmux servers
