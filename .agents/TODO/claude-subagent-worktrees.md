@@ -2,13 +2,14 @@
 slug: claude-subagent-worktrees
 title: Claude Code's subagent / EnterWorktree worktrees go through llm-wt (hooks, parent integration, guidance)
 priority: P1
-status: pending
+status: in-progress
 created: 2026-10-02_18:25
 updated: 2026-10-02_18:25
 depends-on: []
 tags: [worktree, claude-plugin, hooks, concurrency]
 spec: ../specs/claude-subagent-worktrees.md
 model: inline
+owner: homelab-zrh-dev-2409537
 commits: []
 ---
 

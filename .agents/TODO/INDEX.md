@@ -1,13 +1,14 @@
 # TODO Index
 > Auto-generated. Run `/todo lint` to regenerate.
 
-## Pending (2)
-
-### P1 - High
-- [ ] [claude-subagent-worktrees](claude-subagent-worktrees.md) - Claude Code's subagent / EnterWorktree worktrees go through llm-wt (hooks, parent integration, guidance)
+## Pending (1)
 
 ### P2 - Normal
 - [ ] [claude-subagent-worktrees-ui](claude-subagent-worktrees-ui.md) - Show Claude's agent worktrees in lazy-llm (Worktrees tab tag + integrate, pane border ⎇×N, llmw picker)
+
+## In Progress (1)
+
+- [~] [claude-subagent-worktrees](claude-subagent-worktrees.md) - Claude Code's subagent / EnterWorktree worktrees go through llm-wt (hooks, parent integration, guidance)
 
 ## Done (7)
 
