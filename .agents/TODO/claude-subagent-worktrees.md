@@ -10,7 +10,7 @@ tags: [worktree, claude-plugin, hooks, concurrency]
 spec: ../specs/claude-subagent-worktrees.md
 model: inline
 owner: homelab-zrh-dev-2409537
-commits: [e99b6d0, b86940d, aae105f, f74c8e2]
+commits: [e99b6d0, b86940d, aae105f, f74c8e2, dbe876e, 85b0b98]
 ---
 
 # Claude Code's own worktrees go through llm-wt
@@ -275,3 +275,124 @@ llm-wt and shim, those tests fail 20 assertions.
 7. Claims → follow-ups filed (above); the report's live-run reference corrected.
 - Hardening note taken: WorktreeRemove accepts only a Claude worktree's exact top directory
   (test 23).
+
+## Verify Report (round 2)
+
+**Date:** 2026-10-02 · verifier: independent agent (round 2) · code at `dbe876e` · sandbox `/tmp/vfy2`
+(GIT_CEILING_DIRECTORIES=/tmp, TMUX/TMUX_PANE unset, private HOME/TMUX_TMPDIR). Pre-rework llm-wt
+(`642deeb`) extracted to `/tmp/vfy2/old/` for A/B comparisons.
+
+### Regression run
+- `tests/test-runner.sh` 24: **171/171**; 22: 129/129; 19: 15/15; 12: 23/23; 14: 16/16 (runner exits 1 on all,
+  the known `test-runner-exit-status` issue).
+- shellcheck 0.11.0: `llm-wt`, `worktree.sh` clean; scenario 24 only the pre-existing SC2034 warnings.
+- Rework scope: `git show --stat dbe876e` touches only `llm-wt`, `worktree.sh` (the `field` parser) and scenario
+  24. hooks.json, plugin versions and guidance files are unchanged. I agree scenario 25 needn't be rerun: the
+  WorktreeRemove top-dir check passes for the exact path WorktreeCreate returned (also through a symlinked
+  spelling, checked), and real payload paths carry no escapes.
+
+### Round-1 items
+
+1. **Nested branch left behind: original repro FIXED, but the fix opened a work-loss hole → FAIL.**
+   - Original repro (pane `pw`, agent `agent-n1` with a commit, `llm-wt integrate --remove`): exit 0, worktree gone,
+     `Deleted branch lazy/agent-n1`, no `branch.lazy/agent-n1.*` config left. SubagentStop on an empty nested
+     worktree after the pane has its own commit: worktree and branch gone. Submodule integrate --remove still
+     deletes the branch.
+   - **New: a rebase in progress loses the branch's commits.** `cmd_remove`'s pre-check (llm-wt ~1090) greps
+     `dirty|untracked|unintegrated|copies-changed` but **not `rebasing`**, and `unintegrated` is counted from
+     `HEAD`, which mid-rebase is detached and can sit at the base while the branch ref still holds the commits.
+     The old `git branch -d` refused there; the new `git branch -D` (llm-wt ~1100) deletes it.
+     Repro:
+     ```
+     mk_repo rb; w=$(hook "$(p_create /tmp/vfy2/rb agent-r1)")
+     commit_file "$w" w1.txt a; commit_file "$w" w2.txt b
+     GIT_SEQUENCE_EDITOR="sed -i '1i break'" git -C "$w" rebase -i feature   # stops, HEAD = feature, clean tree
+     llm-wt status "$w" --porcelain   # dirty 0, untracked 0, unintegrated 0, rebasing 1
+     hook "$(p_remove "$w")"          # WorktreeRemove: rc 0, "Deleted branch lazy/agent-r1 (was 1b72ac0)"
+     ```
+     Both commits are now unreachable from any ref. Same via `llm-wt remove "$w"` (no --force). With the
+     pre-rework llm-wt the same sequence removed the worktree but **kept** `lazy/agent-r1` (`-d` refused).
+     SubagentStop (its own pre-check includes `rebasing`) and `integrate --remove` (`require_clean` exits 5) are
+     not affected. Expected: `cmd_remove` refuses while `rebasing` is 1 (or counts from the branch ref, not HEAD),
+     per the constraint "unintegrated work survives every automatic path". WorktreeRemove is automatic
+     (ExitWorktree remove). Scenario 24 has no rebase case for WorktreeRemove/remove.
+   - Other paths: every non-`--force` call goes through the status check; `--force` callers are llm-remove and the
+     dashboard's user-confirmed close. Note: SubagentStop calls `cmd_remove ... || warn`, so `set -e` is off in its
+     body and a failed `git worktree remove` still goes on to `branch -D`. git refuses that today ("used by
+     worktree"), so nothing is lost, but the only thing stopping it is git's refusal.
+
+2. **Base renamed/deleted → PASS.** Renamed base (`feature`→`feature2`) with one agent commit: `base-missing 1`,
+   `unintegrated 1`; SubagentStop keeps it; WorktreeRemove exits 1; `llm-wt remove` exits 1; human status shows
+   "base missing yes". Deleted base (main dir moved to trunk, `branch -D feature`): `unintegrated 2`, kept.
+   Deleted base + empty worktree whose start commit now lives only on the agent branch: `unintegrated 1`, kept
+   (correct: removing it would lose `feat`). `--exclude=<branch> --branches` really excludes only the agent branch
+   (count > 0 where the branch alone holds the commits). Renamed base + empty worktree: cleaned up (test 19).
+
+3. **flock fd inherited → PASS.** post-checkout hook running `flock -n <lock>` plus `(sleep 6) &`: 4 parallel
+   creates took 135 ms in total; inside every hook the probe said `HELD`, so the parent still holds the lock during
+   `git worktree add` (the subshell close in `no_lock_fd` doesn't release it); every branch got 5 keys; the lock is
+   free right after. Pane `cmd_create` uses the same wrapper. A git fsmonitor daemon spawned under the lock
+   (`core.fsmonitor=true`, WorktreeRemove first) holds no lock fd.
+
+4. **Bootstrap failure → PASS.** Unreadable `secret.key` in `.worktreeinclude`, through the shim: rc 0, stdout =
+   `.worktrees/.claude/agent-pg`, warning "bootstrapping … failed (exit 1)", `git worktree list` = main + 1, no
+   `.claude/worktrees` fallback. Stdout stays exactly the path with an echoing post-checkout and init hook; the
+   init hook still sees `LAZY_LLM_WORKTREE_KIND=claude`. Config-write rollback: with a stale `.git/config.lock`,
+   llm-wt rolls back (`Deleted branch lazy/agent-rb`, worktree gone) and exits 1, and the shim makes exactly one
+   fallback worktree. *Low (not counted):* a part-bootstrapped worktree never reaches `exclude_bootstrapped`, so
+   its `.env`/`.claude`/`.agents` links are untracked to git. SubagentStop can then never clean it (`git worktree
+   remove` refuses: "contains modified or untracked files"), and a `git add -A` there would commit the links.
+
+5. **JSON unescape → PASS.** llm-wt create, SubagentStart (valid JSON, path verbatim in the context), SubagentStop
+   removal and the shim fallback all succeed for repo paths with `"`, `\`, a real tab, a literal `\t`, a trailing
+   `\`, `\"`, non-ASCII, and for a payload spelling `/` as `\/`. Decoy keys inside escaped strings are ignored.
+   A 2 MB PostToolUse payload parses in 0.28 s.
+
+6. **mkdir lock → FAIL (the empty-pid case is fixed, the dead-owner race is not).** Empty lock dir: broken after
+   about 5 s (test 24). The second half of the round-1 item, several waiters breaking one dead lock, still
+   happens. Repro (15 rounds; per round: fresh repo, lock dir with pid 999999, 10 parallel
+   `LAZY_LLM_WT_LOCK=mkdir llm-wt claude-hook` creates):
+   - **3 of 15 rounds had a failed create.** Twice it was `llm-wt: line 114: …/lazy-llm-wt.lock.d/pid: No such
+     file or directory`: a waiter renamed away a lock dir that another waiter had just made, before it wrote its
+     pid, and `set -e` killed the new owner. Once it was `error: could not lock config file .git/config` →
+     "worktree was rolled back": two processes held the lock at once.
+   - Pre-rework code under the same test: 6 of 15 rounds failed. Better, but the same failure classes remain.
+   - Cause: the put-back `mv "$stale" "$_LOCK_DIR"` (llm-wt ~103) leaves a window with no lock dir. A third
+     waiter can `mkdir` into it, and the put-back then nests the old dir inside the new lock. Through the shim a
+     failed create becomes a plain fallback worktree, so nothing is lost, but AC3 fails exactly when a lock owner
+     has died. (macOS-only path.)
+
+7. **Claims → PASS.** `backlog/claude-worktree-cleanup-sweep.md` and `backlog/test-runner-exit-status.md` exist
+   and are in INDEX.md, and the Work Report's live-run line now cites the verifier's rerun. *Low:* frontmatter
+   `commits:` doesn't list `dbe876e`.
+
+### Short adversarial pass (bounded)
+- WorktreeRemove: a pane worktree and a subdirectory are refused (test 23); a symlinked spelling of a Claude
+  worktree path is accepted and removed correctly.
+- The status check → `branch -D` window isn't protected against a concurrent `git commit` in the worktree (the
+  repo lock doesn't block commits). Low; WorktreeRemove fires as the session ends.
+- Nothing else new found in `hook_field`/`field`, the bootstrap child (`"$0"` is the same as the existing
+  `__claude-hook-run` call), or the rollback (`$wt` is never empty on setup success).
+
+VERDICT: fail (2 items)
+
+## Rework (round 2)
+
+**Date:** 2026-10-02_19:26
+
+Both round-2 failures fixed in `85b0b98`, with tests (scenario 24: 177/177; the new tests
+fail 4 assertions against the round-1 code).
+
+1. Rebase in progress: `cmd_status` counts unintegrated commits on `HEAD` **and**
+   `refs/heads/<branch>` (also in the base-missing count). `cmd_remove` refuses while
+   `rebasing`, and stops, keeping the branch, if the worktree removal itself fails. The
+   verifier's repro is test 19 (`rebase -i` with `break`): WorktreeRemove and `llm-wt remove`
+   both refuse, and the branch survives.
+2. Portable lock: replaced with a symlink lock whose target is the owner pid (atomic, never
+   pid-less), and stale breaking serialized by a `.break` mkdir mutex, re-checking the owner
+   under it. Test 24 now runs the verifier's race (dead owner, 10 waiters) for 8 rounds, plus a
+   leftover-breaker case. `LAZY_LLM_WT_LOCK=link` forces it.
+- Low note taken: bootstrap excludes each path before creating it.
+- Not taken: a commit racing between remove's status check and `branch -D`. Hooks only remove
+  after the agent has stopped, or on Claude's own ExitWorktree.
+- Frontmatter `commits` now lists `dbe876e` and `85b0b98`.
