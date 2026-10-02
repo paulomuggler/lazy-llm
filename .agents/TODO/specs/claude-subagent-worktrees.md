@@ -47,6 +47,7 @@ the live scenario (§12.2) to re-confirm.
 | S7 | `SubagentStart` stdin has `agent_id`, `agent_type`, and `cwd` = the worktree. Its `hookSpecificOutput.additionalContext` **reaches the subagent** (it repeated a planted word). | Subagent guidance goes here (§7.1). |
 | S8 | `SubagentStop` stdin has `agent_id`, `agent_type`, `cwd` = the worktree, `agent_transcript_path`, `last_assistant_message`. | Cleanup trigger. |
 | S9 | Every hook, the subagent's included, runs as a child of the **main** claude process, with its environment (a planted env var was present). `CLAUDE_PROJECT_DIR` is the parent's project dir. Subagents fire no `SessionStart`. Tool hooks fired inside a subagent carry `agent_id`, and their `cwd` is the worktree. | `TMUX_PANE` is available to all worktree hooks in a lazy-llm pane. |
+| S11 | (Found by the live scenario.) A **background** subagent (`run_in_background: true`): the `Agent` `PostToolUse` fires at launch with `status: "async_launched"`, `agentId`, `outputFile`, and **no `worktreePath`**. No hook fires when it completes: the parent hears of it only through its completion notification, which carries the subagent's final message. | §7.2 finds the worktree by `agentId` and gives the land procedure at launch. §7.1 has the subagent end its final message with the land command. |
 | S10 | In a session isolated by `EnterWorktree`, the Bash tool refuses git commands it can't verify stay inside the worktree. | Guidance shouldn't tell such a session to run raw `git -C <primary>`. `llm-wt` itself is fine (not "git" to the checker). Confirm in §12.2. |
 
 ## 3. Three kinds of worktree
@@ -164,12 +165,17 @@ covers:
   Uncommitted changes are never integrated;
 - don't run `llm-wt integrate`, don't push, don't check out `{{base}}`, don't write under
   `{{primary}}` (symlinked shared files excepted, as in `worktree-agent.md`);
-- finish with `llm-wt status` and report your branch and commits in your final message;
+- finish with `llm-wt status` and report your branch and commits in your final message, ending
+  it (when it committed anything) with the line `lazy-llm: land this with llm-wt integrate
+  --remove {{path}}`. For a background subagent, that final message is all the parent gets
+  when it completes (S11);
 - branch hygiene is settled. Don't ask about it.
 
 ### 7.2 Parent: `PostToolUse`, matcher `Agent`
 
-When `tool_response` has a `worktreePath`:
+The worktree is `tool_response.worktreePath`, or, when it's missing (a background launch, S11),
+the one found by `tool_response.agentId` (`find_agent_wt`). `worktree-parent.md` takes an
+`{{intro}}` that differs by case:
 - the path exists and is a claude-kind worktree: `worktree-parent.md`, with the path, branch,
   base, primary, agent's commit count (`base..branch`), uncommitted count, and the land command
   `llm-wt integrate --remove <path>`. It also covers: review first with `git -C <path> log
@@ -178,8 +184,9 @@ When `tool_response` has a `worktreePath`:
   remove --force <path>` to drop it); and `llm-wt list` to see what's outstanding.
 - the path no longer exists: a one-line note that the subagent changed nothing and its
   worktree was removed.
-- the `tool_response` `status` isn't `completed` (a background launch): a one-line note naming
-  the path and branch. When the agent finishes, run `llm-wt list` and land its worktree.
+- the `tool_response` `status` isn't `completed` (a background launch): the same guidance, with
+  an intro saying it's running there, and that by the time it finishes a removed worktree means
+  it changed nothing.
 
 ### 7.3 A session working in a claude-kind worktree: `PostToolUse` `EnterWorktree`, and `SessionStart`
 
