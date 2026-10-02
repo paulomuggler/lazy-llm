@@ -726,11 +726,30 @@ render_worktrees_tab() {
         claude:*) owner_mark=$'\033[38;5;75m⎇ claude\033[0m '"$(cut -d: -f2 <<< "$owner")" ;;
       esac
 
+      # An llm-wt worktree's path (.worktrees/.panes/<name>,
+      # .worktrees/.claude/agent-…) says nothing the tag doesn't, and the
+      # owner column is past the visible edge at usual popup widths: show
+      # the tag and name in the path column instead. Padded by hand, since
+      # printf's width would count the color codes.
+      local path_col
+      path_col=$(printf '%-38s' "$short_path")
+      local tag=""
+      case "$owner" in
+        claude:*) tag="⎇ claude" ;;
+        pane:* | orphaned) tag="⎇ pane" ;;
+      esac
+      if [[ -n "$tag" ]]; then
+        local label="${tag} ${path##*/}"
+        [[ ${#label} -gt 38 ]] && label="${label:0:37}…"
+        local pad=$((38 - ${#label}))
+        path_col=$'\033[38;5;75m'"${tag}"$'\033[0m'"${label#"$tag"}$(printf '%*s' "$pad" '')"
+      fi
+
       # Hidden fields: the FULL path (the display truncates long ones, and
       # a truncated path is no path at all) and the owner, for the keys.
       lines+="${path}"$'\t'"${owner}"$'\t'
-      lines+=$(printf '%-38s  %-24s %s  %-10s %s  %s  %s' \
-        "$short_path" "$branch" "$dirty_mark" "$ab" "$sess_mark" "$pr_mark" "$owner_mark")
+      lines+="${path_col}"$(printf '  %-24s %s  %-10s %s  %s  %s' \
+        "$branch" "$dirty_mark" "$ab" "$sess_mark" "$pr_mark" "$owner_mark")
       lines+=$'\n'
     done <<< "$data"
     lines="${lines%$'\n'}"
