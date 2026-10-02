@@ -733,10 +733,18 @@ render_worktrees_tab() {
       # printf's width would count the color codes.
       local path_col
       path_col=$(printf '%-38s' "$short_path")
+      # The tag follows the worktree's kind, not its owner: a Claude
+      # worktree adopted into a pane is owned pane:… but is still Claude's.
       local tag=""
       case "$owner" in
         claude:*) tag="⎇ claude" ;;
-        pane:* | orphaned) tag="⎇ pane" ;;
+        pane:* | orphaned)
+          if [[ "$(git -C "$path" config "branch.$branch.lazyLlmKind" 2>/dev/null)" == claude ]]; then
+            tag="⎇ claude"
+          else
+            tag="⎇ pane"
+          fi
+          ;;
       esac
       if [[ -n "$tag" ]]; then
         local label="${tag} ${path##*/}"
@@ -1417,8 +1425,13 @@ dispatch_action() {
           if [[ $rrc -eq 0 ]]; then
             _dashboard_flash+="; worktree removed"
           else
-            rout=$(grep '^llm-wt: ' <<< "$rout" | tail -1) || rout=""
-            _dashboard_flash+="; worktree NOT removed: ${rout#llm-wt: }"
+            if [[ "$rout" == *"would be lost"* ]]; then
+              rout="it still has files that aren't committed (llm-wt status $path)"
+            else
+              rout=$(grep '^llm-wt: ' <<< "$rout" | tail -1) || rout=""
+              rout="${rout#llm-wt: }"
+            fi
+            _dashboard_flash+="; worktree NOT removed: $rout"
           fi
         else
           _dashboard_flash+="; worktree kept (its pane is open)"

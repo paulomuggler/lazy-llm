@@ -358,6 +358,8 @@ assert_has "$screen" "lazy/pw: integrated into main; worktree kept (its pane is 
 assert_dir_exists "$WT_PANE" "...and still there for its pane"
 assert_equals "$(git -C "$R" log -1 --format=%s main)" "pane work" "...its commit landed"
 check "main moved" test "$commit_before" != "$(git -C "$R" rev-parse main)"
+assert_has "$(tmux capture-pane -p -t dash | strip)" "⎇ claude agent-adopt" "an adopted Claude worktree is still tagged ⎇ claude"
+assert_lacks "$(tmux capture-pane -p -t dash | strip)" "⎇ pane agent-adopt" "...not ⎇ pane"
 printf 'a\n' > "$WT_ADOPT/ad.txt" && git -C "$WT_ADOPT" add ad.txt && git -C "$WT_ADOPT" commit -qm "adopted work"
 dash_key_on "$WT_ADOPT" I
 dash_wait "lazy/agent-adopt:"
@@ -368,6 +370,7 @@ dash_wait "NOT removed"
 screen=$(tmux capture-pane -p -t dash | strip)
 assert_has "$screen" "lazy/agent-untr: integrated into main; worktree NOT removed" "landed but not removable (untracked file): says it landed"
 assert_lacks "$screen" "agent-untr not integrated" "...not 'not integrated'"
+assert_has "$screen" "it still has files that aren't committed" "...and says why, briefly"
 assert_equals "$(git -C "$R" log -1 --format=%s main)" "untracked-case work" "...and the commit is on main"
 dash_key_on "$R" I
 dash_wait "(exit 2)"
