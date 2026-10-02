@@ -1,11 +1,7 @@
 # TODO Index
 > Auto-generated. Run `/todo lint` to regenerate.
 
-## In Progress (1)
-
-- [~] [claude-subagent-worktrees-ui](claude-subagent-worktrees-ui.md) - Show Claude's agent worktrees in lazy-llm (Worktrees tab tag + integrate, pane border ⎇×N, llmw picker)
-
-## Done (8)
+## Done (9)
 
 - [x] [status-unread-state-and-aggregate-counts](done/status-unread-state-and-aggregate-counts.md) - Unread" pane status (finished, not yet looked at) + per-status aggregate counts in status bars
 - [x] [workspace-save-restore](done/workspace-save-restore.md) - Save lazy-llm workspaces to a manifest and rebuild them after the tmux server dies (lazy-llm restore)
@@ -15,6 +11,7 @@
 - [x] [pane-border-identity-suffixes](done/pane-border-identity-suffixes.md) - AI pane border shows workspace - pane name - harness - model
 - [x] [claude-notify-detail](done/claude-notify-detail.md) - Permission notifications name the conversation, the pending command, and the pane
 - [x] [claude-notify-click-finished](done/claude-notify-click-finished.md) - Notifications — click to jump to the pane, "finished" notices, elicitation/subagent prompts
+- [x] [claude-subagent-worktrees-ui](done/claude-subagent-worktrees-ui.md) - Show Claude's agent worktrees in lazy-llm (Worktrees tab tag + integrate, pane border ⎇×N, llmw picker)
 
 ## Backlog (11)
 

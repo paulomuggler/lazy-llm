@@ -2,15 +2,15 @@
 slug: claude-subagent-worktrees-ui
 title: Show Claude's agent worktrees in lazy-llm (Worktrees tab tag + integrate, pane border ⎇×N, llmw picker)
 priority: P2
-status: in-progress
+status: done
 created: 2026-10-02_18:25
-updated: 2026-10-02_20:06
+updated: 2026-10-02_20:42
 depends-on: [claude-subagent-worktrees]
 tags: [worktree, dashboard, nvim]
-owner: homelab-zrh-dev-2409537
 model: opus
 spec: ../specs/claude-subagent-worktrees.md
-commits: [1feb369, 4a09545, 87a5d8c, adf088e]
+commits: [1feb369, 4a09545, 87a5d8c, adf088e, 544aaf6]
+human-validation: pending
 ---
 
 # Show Claude's agent worktrees in lazy-llm
@@ -273,3 +273,58 @@ directory still exists".
    removal reads "integrated into main; worktree NOT removed: <reason>". The outcome line skips
    `llm-wt:` warnings, which came first and were shown as the outcome.
 Full suite: 26/26.
+
+## Verify Report (round 2)
+
+**Date:** 2026-10-02_20:36 · **Verifier:** claude-opus-5-5 (fresh context) · Reviewed `adf088e` against `87a5d8c`, plus llm-wt `cmd_integrate`/`cmd_remove`/`integrate_into_base`.
+Sandbox only: `TMUX`/`TMUX_PANE` unset, private `TMUX_TMPDIR=/tmp/lzv.XXXX/t`, sandbox `HOME` symlinked to this checkout's bins, `cd` into the sandbox, `GIT_CEILING_DIRECTORIES=/tmp`. Scripts are in the session scratchpad: `repro.sh` and `repro3.sh` (new: the round-1 cases plus every `I` exit path, run with an attached client at 160x45). Captures are in `out-r2/`.
+
+- [x] **Round-1 Failure 1 (adopted Claude worktree): fixed.** A Claude worktree created by pane `%0` and adopted by `%1` (with `@lazy_llm_wt` set) has owner `pane:cws:%1`. One whose creator is gone (`%9999`) and that `%2` adopted has owner `pane:cws:%2`. Live results: **K** shows "That worktree's pane is still open — …" on the client status line and the dashboard stays open. **Enter** gives `action:switch` to its pane (no adopt prompt). **I** shows `⎇ lazy/agent-adopt: integrated into main; worktree kept (its pane is open)`, the directory still exists, `/proc/<pid>/cwd` is intact, and `adopt work` is on main.
+- [x] **Round-1 Failure 2 (landed but kept): fixed.** A commit plus an untracked file shows `⎇ lazy/agent-untracked: integrated into main; worktree NOT removed: …/agent-untracked has work that would be lost, or a rebase in progress (llm-wt status …): …`. `untr work` is on main, and the worktree and branch are kept. The tail of llm-wt's message still says "integrate it with llm-wt integrate", but the headline is now accurate.
+- [x] **Owner change, side effects.** Pane worktrees are unchanged: live gives `pane:cws:%2`, unadopted gives `orphaned`. A task worktree and main give `""`. Claude rows that aren't adopted give `claude:cws:%0` or `claude:orphaned`. The new `awk` runs only for `kind==claude || base` and carries `$1 != ""`, so an untagged pane can't match. For a Claude worktree made by A and adopted by B: B owns it in the tab; A's border still counts it (`main … local ⎇×4`, which includes agent-adopt); B's border shows its own git segment `⎇ agent-adopt→main … ↑1`. Rows are still 8 columns (scenario 14). **But see Failure 1 below (the tag).**
+- [x] **Two-call integrate/remove, every exit path (live).** The two calls are equivalent to `integrate --remove`, since `cmd_integrate` is `integrate_into_base; cmd_remove "$WT"`.
+  - rc 0, removal allowed: `lazy/agent-clean: integrated into main; worktree removed` (directory and branch gone). The orphaned pane worktree gives `lazy/pworph: integrated into main; worktree removed`.
+  - rc 0 + removal refused: two cases. The untracked case is above. Untracked-only with no commits gives `nothing to integrate: lazy/agent-warnonly has no commits beyond main; worktree NOT removed: … has work that would be lost …`, and the worktree is kept.
+  - rc 0 on a live pane (`-keep`): `remove` is never called. The live pane worktree with untracked files gives `lazy/pw: integrated into main; worktree kept (its pane is open)`, and so does the adopted Claude worktree above. Both directories exist.
+  - rc≠0: `remove` is never called. Exit 3 gives `lazy/agent-dirty not integrated (exit 3): the worktree has uncommitted changes…`, and the worktree is kept. Exit 2 on a task worktree gives `feat not integrated (exit 2): not a pane or Claude worktree…`, and the worktree is kept with HEAD unchanged.
+  - The dashboard is still open after all of these.
+- [x] **Outcome line skips `llm-wt:` warnings.** Every untracked case above shows the outcome ("integrated into main" / "nothing to integrate"), not the `llm-wt: 1 untracked file(s)…` warning that comes first. With a rebase needed (main moved, plus an untracked file), the direct `llm-wt integrate` output is `llm-wt: 1 untracked…` / `integrated into main:` / `afbcf01 w`, and the picked line is `integrated into main:`. `git rebase --quiet` adds nothing.
+- [x] **Tests**: 14: 63/0 · 26: 39/0 · 13: 13/0 · 11: 12/0 · 15: 10/0 · 22: 129/0 · 24: 183/0.
+- [x] **Static**: shellcheck 0.11.0 on `lazy-llm-lib.sh` (10 vs 10) and `llm-dashboard` (17 vs 17) against `87a5d8c`: identical findings. Scenario 14 shows only the suite-wide SC1091/SC2034/SC2329 notes.
+- [x] **Round-1 items, no regression**: border `⎇×N` (4, then 3 after `rm -rf` of one dir; empty outside a repo; 30 renders take 0.206s vs 0.096s, as in round 1). Tags at 400/160/100 columns. Exit-3 flash wraps. K→Keep and Enter→Esc keep the dashboard open (scenario 14). Help text untouched by `adf088e`.
+- [ ] **Failure 1 (new, caused by the fix): an adopted Claude worktree loses its `⎇ claude` tag**
+
+### Failure 1: an adopted Claude-kind worktree is tagged `⎇ pane`, not `⎇ claude`
+AC1 and spec §10 say a claude-kind row "shows `⎇` and a `claude` tag". The render picks the tag from the owner (`llm-dashboard` ~l.722–740: `pane:* | orphaned) tag="⎇ pane"`, and the owner column `pane:*` → `⎇ <ws>`). Since `adf088e`, an adopted Claude worktree's owner is `pane:<s>:<p>`, so the row reads `⎇ pane agent-adopt … ⎇ cws`, with "claude" nowhere on it. It is still `lazyLlmKind=claude`, and the creator pane's border still counts it among its Claude worktrees (`⎇×4` while the tab shows 3 `⎇ claude` rows). The guards themselves are right (K busy, I keeps it). Only the kind display is wrong.
+- Repro (sandbox, `repro3.sh` section A): `WA=$(printf '{"session_id":"s1","cwd":"%s","hook_event_name":"WorktreeCreate","name":"agent-adopt"}' "$R" | TMUX_PANE=$P llm-wt claude-hook)`; `P2=$(tmux split-window -t $P -c "$WA" -P -F '#{pane_id}' 'exec sleep 600'); tmux set-option -p -t $P2 @lazy_llm_wt "$WA"`; `llm-dashboard --tab worktrees`. Observed row: `▌ ⎇ pane agent-adopt   lazy/agent-adopt … ⎇ cws`. Expected: `⎇ claude agent-adopt …`, with the live-pane guards kept.
+- Likely fix: keep the guards keyed on the live pane, but carry the kind to the render. For example, a distinct owner value such as `claude-pane:<s>:<p>`, with the K/I/Enter arms matching `pane:*|claude-pane:*`. Or pick the tag from the branch's `lazyLlmKind` (or the `.worktrees/.claude/` path) instead of from the owner. Add a scenario 14 assertion on the adopted row's tag.
+
+### Observations (not failures)
+- In a **detached** sandbox (no client), `K` on any `pane:*` row closes the dashboard: `tmux display-message` fails with no client, and the `worktree-pane-busy` arm ends on it under `set -e`. This was already true for pane worktrees before this task, and it doesn't happen with a real client (the popup). Seen when `repro.sh` (detached) was rerun; `repro3.sh` with a client is fine.
+- The NOT-removed flash reuses `cmd_remove`'s full message, which ends with "integrate it with llm-wt integrate, or use llm-wt remove --force". That is 5–6 header lines at 160 columns and slightly contradicts "integrated into main". Cosmetic.
+
+VERDICT: fail (1 item)
+
+## Rework (round 2) and acceptance
+
+**Date:** 2026-10-02_20:42
+
+Round 2 confirmed both round-1 fixes on every exit path, and found that the fix made an adopted
+Claude worktree's row read `⎇ pane`. Fixed in `544aaf6`: the tag follows `lazyLlmKind`, not the owner.
+The verifier's own suggested fix; scenario 14 asserts it (66/66; the previous dashboard fails
+those 3 assertions). Also took its cosmetic note: a refused removal after `I` now reads "worktree
+NOT removed: it still has files that aren't committed (llm-wt status <path>)". Checked visually:
+a sandbox dashboard shows `⎇ claude agent-adopted`, `⎇ claude agent-solo`, `⎇ pane r-wt-1`.
+Full suite 26/26. Not sent for a 3rd verify round: label-only change, verifier-proposed, covered
+by assertions that fail on the old code.
+
+Deploy: no plugin or stow changes (live symlinks). Pushed with lazy-llm `main`; dev-env pointer
+bumped. nvim needs a restart to reload `lazy_llm_worktree.lua`.
+
+## Human Validation
+
+- [ ] With a Claude session that has isolated subagent worktrees open (or kept): open
+      `Prefix+S` → Worktrees, and check the `⎇ claude` rows, `I` on one, and the pane border's
+      `⎇×N` against what you expect.
+- [ ] After restarting nvim, `<leader>llmw` in that workspace: is the picker over the Claude
+      worktree copies useful, or noise?
