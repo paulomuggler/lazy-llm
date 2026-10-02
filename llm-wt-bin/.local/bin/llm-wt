@@ -67,7 +67,7 @@ warn() { printf 'llm-wt: %s\n' "$*" >&2; }
 # another that locks. Callers bracket the critical section with lock_repo /
 # unlock_repo rather than passing a command: a function run as `f || rc=$?`
 # loses `set -e` for its whole body. A die() in between exits the process,
-# which drops a flock; the mkdir lock is removed by an EXIT trap.
+# which drops a flock; the symlink lock is removed by an EXIT trap.
 _LOCK_DEPTH=0
 _LOCK_FD=""
 _LOCK_DIR=""
@@ -78,41 +78,45 @@ lock_repo() {
   local common owner waited=0
   common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
     || die 1 "not in a git repository: $1"
-  # LAZY_LLM_WT_LOCK=mkdir forces the portable lock (tests).
-  if [[ "${LAZY_LLM_WT_LOCK:-}" != mkdir ]] && command -v flock >/dev/null 2>&1; then
+  # LAZY_LLM_WT_LOCK=link forces the portable lock (tests).
+  if [[ "${LAZY_LLM_WT_LOCK:-}" != link ]] && command -v flock >/dev/null 2>&1; then
     exec {_LOCK_FD}>>"$common/lazy-llm-wt.lock"
     flock -w 60 "$_LOCK_FD" || die 1 "timed out after 60s waiting for $common/lazy-llm-wt.lock"
     return 0
   fi
-  # No flock (macOS): a lock directory holding its owner's pid, broken when
-  # that process is gone.
-  _LOCK_DIR="$common/lazy-llm-wt.lock.d"
-  local nopid=0 stale
-  until mkdir "$_LOCK_DIR" 2>/dev/null; do
-    owner=$(cat "$_LOCK_DIR/pid" 2>/dev/null) || owner=""
-    # Stale: its owner is dead, or it has had no pid for 5s (its owner died
-    # between mkdir and writing it). Broken by renaming it away, which only
-    # one waiter can do; a waiter that finds a different pid in what it
-    # renamed (a new owner got in between) puts it back.
-    [[ -z "$owner" ]] && nopid=$((nopid + 1)) || nopid=0
-    if { [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; } || [[ $nopid -gt 50 ]]; then
-      stale="$_LOCK_DIR.stale.$$"
-      if mv "$_LOCK_DIR" "$stale" 2>/dev/null; then
-        if [[ "$(cat "$stale/pid" 2>/dev/null)" == "$owner" ]]; then
-          rm -rf "$stale"
-        else
-          mv "$stale" "$_LOCK_DIR" 2>/dev/null || rm -rf "$stale"
-        fi
+  # No flock (macOS): a symlink whose target is the owner's pid. Creating it
+  # is atomic and carries the pid, so the lock never exists without an owner.
+  # A dead owner's lock is broken by one waiter at a time: the breaker takes
+  # a second lock (a mkdir), re-reads the owner under it, and removes the
+  # link only if it's still that dead owner's. Nobody else can change the
+  # link meanwhile: the owner is dead, other breakers wait, and acquirers
+  # can't create over it.
+  _LOCK_DIR="$common/lazy-llm-wt.lock.l"
+  local brk="$_LOCK_DIR.break" brkwait=0
+  until ln -s "$$" "$_LOCK_DIR" 2>/dev/null; do
+    owner=$(readlink "$_LOCK_DIR" 2>/dev/null) || owner=""
+    if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
+      if mkdir "$brk" 2>/dev/null; then
+        [[ "$(readlink "$_LOCK_DIR" 2>/dev/null)" == "$owner" ]] && rm -f "$_LOCK_DIR"
+        rmdir "$brk"
+        brkwait=0
+        continue
       fi
-      nopid=0
-      continue
+      # A breaker that died mid-break (it holds the mutex for microseconds).
+      brkwait=$((brkwait + 1))
+      [[ $brkwait -gt 50 ]] && { rmdir "$brk" 2>/dev/null; brkwait=0; }
     fi
     waited=$((waited + 1))
-    [[ $waited -gt 600 ]] && { _LOCK_DIR=""; die 1 "timed out after 60s waiting for $common/lazy-llm-wt.lock.d"; }
+    [[ $waited -gt 600 ]] && { _LOCK_DIR=""; die 1 "timed out after 60s waiting for $common/lazy-llm-wt.lock.l"; }
     sleep 0.1
   done
-  echo $$ > "$_LOCK_DIR/pid"
-  trap 'rm -rf "$_LOCK_DIR"' EXIT
+  trap 'release_link_lock' EXIT
+}
+
+# Remove the symlink lock if it's still ours.
+release_link_lock() {
+  [[ -n "$_LOCK_DIR" && "$(readlink "$_LOCK_DIR" 2>/dev/null)" == "$$" ]] && rm -f "$_LOCK_DIR"
+  return 0
 }
 
 # Run a command with the flock fd closed, so nothing it starts inherits the
@@ -142,7 +146,7 @@ unlock_repo() {
     _LOCK_FD=""
   fi
   if [[ -n "$_LOCK_DIR" ]]; then
-    rm -rf "$_LOCK_DIR"
+    release_link_lock
     _LOCK_DIR=""
     trap - EXIT
   fi
@@ -305,6 +309,9 @@ cmd_bootstrap() {
   local i hash
   for i in "${!paths[@]}"; do
     path="${paths[$i]}"; mode="${modes[$i]}"
+    # Excluded before it exists: a bootstrap that stops partway (a copy that
+    # fails) must not leave a link `git add -A` would commit.
+    add_exclude "$wt" "/$path"
     mkdir -p "$(dirname "$wt/$path")"
     if [[ "$mode" == link ]]; then
       # A dangling link can only create its target if the target's parent
@@ -855,11 +862,13 @@ cmd_status() {
   # removing the branch would lose.
   local base_missing=0
   if git -C "$WT" rev-parse --verify -q "refs/heads/$BASE^{commit}" >/dev/null; then
-    unintegrated=$(git -C "$WT" rev-list --count "$BASE..HEAD" 2>/dev/null) || unintegrated=1
+    # HEAD and the branch both: mid-rebase, HEAD is detached (maybe at the
+    # base) while the branch still holds the commits.
+    unintegrated=$(git -C "$WT" rev-list --count HEAD "refs/heads/$BRANCH" --not "$BASE" 2>/dev/null) || unintegrated=1
     behind=$(git -C "$WT" rev-list --count "HEAD..$BASE" 2>/dev/null) || behind=0
   else
     base_missing=1
-    unintegrated=$(git -C "$WT" rev-list --count HEAD --not --exclude="$BRANCH" --branches 2>/dev/null) \
+    unintegrated=$(git -C "$WT" rev-list --count HEAD "refs/heads/$BRANCH" --not --exclude="$BRANCH" --branches 2>/dev/null) \
       || unintegrated=1
   fi
   rebase_in_progress "$WT" && rebasing=1
@@ -1087,8 +1096,8 @@ cmd_remove() {
   if [[ "$force" == no ]]; then
     local st
     st=$(cmd_status "$WT" --porcelain)
-    if grep -qE $'^(dirty|untracked|unintegrated|copies-changed)\t[1-9]' <<< "$st"; then
-      die 1 "$WT has work that would be lost (llm-wt status $WT): integrate it with llm-wt integrate, or use llm-wt remove --force to drop it"
+    if grep -qE $'^(dirty|untracked|unintegrated|copies-changed|rebasing)\t[1-9]' <<< "$st"; then
+      die 1 "$WT has work that would be lost, or a rebase in progress (llm-wt status $WT): integrate it with llm-wt integrate, or use llm-wt remove --force to drop it"
     fi
   fi
   # The branch goes with -D, from here: the status check above already proved
@@ -1096,7 +1105,11 @@ cmd_remove() {
   # would judge "merged" against the main directory's HEAD, which isn't the
   # base when this worktree's parent is itself a worktree (nested).
   local branch="$BRANCH" keep="$PRIMARY"
-  lazy_llm_cleanup_worktree "$WT" no "$force"
+  # Explicit checks: callers may run this with set -e off (f || …), and the
+  # branch must never go when its worktree didn't.
+  if ! lazy_llm_cleanup_worktree "$WT" no "$force"; then
+    die 1 "could not remove $WT; its branch $branch is kept"
+  fi
   git -C "$keep" branch -D "$branch" >&2 || warn "could not delete branch $branch"
   unlock_repo
 }

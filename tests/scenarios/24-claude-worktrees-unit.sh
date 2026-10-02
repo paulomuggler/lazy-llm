@@ -453,6 +453,21 @@ assert_dir_exists "$w" "SubagentStop keeps it"
 hook "$(p_remove "$w")" >/dev/null; rc=$?
 assert_equals "$rc" "1" "WorktreeRemove refuses"
 assert_dir_exists "$w" "...it survives"
+# Mid-rebase: HEAD can sit at the base while the branch holds the commits.
+rb=$(hook "$(p_create "$R" agent-rb19)")
+git -C "$R" branch -m feature3 feature 2>/dev/null; git -C "$R" branch -m feature2 feature 2>/dev/null
+commit_file "$rb" r1.txt one
+commit_file "$rb" r2.txt two
+GIT_SEQUENCE_EDITOR="sed -i '1i break'" git -C "$rb" rebase -q -i feature >/dev/null 2>&1
+assert_equals "$("$LLMWT" status "$rb" --porcelain | awk -F'	' '$1=="rebasing"{print $2}')" "1" "setup: a rebase is stopped in progress"
+assert_equals "$("$LLMWT" status "$rb" --porcelain | awk -F'	' '$1=="unintegrated"{print $2}')" "2" "unintegrated counts the branch's commits, not the detached HEAD's"
+hook "$(p_remove "$rb")" >/dev/null; rc=$?
+assert_equals "$rc" "1" "WorktreeRemove refuses mid-rebase"
+"$LLMWT" remove "$rb" >/dev/null 2>&1; rc=$?
+assert_equals "$rc" "1" "llm-wt remove refuses mid-rebase"
+assert_success "git -C '$R' show-ref --verify --quiet refs/heads/lazy/agent-rb19" "the branch and its commits survive"
+git -C "$rb" rebase --abort 2>/dev/null
+git -C "$R" branch -m feature feature2
 e=$(hook "$(p_create "$R" agent-c19)")
 git -C "$R" branch -m feature2 feature3
 hook "$(p_sstop "$e" c19)" >/dev/null
@@ -511,26 +526,43 @@ assert_equals "$rc" "1" "a subdirectory path: refused"
 assert_dir_exists "$w" "...the worktree survives"
 
 echo ""
-echo "Test 24: the portable mkdir lock..."
+echo "Test 24: the portable (symlink) lock..."
 R="$sandbox/r24"; mk_repo "$R"
 common=$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)
+L="$common/lazy-llm-wt.lock.l"
 for i in 1 2 3 4 5 6; do
-    ( printf '%s' "$(p_create "$R" "agent-mk$i")" | env LAZY_LLM_WT_LOCK=mkdir "$LLMWT" claude-hook > "$sandbox/mk$i.out" 2>/dev/null; echo $? > "$sandbox/mk$i.rc" ) &
+    ( printf '%s' "$(p_create "$R" "agent-mk$i")" | env LAZY_LLM_WT_LOCK=link "$LLMWT" claude-hook > "$sandbox/mk$i.out" 2>/dev/null; echo $? > "$sandbox/mk$i.rc" ) &
 done
 wait
 ok=0; for i in 1 2 3 4 5 6; do [[ "$(cat "$sandbox/mk$i.rc")" == 0 && -d "$(cat "$sandbox/mk$i.out")" ]] && ok=$((ok + 1)); done
-assert_equals "$ok" "6" "6 parallel creates under the mkdir lock all succeed"
-assert_file_not_exists "$common/lazy-llm-wt.lock.d" "...and leave no lock dir"
-mkdir "$common/lazy-llm-wt.lock.d"; echo 999999 > "$common/lazy-llm-wt.lock.d/pid"
-out=$(printf '%s' "$(p_create "$R" agent-dead)" | env LAZY_LLM_WT_LOCK=mkdir "$LLMWT" claude-hook 2>/dev/null)
+assert_equals "$ok" "6" "6 parallel creates under the symlink lock all succeed"
+assert_equals "$(find "$common" -maxdepth 1 -name 'lazy-llm-wt.lock*' | wc -l | tr -d ' ')" "0" "...and leave no lock behind"
+ln -s 999999 "$L"
+out=$(printf '%s' "$(p_create "$R" agent-dead)" | env LAZY_LLM_WT_LOCK=link "$LLMWT" claude-hook 2>/dev/null)
 assert_dir_exists "$out" "a lock held by a dead pid is broken"
-mkdir "$common/lazy-llm-wt.lock.d"
+ln -s 999999 "$L"; mkdir "$L.break"
 start=$(date +%s)
-out=$(printf '%s' "$(p_create "$R" agent-nopid)" | env LAZY_LLM_WT_LOCK=mkdir "$LLMWT" claude-hook 2>/dev/null)
+out=$(printf '%s' "$(p_create "$R" agent-brk)" | env LAZY_LLM_WT_LOCK=link "$LLMWT" claude-hook 2>/dev/null)
 elapsed=$(( $(date +%s) - start ))
-assert_dir_exists "$out" "a lock dir with no pid is broken..."
+assert_dir_exists "$out" "a dead breaker's leftover mutex is cleared..."
 [[ $elapsed -lt 15 ]] && r=ok || r="took ${elapsed}s"
-assert_equals "$r" "ok" "...after a few seconds, not the 60s timeout"
+assert_equals "$r" "ok" "...within seconds, not the 60s timeout"
+# The round-2 verifier's race: many waiters find the same dead owner.
+fails=0
+for round in 1 2 3 4 5 6 7 8; do
+    R="$sandbox/r24-race$round"; mk_repo "$R"
+    ln -s 999999 "$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)/lazy-llm-wt.lock.l"
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        ( printf '%s' "$(p_create "$R" "agent-race$i")" | env LAZY_LLM_WT_LOCK=link "$LLMWT" claude-hook > "$sandbox/race$i.out" 2> "$sandbox/race$i.err"; echo $? > "$sandbox/race$i.rc" ) &
+    done
+    wait
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if [[ "$(cat "$sandbox/race$i.rc")" != 0 ]] || [[ -z "$(cfg "$R" "lazy/agent-race$i" lazyLlmPrimary)" ]]; then
+            fails=$((fails + 1)); sed 's/^/    /' "$sandbox/race$i.err" | tail -2
+        fi
+    done
+done
+assert_equals "$fails" "0" "8 rounds x 10 waiters on a dead owner's lock: every create succeeds, fully configured"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
