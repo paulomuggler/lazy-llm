@@ -317,6 +317,15 @@ _dashboard_build_rows() {
     [[ "$name" == "$launch_ws" ]] && REPLY_START_POS=$_line_no
 
     if [[ "$collapsed" != "1" ]]; then
+      # Claude worktrees (subagents) per owning pane: one git config call per
+      # unfolded workspace with panes, none per pane.
+      local -A claude_n=()
+      local c_pane
+      if [[ ${#pane_arr[@]} -gt 0 ]]; then
+        while IFS=$'\t' read -r c_pane _; do
+          [[ -n "$c_pane" ]] && claude_n[$c_pane]=$(( ${claude_n[$c_pane]:-0} + 1 ))
+        done < <(lazy_llm_claude_worktree_owners "$dir")
+      fi
       for i in "${!pane_arr[@]}"; do
         local pid="${pane_arr[$i]}" tool="${tool_arr[$i]:-?}"
         # Display label: the custom rename if one's set (and isn't the
@@ -339,6 +348,7 @@ _dashboard_build_rows() {
             pane_display+=$' \033[38;5;75m⎇ '"${wt_name}"$'\033[0m'
           fi
         fi
+        [[ -n "${claude_n[$pid]:-}" ]] && pane_display+=$' \033[38;5;75m⎇×'"${claude_n[$pid]}"$'\033[0m'
         # Bold instead of an "(active)" text tag — real ANSI codes (not
         # tmux's #[..] syntax), since this is plain fzf row text rendered
         # via --ansi, a different rendering context than status-right/
@@ -705,11 +715,15 @@ render_worktrees_tab() {
         CLOSED) pr_mark="PRx" ;;
       esac
 
-      # Pane worktrees (llm-wt): ⎇ and the workspace owning them, or orphaned.
+      # Pane worktrees (llm-wt): ⎇ and the workspace owning them, or
+      # orphaned. Claude's worktrees: ⎇ claude, then the workspace whose
+      # pane's session made them, or orphaned.
       local owner_mark=""
       case "$owner" in
         pane:*) owner_mark=$'\033[38;5;75m⎇\033[0m '"$(cut -d: -f2 <<< "$owner")" ;;
         orphaned) owner_mark=$'\033[38;5;75m⎇\033[0m orphaned' ;;
+        claude:orphaned) owner_mark=$'\033[38;5;75m⎇ claude\033[0m orphaned' ;;
+        claude:*) owner_mark=$'\033[38;5;75m⎇ claude\033[0m '"$(cut -d: -f2 <<< "$owner")" ;;
       esac
 
       # Hidden fields: the FULL path (the display truncates long ones, and
@@ -724,12 +738,20 @@ render_worktrees_tab() {
     local _budget
     _budget=$(_dashboard_header_budget)
     if [[ "$_budget" -ge 50 ]]; then
-      header="/:search enter:open n:new g:lazygit K:cleanup R:refresh"
+      header="/:search enter:open n:new g:lazygit I:integrate K:cleanup"
     elif [[ "$_budget" -ge 30 ]]; then
       header="/:search enter:open n:new K:cleanup"
     else
       header=""
     fi
+  fi
+  # The flash (I's outcome) can outrun the list column the header shares
+  # with the preview: wrap it rather than let fzf cut it off.
+  if [[ -n "$_dashboard_flash" ]]; then
+    local flash="$_dashboard_flash" flash_w
+    flash_w=$(_dashboard_header_budget)
+    [[ "$flash_w" -ge 20 ]] && flash=$(fold -s -w "$flash_w" <<< "$flash")
+    header="$flash"${header:+$'\n'"$header"}
   fi
 
   # Preview: git status -sb + recent log for the selected worktree path.
@@ -759,9 +781,10 @@ render_worktrees_tab() {
     --bind='enter:print()+accept' \
     --bind='1:print(1)+accept' --bind='2:print(2)+accept' --bind='3:print(3)+accept' \
     --bind='n:print(n)+accept' --bind='g:print(g)+accept' \
-    --bind='K:print(K)+accept' --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
-    --bind='/:unbind(1,2,3,n,g,K,R,?)+show-input+enable-search' \
-    --bind='tab:clear-query+hide-input+rebind(1,2,3,n,g,K,R,?)' \
+    --bind='K:print(K)+accept' --bind='I:print(I)+accept' \
+    --bind='R:print(R)+accept' --bind='?:print(?)+accept' \
+    --bind='/:unbind(1,2,3,n,g,K,I,R,?)+show-input+enable-search' \
+    --bind='tab:clear-query+hide-input+rebind(1,2,3,n,g,K,I,R,?)' \
     --bind='q:abort' \
   ) || { echo "quit"; return 0; }
 
@@ -783,10 +806,21 @@ render_worktrees_tab() {
         echo "action:refresh"
       elif [[ "$chosen_owner" == pane:* ]]; then
         echo "action:worktree-pane-busy"
-      elif [[ "$chosen_owner" == orphaned ]]; then
+      elif [[ "$chosen_owner" == orphaned || "$chosen_owner" == claude:* ]]; then
         echo "action:worktree-pane-cleanup:$chosen_path"
       else
         echo "action:worktree-cleanup:$chosen_path"
+      fi
+      ;;
+    I)
+      # llm-wt integrate: land the worktree's commits on its base branch,
+      # then remove it. A live pane's worktree stays (its pane runs there).
+      if [[ -z "$chosen_path" ]]; then
+        echo "action:refresh"
+      elif [[ "$chosen_owner" == pane:* ]]; then
+        echo "action:worktree-integrate-keep:$chosen_path"
+      else
+        echo "action:worktree-integrate:$chosen_path"
       fi
       ;;
     R)   echo "action:refresh" ;;
@@ -805,7 +839,7 @@ render_worktrees_tab() {
           o_i=$((o_i + 1))
         done
         [[ -n "$o_found" ]] && echo "action:switch-pane:$o_s:$o_found" || echo "action:switch:$o_s"
-      elif [[ "$chosen_owner" == orphaned ]]; then
+      elif [[ "$chosen_owner" == orphaned || "$chosen_owner" == claude:* ]]; then
         echo "action:worktree-adopt:$chosen_path"
       else
         echo "action:worktree-open:$chosen_path"
@@ -1337,16 +1371,49 @@ dispatch_action() {
       # An orphaned pane worktree: the same close dialog a pane gets.
       local path="${action#action:worktree-pane-cleanup:}" decision
       decision=$("$HOME/.local/bin/llm-wt" close "$path") || decision=keep
-      [[ "$decision" == remove ]] && { "$HOME/.local/bin/llm-wt" remove "$path" --force >&2 || true; }
+      # An if, not `&&`: a false test ending this arm would be
+      # dispatch_action's status, and set -e would close the dashboard.
+      if [[ "$decision" == remove ]]; then
+        "$HOME/.local/bin/llm-wt" remove "$path" --force >&2 || true
+      fi
+      ;;
+    action:worktree-integrate:*|action:worktree-integrate-keep:*)
+      # llm-wt integrate (--remove unless a live pane runs in the worktree).
+      # The outcome goes in the next render's header: a non-zero exit is
+      # explained from llm-wt's exit code, plus llm-wt's own last message.
+      local path="${action#action:worktree-integrate*:}" rc=0 out branch
+      local -a args=(integrate "$path")
+      [[ "$action" == action:worktree-integrate:* ]] && args+=(--remove)
+      branch=$(git -C "$path" branch --show-current 2>/dev/null) || branch=""
+      out=$("$HOME/.local/bin/llm-wt" "${args[@]}" 2>&1 < /dev/null) || rc=$?
+      if [[ $rc -eq 0 ]]; then
+        local first
+        first=$(head -1 <<< "$out")
+        _dashboard_flash="⎇ ${branch:-$path}: ${first%:}"
+        if [[ "$action" == action:worktree-integrate:* ]]; then
+          _dashboard_flash+="; worktree removed"
+        else
+          _dashboard_flash+="; worktree kept (its pane is open)"
+        fi
+      else
+        _dashboard_flash="⎇ ${branch:-$path} not integrated (exit $rc): $(lazy_llm_wt_integrate_reason "$rc")"
+        local msg
+        msg=$(grep '^llm-wt: ' <<< "$out" | tail -1) || msg=""
+        if [[ $rc -eq 1 && -n "$msg" ]]; then
+          _dashboard_flash+=" — ${msg#llm-wt: }"
+        fi
+      fi
       ;;
     action:worktree-adopt:*)
-      # An orphaned pane worktree: put an AI pane back in it, in the current
-      # workspace (the one this dashboard was opened from).
+      # An orphaned pane worktree, or one of Claude's: put an AI pane in it,
+      # in the current workspace (the one this dashboard was opened from).
       local path="${action#action:worktree-adopt:}" tool
       tool=$(printf 'claude\ngemini\ncodex\ngrok\naider' | fzf \
         --height=100% --reverse --border=rounded --prompt="tool> " --no-info \
-        --header="Orphaned worktree $(git -C "$path" branch --show-current 2>/dev/null): add an AI pane in it, in the current workspace (esc to cancel):" || true)
-      [[ -n "$tool" ]] && { "$HOME/.local/bin/llm-add" -t "$tool" -w "$path" >&2 || true; }
+        --header="Worktree $(git -C "$path" branch --show-current 2>/dev/null): add an AI pane in it, in the current workspace (esc to cancel):" || true)
+      if [[ -n "$tool" ]]; then
+        "$HOME/.local/bin/llm-add" -t "$tool" -w "$path" >&2 || true
+      fi
       ;;
     action:worktree-open:*)
       local path="${action#action:worktree-open:}"
@@ -1488,11 +1555,17 @@ render_help_tab() {
     " Enter  open/attach in worktree"
     "        ⎇ pane's: go to its pane"
     "        ⎇ orphaned: add a pane in it"
+    "        ⎇ claude: add a pane in it"
     " n      new worktree + workspace"
     " g      launch lazygit"
+    " I      ⎇: integrate into its base"
+    "        (llm-wt), then remove it;"
+    "        kept while its pane is open"
     " K      atomic cleanup"
     "        (⎇: once its pane is closed)"
     " R      refresh"
+    " ⎇ claude  a Claude subagent's"
+    "        worktree; its workspace"
     ""
     "SAVED  ●live ◌died ◇closed ✕dropped"
     " Enter  restore (switch if live)"
@@ -1515,6 +1588,9 @@ render_help_tab() {
     " ▾  ▸   workspace (expanded/folded)"
     " ↳      an AI pane, nested under it"
     " bold   the pane currently in view"
+    " ⎇      it runs in its own worktree"
+    " ⎇×N    its Claude's N subagent"
+    "        worktrees (as on its border)"
     ""
     "STATUS GLYPHS"
     " ◐      waiting (blocked on you)"
@@ -1610,6 +1686,9 @@ Inside the dashboard:
   A          add an ISOLATED AI pane to the CURRENT workspace: its own git
              worktree and branch (Workspaces; see llm-wt)
   g          launch lazygit (Worktrees)
+  I          integrate the highlighted pane or Claude worktree into its base
+             branch with llm-wt integrate, then remove it; a live pane's
+             worktree is kept (Worktrees). A failure says why.
   K          workspace: close (keep saved) or kill (drop) · pane: remove ·
              Saved: drop · worktree: cleanup (all with confirmation)
   r          rename (Workspaces)
@@ -1862,7 +1941,7 @@ while true; do
     action:saved-toggle-dropped)
       if $_dashboard_saved_dropped; then _dashboard_saved_dropped=false; else _dashboard_saved_dropped=true; fi
       ;;
-    action:switch:*|action:switch-pane:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-add-isolated|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*|action:worktree-pane-busy|action:worktree-pane-cleanup:*|action:worktree-adopt:*|action:save-now|action:saved-*)
+    action:switch:*|action:switch-pane:*|action:kill:*|action:rename:*|action:rename-pane:*|action:refresh|action:pane-add|action:pane-add-isolated|action:pane-remove:*|action:pane-remove-unsupported|action:pane-next|action:pane-prev|action:worktree-open:*|action:worktree-new|action:worktree-lazygit:*|action:worktree-cleanup:*|action:worktree-pane-busy|action:worktree-pane-cleanup:*|action:worktree-adopt:*|action:worktree-integrate:*|action:worktree-integrate-keep:*|action:save-now|action:saved-*)
       dispatch_action "$result"
       # Switching exits the popup (restoring one workspace switches to it
       # too); for others we re-enter the current tab

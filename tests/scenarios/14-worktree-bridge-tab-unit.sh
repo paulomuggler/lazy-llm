@@ -7,6 +7,10 @@ source "$TESTS_DIR/lib/assertions.sh"
 
 TEST_NAME="worktree-bridge-tab-unit"
 
+# lazy_llm_gather_worktrees calls tmux. With $TMUX set, tmux ignores
+# TMUX_TMPDIR and reaches the user's own server: unset it for the whole run.
+unset TMUX TMUX_PANE
+
 LIB_FILE="$TESTS_DIR/../llm-send-bin/.local/bin/lazy-llm-lib.sh"
 DASHBOARD="$TESTS_DIR/../lazy-llm-bin/.local/bin/llm-dashboard"
 # shellcheck source=/dev/null
@@ -211,6 +215,166 @@ echo "Test 12: help text documents Worktrees actions..."
 help_out=$("$DASHBOARD" --help 2>&1)
 assert_contains "$help_out" "Worktrees" "usage mentions Worktrees tab"
 assert_contains "$help_out" "g" "usage documents g (lazygit) key"
+
+# ──────────────────────────────────────────────────────────────────────────
+# 13–15. Claude's worktrees (claude-subagent-worktrees-ui, spec
+# claude-subagent-worktrees.md §10): owner values, the tab's tag, and `I`.
+# A private sandbox: its own tmux socket, HOME and git identity; work from
+# inside it so an empty path never reaches the lazy-llm checkout.
+# ──────────────────────────────────────────────────────────────────────────
+REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
+LLMWT="$REPO_ROOT/llm-wt-bin/.local/bin/llm-wt"
+sandbox=$(mktemp -d /tmp/lazy-llm-test-wbtclaude-XXXXXX)
+cleanup_all() {
+    env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$sandbox/tmux" tmux kill-server 2>/dev/null || true
+    rm -rf "$sandbox"
+    cleanup_repos
+}
+trap cleanup_all EXIT
+cd "$sandbox" || exit 1
+export GIT_CEILING_DIRECTORIES=/tmp
+export HOME="$sandbox/home" TMUX_TMPDIR="$sandbox/tmux"
+mkdir -p "$HOME/.local/bin" "$TMUX_TMPDIR"
+unset XDG_CONFIG_HOME GIT_DIR GIT_WORK_TREE LAZY_LLM_WORKTREE_DIR
+git config --global user.email test@test
+git config --global user.name test
+git config --global init.defaultBranch main
+for f in llm-send-bin/.local/bin/lazy-llm-lib.sh llm-wt-bin/.local/bin/llm-wt \
+         lazy-llm-bin/.local/bin/llm-dashboard; do
+    ln -sf "$REPO_ROOT/$f" "$HOME/.local/bin/${f##*/}"
+done
+# Claude's WorktreeCreate, as the plugin runs it: payload on stdin, the
+# owning pane in TMUX_PANE (empty = none). Stdout: the worktree's path.
+claude_wt() {
+    printf '{"session_id":"s1","cwd":"%s","hook_event_name":"WorktreeCreate","name":"%s"}' "$1" "$2" \
+        | TMUX_PANE="$3" "$LLMWT" claude-hook 2>/dev/null
+}
+owner_of() { (cd "$R" && lazy_llm_gather_worktrees) | awk -F$'\x1f' -v p="$1" '$1 == p {print $8}'; }
+strip() { sed 's/\x1b\[[0-9;]*m//g'; }
+# Literal substring checks (assert_contains matches a regex, and these
+# needles carry "(", ")" and "*").
+assert_has() {
+    if [[ "$1" == *"$2"* ]]; then ((ASSERTIONS_PASSED++)); print_pass "$3"
+    else print_fail "$3"; echo "  Looking for: '$2'"; echo "  In text: '${1:0:300}...'"; fi
+}
+assert_lacks() {
+    if [[ "$1" != *"$2"* ]]; then ((ASSERTIONS_PASSED++)); print_pass "$3"
+    else print_fail "$3"; echo "  Unexpected: '$2'"; fi
+}
+# check <message> <command...>: passes when the command succeeds.
+check() {
+    local msg="$1"; shift
+    if "$@"; then ((ASSERTIONS_PASSED++)); print_pass "$msg"; else print_fail "$msg"; fi
+}
+
+echo ""
+echo "Test 13: gather_worktrees owners for Claude's worktrees..."
+R="$sandbox/r13"
+mkdir -p "$R" && git -C "$R" init -q && printf 'a\n' > "$R/a.txt" \
+    && git -C "$R" add a.txt && git -C "$R" commit -qm init
+tmux -f /dev/null new-session -d -s cws -c "$R" -x 220 -y 50 "exec sleep 300"
+P=$(tmux display -t cws -p '#{pane_id}')
+WT_LIVE=$(claude_wt "$R" agent-live "$P")
+WT_GONE=$(claude_wt "$R" agent-gone "%9999")
+WT_NOPANE=$(claude_wt "$R" agent-nopane "")
+WT_PANE=$("$LLMWT" create "$R" pw 2>/dev/null)
+assert_equals "$(git -C "$R" config branch.lazy/agent-live.lazyLlmPane)" "$P" "setup: the live one records the sandbox pane"
+assert_equals "$(owner_of "$WT_LIVE")" "claude:cws:$P" "owning pane is live: claude:<session>:<pane>"
+assert_equals "$(owner_of "$WT_GONE")" "claude:orphaned" "owning pane gone: claude:orphaned"
+assert_equals "$(owner_of "$WT_NOPANE")" "claude:orphaned" "no pane recorded (made outside tmux): claude:orphaned"
+assert_equals "$(owner_of "$WT_PANE")" "orphaned" "pane worktrees are unchanged: orphaned"
+assert_equals "$(owner_of "$R")" "" "main checkout: no owner"
+tmux set-option -p -t "$P" @lazy_llm_wt "$WT_PANE"
+assert_equals "$(owner_of "$WT_PANE")" "pane:cws:$P" "...and pane:<session>:<pane> once a pane runs in it"
+assert_equals "$(owner_of "$WT_LIVE")" "claude:cws:$P" "a pane can own both kinds at once"
+cols=$( (cd "$R" && lazy_llm_gather_worktrees) | awk -F$'\x1f' '{print NF}' | sort -u)
+assert_equals "$cols" "8" "rows still have 8 columns"
+
+# Drive the real dashboard (fzf) in a sandbox pane. Rows are rendered in
+# gather_worktrees order, so a row's index there is how far down it is.
+dash_wait() {  # wait until the dashboard pane shows $1
+    local i
+    for i in $(seq 1 100); do
+        tmux capture-pane -p -t dash 2>/dev/null | grep -qF -- "$1" && return 0
+        sleep 0.1
+    done
+    return 1
+}
+dash_key_on() {  # press $2 on the row whose path is $1
+    local n i
+    n=$( (cd "$R" && lazy_llm_gather_worktrees) | awk -F$'\x1f' -v p="$1" '$1 == p {print NR - 1}')
+    for ((i = 0; i < n; i++)); do tmux send-keys -t dash Down; done
+    sleep 0.3
+    tmux send-keys -t dash "$2"
+}
+
+echo ""
+echo "Test 14: the Worktrees tab tags Claude's rows..."
+# Wide: the list column (45%, beside the preview) must fit the owner column
+# and the header's messages. Detached, there's no client width to wrap to.
+tmux new-session -d -s dash -c "$R" -x 400 -y 50 \
+    "HOME='$HOME' TMUX_TMPDIR='$TMUX_TMPDIR' GIT_CEILING_DIRECTORIES=/tmp '$HOME/.local/bin/llm-dashboard' --tab worktrees; sleep 300"
+dash_wait "lazy/agent-nopane"
+screen=$(tmux capture-pane -p -t dash | strip)
+assert_has "$(grep -F 'lazy/agent-live' <<< "$screen")" "⎇ claude cws" "live: ⎇ claude + the owning workspace"
+assert_has "$(grep -F 'lazy/agent-gone' <<< "$screen")" "⎇ claude orphaned" "owner gone: ⎇ claude orphaned"
+assert_has "$(grep -F 'lazy/pw' <<< "$screen")" "⎇ cws" "pane worktree row unchanged: ⎇ <workspace>"
+assert_lacks "$(grep -F 'lazy/pw' <<< "$screen")" "claude" "...with no claude tag"
+assert_has "$(sed -n '/^render_worktrees_tab()/,/^}/p' "$DASHBOARD")" "I:integrate" "header advertises I"
+
+echo ""
+echo "Test 15: I integrates and removes, and explains a refusal..."
+printf 'x\n' > "$WT_LIVE/x.txt" && git -C "$WT_LIVE" add x.txt && git -C "$WT_LIVE" commit -qm "agent work"
+printf 'dirty\n' >> "$WT_GONE/a.txt"
+dash_key_on "$WT_LIVE" I
+dash_wait "worktree removed"
+screen=$(tmux capture-pane -p -t dash | strip)
+assert_has "$screen" "lazy/agent-live: integrated into main; worktree removed" "success is reported in the header"
+assert_equals "$(git -C "$R" log -1 --format=%s main)" "agent work" "the commit landed on main"
+check "the worktree is gone" test ! -d "$WT_LIVE"
+check "its branch is gone" test -z "$(git -C "$R" branch --list lazy/agent-live)"
+dash_key_on "$WT_GONE" I
+dash_wait "not integrated"
+screen=$(tmux capture-pane -p -t dash | strip)
+assert_has "$screen" "lazy/agent-gone not integrated (exit 3): the worktree has uncommitted changes" "exit 3 is explained"
+assert_dir_exists "$WT_GONE" "a refused worktree stays"
+commit_before=$(git -C "$WT_PANE" rev-parse HEAD)
+printf 'p\n' > "$WT_PANE/p.txt" && git -C "$WT_PANE" add p.txt && git -C "$WT_PANE" commit -qm "pane work"
+dash_key_on "$WT_PANE" I
+dash_wait "worktree kept"
+screen=$(tmux capture-pane -p -t dash | strip)
+assert_has "$screen" "lazy/pw: integrated into main; worktree kept (its pane is open)" "a live pane's worktree: integrated, kept"
+assert_dir_exists "$WT_PANE" "...and still there for its pane"
+assert_equals "$(git -C "$R" log -1 --format=%s main)" "pane work" "...its commit landed"
+check "main moved" test "$commit_before" != "$(git -C "$R" rev-parse main)"
+dash_key_on "$R" I
+dash_wait "(exit 2)"
+assert_has "$(tmux capture-pane -p -t dash | strip)" "not integrated (exit 2): not a pane or Claude worktree" "main checkout: exit 2, explained"
+
+echo ""
+echo "Test 16: Enter and K on a Claude row: adopt into a pane, the close dialog..."
+dash_key_on "$WT_NOPANE" Enter
+check "Enter offers to add a pane in it" dash_wait "add an AI pane in it"
+assert_has "$(tmux capture-pane -p -t dash | strip)" "Worktree lazy/agent-nopane: add an AI pane in it" "...naming the worktree"
+tmux send-keys -t dash Escape
+dash_wait "I:integrate" >/dev/null || dash_wait "lazy/agent-nopane"
+sleep 0.5
+dash_key_on "$WT_NOPANE" K
+check "K runs llm-wt close's dialog" dash_wait "Closing the last pane in worktree"
+assert_has "$(tmux capture-pane -p -t dash | strip)" "Closing the last pane in worktree lazy/agent-nopane" "...for that worktree"
+tmux send-keys -t dash Escape
+sleep 0.5
+assert_dir_exists "$WT_NOPANE" "cancelled: the worktree stays"
+
+for rc in 1 2 3 4 5 6 7; do
+    check "exit $rc has a reason" test -n "$(lazy_llm_wt_integrate_reason "$rc")"
+done
+DASHBOARD_LOOP=$(command grep -E 'action:switch:\*\|action:switch-pane' "$DASHBOARD")
+assert_has "$DASHBOARD_LOOP" "worktree-integrate:" "main loop dispatches worktree-integrate"
+help_tab=$(sed -n '/^render_help_tab()/,/^}/p' "$DASHBOARD")
+assert_has "$help_tab" " I      ⎇: integrate into its base" "Help tab documents I"
+assert_has "$help_tab" "⎇×N" "Help tab documents ⎇×N"
+assert_has "$("$DASHBOARD" --help 2>&1)" "llm-wt integrate" "usage documents I"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Summary

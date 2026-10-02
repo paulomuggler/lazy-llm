@@ -488,6 +488,34 @@ lazy_llm_wt_panes() {
     | awk -F'\t' -v w="$wt" '$3 == w {print $1 "\t" $2}'
 }
 
+# Claude's worktrees (llm-wt claude-hook) in the repo of <dir> that record
+# an owning tmux pane (lazyLlmPane), and whose directories still exist.
+# Cheap enough for a pane border: one `git config` for the whole repo (its
+# config is shared by every worktree), plus one `for-each-ref` only when some
+# Claude worktree records a pane.
+# Stdout: "pane_id<TAB>path" per worktree
+lazy_llm_claude_worktree_owners() {
+  local dir="$1" key val b p
+  [[ -n "$dir" && -d "$dir" ]] || return 0
+  local -A kind=() pane=()
+  while read -r key val; do
+    key="${key#branch.}"
+    case "$key" in
+      *.lazyllmkind) kind[${key%.lazyllmkind}]="$val" ;;
+      *.lazyllmpane) pane[${key%.lazyllmpane}]="$val" ;;
+    esac
+  done < <(GIT_OPTIONAL_LOCKS=0 git -C "$dir" config --get-regexp '^branch\..*\.lazyllm(kind|pane)$' 2>/dev/null)
+  local -a refs=()
+  for b in "${!pane[@]}"; do
+    [[ "${kind[$b]:-}" == claude && -n "${pane[$b]}" ]] && refs+=("refs/heads/$b")
+  done
+  [[ ${#refs[@]} -gt 0 ]] || return 0
+  while IFS=$'\t' read -r b p; do
+    [[ -n "$p" && -d "$p" ]] && printf '%s\t%s\n' "${pane[$b]}" "$p"
+  done < <(GIT_OPTIONAL_LOCKS=0 git -C "$dir" for-each-ref --format=$'%(refname:lstrip=2)\t%(worktreepath)' "${refs[@]}" 2>/dev/null)
+  return 0
+}
+
 # The pane worktree of the current window's visible AI pane, if it has one.
 lazy_llm_visible_pane_wt() {
   local ai
@@ -611,13 +639,23 @@ _lazy_llm_emit_worktree_row() {
             --json state -q .state 2>/dev/null) || pr=""
   fi
 
-  # Pane worktrees (llm-wt): owned by the live pane tagged with this path,
-  # else orphaned. Task worktrees have no owner.
-  local owner="" base
-  base=$(git -C "$path" config "branch.$branch.lazyLlmBase" 2>/dev/null) || base=""
-  if [[ -n "$base" ]]; then
-    owner=$(awk -F'\t' -v w="$path" '$1 == w {print "pane:" $2 ":" $3; exit}' <<< "$wt_panes")
-    [[ -n "$owner" ]] || owner="orphaned"
+  # Claude's worktrees (llm-wt claude-hook, lazyLlmKind=claude): owned by
+  # the live pane recorded in lazyLlmPane (the session that made them), else
+  # claude:orphaned. Pane worktrees (llm-wt): owned by the live pane tagged
+  # with this path, else orphaned. Task worktrees have no owner.
+  local owner="" base kind pane
+  kind=$(git -C "$path" config "branch.$branch.lazyLlmKind" 2>/dev/null) || kind=""
+  if [[ "$kind" == claude ]]; then
+    pane=$(git -C "$path" config "branch.$branch.lazyLlmPane" 2>/dev/null) || pane=""
+    [[ -n "$pane" ]] \
+      && owner=$(awk -F'\t' -v p="$pane" '$3 == p {print "claude:" $2 ":" $3; exit}' <<< "$wt_panes")
+    [[ -n "$owner" ]] || owner="claude:orphaned"
+  else
+    base=$(git -C "$path" config "branch.$branch.lazyLlmBase" 2>/dev/null) || base=""
+    if [[ -n "$base" ]]; then
+      owner=$(awk -F'\t' -v w="$path" '$1 == w {print "pane:" $2 ":" $3; exit}' <<< "$wt_panes")
+      [[ -n "$owner" ]] || owner="orphaned"
+    fi
   fi
 
   printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
@@ -631,7 +669,8 @@ _lazy_llm_emit_worktree_row() {
 # DIRTY: "*" or ""; AHEAD/BEHIND: counts vs origin/<default>; SESSION: lazy-llm
 # session attached; PR_STATE: OPEN/MERGED/CLOSED/"" (only when gh+github remote);
 # OWNER: "pane:<session>:<pane_id>" or "orphaned" for a pane worktree (llm-wt),
-# "" for a task worktree.
+# "claude:<session>:<pane_id>" (the live pane whose Claude session made it) or
+# "claude:orphaned" for one of Claude's worktrees, "" for a task worktree.
 # Skips detached-HEAD worktrees.
 lazy_llm_gather_worktrees() {
   local repo default has_gh is_github
@@ -645,10 +684,11 @@ lazy_llm_gather_worktrees() {
       && is_github=true
   fi
 
-  # Every pane's worktree tag, in one tmux call: "wt<TAB>session<TAB>pane".
+  # Every pane, with its worktree tag, in one tmux call:
+  # "wt<TAB>session<TAB>pane". All of them, untagged too: a Claude worktree's
+  # owner is looked up by pane id.
   local wt_panes
-  wt_panes=$(tmux list-panes -a -F $'#{@lazy_llm_wt}\t#{session_name}\t#{pane_id}' 2>/dev/null \
-    | awk -F'\t' '$1 != ""') || wt_panes=""
+  wt_panes=$(tmux list-panes -a -F $'#{@lazy_llm_wt}\t#{session_name}\t#{pane_id}' 2>/dev/null) || wt_panes=""
 
   local path="" branch=""
   while IFS= read -r line; do
@@ -701,6 +741,21 @@ lazy_llm_cleanup_worktree() {
   fi
 
   return 0
+}
+
+# What a non-zero `llm-wt integrate` exit code means, for a one-line message
+# (the dashboard's Worktrees tab `I`). The codes are llm-wt's (its header).
+# Args: $1 exit code
+lazy_llm_wt_integrate_reason() {
+  case "$1" in
+    2) echo "not a pane or Claude worktree: there's no branch to integrate it into" ;;
+    3) echo "the worktree has uncommitted changes: commit or discard them first" ;;
+    4) echo "the main directory isn't on the branch this worktree integrates into" ;;
+    5) echo "rebase conflict, left in progress in the worktree: resolve it and git rebase --continue, or git rebase --abort" ;;
+    6) echo "the base branch kept moving: try again" ;;
+    7) echo "the main directory's uncommitted changes touch files this would change: nothing was changed" ;;
+    *) echo "llm-wt integrate failed" ;;
+  esac
 }
 
 # Gather all lazy-llm-marked tmux sessions into a structured list.
@@ -1202,11 +1257,13 @@ lazy_llm_clamp_label() {
 #   pane worktree    ⎇ claude-2→main* 1b3dafc ↑3↓1   (counts vs the base branch)
 #   task worktree    ⎇ feat-x feat/x 1b3dafc origin ↑1
 #   detached HEAD    (detached) 1b3dafc
+# Given a pane id, it ends with ⎇×N when that pane's Claude session owns N
+# Claude worktrees that still exist (lazy_llm_claude_worktree_owners).
 # GIT_OPTIONAL_LOCKS=0: a border refresh must never take index.lock while an
 # agent in that tree is committing.
-# Args: $1 dir  $2 text color  $3 dim color
+# Args: $1 dir  $2 text color  $3 dim color  $4 pane id (optional)
 lazy_llm_git_segment() {
-  local dir="$1" c_text="$2" c_dim="$3"
+  local dir="$1" c_text="$2" c_dim="$3" pane_id="${4:-}"
   local c_wt="#5fafff" c_ahead="#87d787" c_warn="#ffaf00"
   local out top gitdir common line oid="" head="" upstream="" ab="" dirty=""
   local ahead=0 behind=0 base="" seg=""
@@ -1227,8 +1284,14 @@ lazy_llm_git_segment() {
   [[ "$oid" == "(initial)" ]] && oid=""
   oid="${oid:0:7}"
 
+  local claude_s="" n
+  if [[ -n "$pane_id" ]]; then
+    n=$(lazy_llm_claude_worktree_owners "$dir" | awk -F'\t' -v p="$pane_id" '$1 == p {n++} END {print n + 0}')
+    [[ "$n" -gt 0 ]] && claude_s=" #[fg=${c_wt}]⎇×${n}"
+  fi
+
   if [[ "$head" == "(detached)" || -z "$head" ]]; then
-    printf '#[fg=%s](detached) %s' "$c_dim" "$oid"
+    printf '#[fg=%s](detached) %s%s' "$c_dim" "$oid" "$claude_s"
     return 0
   fi
   if [[ "$gitdir" != "$common" ]]; then
@@ -1265,7 +1328,7 @@ lazy_llm_git_segment() {
     [[ "$ahead" -gt 0 ]] && seg+="#[fg=${c_ahead}]↑${ahead}"
     [[ "$behind" -gt 0 ]] && seg+="#[fg=${c_warn}]↓${behind}"
   fi
-  printf '%s' "$seg"
+  printf '%s%s' "$seg" "$claude_s"
 }
 
 # ──────────────────────────────────────────────────────────────────────────

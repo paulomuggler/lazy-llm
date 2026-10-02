@@ -75,7 +75,7 @@ assert_equals "3" "$dispatch3_saved" "3 routes to the Saved tab from Workspaces,
 # exact regex already caused once).
 ws_unbind=$(command grep -oE -- "unbind\([^)]*\)" "$DASHBOARD" | command grep 'ctrl-up' | head -1)
 assert_contains "$ws_unbind" "1,2,3,K" "Workspaces tab's unbind(...) set covers the tab keys"
-wt_unbind=$(command grep -oE -- "unbind\(1,2,3,n,g,K,R,\?\)" "$DASHBOARD")
+wt_unbind=$(command grep -oE -- "unbind\(1,2,3,n,[^)]*\)" "$DASHBOARD" | head -1)
 assert_contains "$wt_unbind" "1,2,3,n" "Worktrees tab's unbind(...) set covers the tab keys"
 
 # ──────────────────────────────────────────────────────────────────────────

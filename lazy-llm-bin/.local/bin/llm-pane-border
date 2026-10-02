@@ -83,11 +83,12 @@ summary=$(lazy_llm_render_summary "$C_DIM" "${summary_counts[@]}")
 # bug) — everything here now has an explicit color that doesn't fade with
 # focus, matching the status-right segment's own tiles.
 # Git segment last: tmux cuts a border from the right on a narrow pane, so
-# this goes first and identity + status survive. Off: set the global tmux
-# option @lazy_llm_border_git to "off".
+# this goes first and identity + status survive. It ends with ⎇×N when this
+# pane's Claude session owns N live Claude worktrees (subagents). Off: set the
+# global tmux option @lazy_llm_border_git to "off".
 git_seg=""
 if [[ "$border_git" != "off" ]]; then
-  git_seg=$(lazy_llm_git_segment "$pane_dir" "$C_TEXT" "$C_DIM")
+  git_seg=$(lazy_llm_git_segment "$pane_dir" "$C_TEXT" "$C_DIM" "$pane_id")
   [[ -n "$git_seg" ]] && git_seg="│ ${git_seg}#[default] "
 fi
 
