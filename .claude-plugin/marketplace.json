@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "lazy-llm",
-      "description": "Feeds lazy-llm's tmux pane status (waiting / unread / idle) and model display from Claude Code hooks.",
-      "version": "0.3.0",
+      "description": "Feeds lazy-llm's tmux pane status (waiting / unread / idle) and model display from Claude Code hooks, and runs Claude's worktrees (subagent isolation, EnterWorktree) through llm-wt.",
+      "version": "0.4.0",
       "author": {
         "name": "paulomuggler"
       },
