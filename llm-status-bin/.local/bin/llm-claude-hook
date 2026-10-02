@@ -29,11 +29,9 @@
 #   Clicking either notification runs llm-focus-pane: tmux switches to the
 #   pane and the terminal window holding it is focused.
 #   SessionStart  records the payload's `model` (documented as not always
-#                 present — hence the Stop fallback). In an isolated pane
-#                 (LAZY_LLM_WORKTREE=1, set by llm-add -i), also prints the
-#                 worktree guidance (share/lazy-llm/worktree-agent.md) as
-#                 additionalContext: only those sessions ever load it, and it
-#                 comes back on resume and after a compact.
+#                 present — hence the Stop fallback). The worktree guidance
+#                 for isolated panes comes from `llm-wt claude-hook` (the
+#                 plugin's worktree.sh), which reads it from git config.
 #   PostModelSwitch  records `to_model` — /model switches show up right away.
 #   (every event)  records `session_id` as the pane's conversation, for
 #                 `lazy-llm restore`; saves the workspace manifest when it changes.
@@ -298,7 +296,7 @@ if lazy_llm_set_pane_conv "$PANE_ID" "$(field session_id)"; then
   lazy_llm_save_async
 fi
 
-# JSON string escaping for the guidance text (no jq: see the header).
+# JSON string escaping (no jq: see the header).
 json_escape() {
   local s="$1"
   s=${s//\\/\\\\}
@@ -307,24 +305,6 @@ json_escape() {
   s=${s//$'\r'/}
   s=${s//$'\n'/\\n}
   printf '%s' "$s"
-}
-
-# Worktree guidance for an isolated pane's session, as SessionStart hook
-# output. Placeholders: {{path}} {{branch}} {{base}} {{primary}}.
-worktree_context() {
-  [ "${LAZY_LLM_WORKTREE:-}" = 1 ] || return 0
-  local guide text wt branch
-  guide="$(dirname "$0")/../share/lazy-llm/worktree-agent.md"
-  [ -f "$guide" ] || return 0
-  wt=$(git rev-parse --show-toplevel 2>/dev/null) || wt="$PWD"
-  branch=$(git -C "$wt" branch --show-current 2>/dev/null)
-  text=$(cat "$guide")
-  text=${text//"{{path}}"/$wt}
-  text=${text//"{{branch}}"/$branch}
-  text=${text//"{{base}}"/${LAZY_LLM_BASE_BRANCH:-}}
-  text=${text//"{{primary}}"/${LAZY_LLM_PRIMARY_DIR:-}}
-  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
-    "$(json_escape "$text")"
 }
 
 case "$(field hook_event_name)" in
@@ -356,7 +336,6 @@ case "$(field hook_event_name)" in
         | sed -E 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]*)"$/\1/')
     fi
     lazy_llm_set_pane_model "$PANE_ID" "$model"
-    worktree_context
     ;;
   PostModelSwitch)
     lazy_llm_set_pane_model "$PANE_ID" "$(field to_model)"

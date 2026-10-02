@@ -1,3 +1,4 @@
+<!-- lazy-llm:worktree-agent -->
 # You are in an isolated git worktree (lazy-llm)
 
 This session runs in its own worktree, `{{path}}`, on branch `{{branch}}`,

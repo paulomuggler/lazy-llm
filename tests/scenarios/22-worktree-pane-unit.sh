@@ -516,20 +516,26 @@ assert_contains "$nv" "back=$R/src/x.lua" "toggle again goes back to the main co
 assert_contains "$nv" "mark-main=nil" "main buffers aren't marked"
 
 echo ""
-echo "Test 15: SessionStart hook injects the worktree guidance only in isolated panes (spec §6)..."
+echo "Test 15: SessionStart injects the worktree guidance only in isolated panes (spec §6; from llm-wt since claude-subagent-worktrees)..."
 ln -sf "$REPO_ROOT/llm-status-bin/.local/bin/llm-claude-hook" "$HOME_BIN/llm-claude-hook"
 mkdir -p "$HOME/.local/share"
 ln -sfn "$REPO_ROOT/llm-status-bin/.local/share/lazy-llm" "$HOME/.local/share/lazy-llm"
+SHIM="$REPO_ROOT/claude-plugin/hooks/worktree.sh"
 R="$sandbox/r15"; mk_repo "$R"
 wt=$("$LLMWT" create "$R" 2>/dev/null)
-payload='{"hook_event_name":"SessionStart","source":"startup","session_id":"s1","model":"claude-opus-5-5"}'
+p_iso=$(printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"s1","cwd":"%s"}' "$wt")
+p_shared=$(printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"s1","cwd":"%s"}' "$R")
+# Both SessionStart hooks the plugin runs: run.sh -> llm-claude-hook (status
+# only now) and worktree.sh -> llm-wt claude-hook (the guidance, read from git
+# config: no env needed).
 output=$(TMUX_TMPDIR="$sandbox/tmux" bash <<EOF
 unset TMUX
 tmux -f /dev/null new-session -d -s hws -c "$wt" "exec sleep 60"
 export TMUX_PANE=\$(tmux display -t hws -p '#{pane_id}')
 cd "$wt"
-echo "iso=\$(printf '%s' '$payload' | LAZY_LLM_WORKTREE=1 LAZY_LLM_PRIMARY_DIR="$R" LAZY_LLM_BASE_BRANCH=main "$HOME_BIN/llm-claude-hook")"
-echo "shared=<\$(printf '%s' '$payload' | "$HOME_BIN/llm-claude-hook")>"
+echo "iso=\$(printf '%s' '$p_iso' | LAZY_LLM_WT_BIN="$LLMWT" bash "$SHIM")"
+echo "status-hook=<\$(printf '%s' '$p_iso' | LAZY_LLM_WORKTREE=1 "$HOME_BIN/llm-claude-hook")>"
+echo "shared=<\$(printf '%s' '$p_shared' | LAZY_LLM_WT_BIN="$LLMWT" bash "$SHIM")>"
 tmux kill-server 2>/dev/null
 EOF
 )
@@ -541,6 +547,7 @@ assert_contains "$ctx" "split from \`main\` in the main directory \`$R\`" "...an
 assert_contains "$ctx" "| 7 | The main directory has uncommitted changes" "...and carries the integrate exit codes"
 [[ "$ctx" == *"{{"* ]] && r="left" || r="none"
 assert_equals "$r" "none" "no placeholder left"
+assert_contains "$output" "status-hook=<>" "llm-claude-hook doesn't print it too (once per session)"
 assert_contains "$output" "shared=<>" "a shared pane's session gets nothing"
 
 echo ""

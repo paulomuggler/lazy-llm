@@ -9,11 +9,22 @@
 #   branch.<branch>.lazyLlmBase     the branch to integrate into
 #   branch.<branch>.lazyLlmPrimary  the main directory (repo toplevel)
 #
+# Claude Code's own worktrees (subagent isolation, EnterWorktree, claude -w)
+# are made here too, by `claude-hook` on WorktreeCreate: directory
+# .worktrees/.claude/<name>, branch lazy/<name>, from the parent's HEAD. They
+# carry the same two keys plus lazyLlmKind=claude, lazyLlmName (Claude's name
+# for it: agent-<agentId> for a subagent), lazyLlmSession and lazyLlmPane. A
+# subagent's worktree is integrated by its parent session (integrate --remove).
+#
 # Usage:
 #   llm-wt info [path]                  worktree, branch, base, main directory
 #   llm-wt status [path] [--porcelain]  what closing this worktree would lose
 #   llm-wt sync [path]                  rebase onto the base branch
-#   llm-wt integrate [path]             rebase, then fast-forward the base branch
+#   llm-wt integrate [path] [--remove]  rebase, then fast-forward the base branch;
+#                                       --remove deletes the worktree afterwards
+#   llm-wt list [dir] [--porcelain]     Claude's worktrees that integrate into <dir>
+#   llm-wt claude-hook                  Claude Code hook handler (payload on stdin):
+#                                       creates/removes Claude's worktrees, guidance
 #   llm-wt create <dir> [name]          new pane worktree for workspace dir <dir>
 #   llm-wt default-name <dir>           the name create would pick: <repo>-wt-<n>
 #   llm-wt bootstrap <path>             (re)link/copy untracked files, run init hook
@@ -47,6 +58,64 @@ readonly DEFAULT_FILES=$'.env*\n.claude/settings.local.json\n.agents/TODO/.work-
 die() { local code="$1"; shift; printf 'llm-wt: %s\n' "$*" >&2; exit "$code"; }
 warn() { printf 'llm-wt: %s\n' "$*" >&2; }
 
+# ── the repo lock ────────────────────────────────────────────────────────
+
+# Serializes writes to what every worktree of a repo shares: .git/config
+# (`git config` fails on config.lock under contention), info/exclude, and the
+# free-name probe. Claude launching several isolated subagents at once means
+# concurrent creates. Reentrant (a depth count), so a locked step can call
+# another that locks. Callers bracket the critical section with lock_repo /
+# unlock_repo rather than passing a command: a function run as `f || rc=$?`
+# loses `set -e` for its whole body. A die() in between exits the process,
+# which drops a flock; the mkdir lock is removed by an EXIT trap.
+_LOCK_DEPTH=0
+_LOCK_FD=""
+_LOCK_DIR=""
+
+lock_repo() {
+  _LOCK_DEPTH=$((_LOCK_DEPTH + 1))
+  [[ $_LOCK_DEPTH -gt 1 ]] && return 0
+  local common owner waited=0
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    || die 1 "not in a git repository: $1"
+  if command -v flock >/dev/null 2>&1; then
+    exec {_LOCK_FD}>>"$common/lazy-llm-wt.lock"
+    flock -w 60 "$_LOCK_FD" || die 1 "timed out after 60s waiting for $common/lazy-llm-wt.lock"
+    return 0
+  fi
+  # No flock (macOS): a lock directory holding its owner's pid, broken when
+  # that process is gone.
+  _LOCK_DIR="$common/lazy-llm-wt.lock.d"
+  until mkdir "$_LOCK_DIR" 2>/dev/null; do
+    owner=$(cat "$_LOCK_DIR/pid" 2>/dev/null) || owner=""
+    if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf "$_LOCK_DIR"
+      continue
+    fi
+    waited=$((waited + 1))
+    [[ $waited -gt 600 ]] && { _LOCK_DIR=""; die 1 "timed out after 60s waiting for $common/lazy-llm-wt.lock.d"; }
+    sleep 0.1
+  done
+  echo $$ > "$_LOCK_DIR/pid"
+  trap 'rm -rf "$_LOCK_DIR"' EXIT
+}
+
+unlock_repo() {
+  [[ $_LOCK_DEPTH -gt 0 ]] || return 0
+  _LOCK_DEPTH=$((_LOCK_DEPTH - 1))
+  [[ $_LOCK_DEPTH -eq 0 ]] || return 0
+  if [[ -n "$_LOCK_FD" ]]; then
+    exec {_LOCK_FD}>&-
+    _LOCK_FD=""
+  fi
+  if [[ -n "$_LOCK_DIR" ]]; then
+    rm -rf "$_LOCK_DIR"
+    _LOCK_DIR=""
+    trap - EXIT
+  fi
+  return 0
+}
+
 # ── context ──────────────────────────────────────────────────────────────
 
 # The branch a worktree is on, including mid-rebase (when HEAD is detached).
@@ -69,6 +138,14 @@ rebase_in_progress() {
     [[ -d "$f" ]] && return 0
   done
   return 1
+}
+
+# A worktree's kind: "claude" (made by claude-hook) or "pane" (llm-add -i,
+# which records no kind).
+wt_kind() {
+  local k
+  k=$(git -C "$1" config "branch.$2.lazyLlmKind" 2>/dev/null) || k=""
+  printf '%s\n' "${k:-pane}"
 }
 
 # Sets WT BRANCH BASE PRIMARY for the pane worktree containing $1 (default
@@ -115,6 +192,25 @@ read_file_entries() {
   if ! $any; then
     while IFS= read -r line; do printf 'link\t%s\n' "$line"; done <<< "$DEFAULT_FILES"
   fi
+  # Claude Code's .worktreeinclude: what its own worktree creation copies.
+  # Our WorktreeCreate hook replaces that, so honor it here, for every kind.
+  # Its patterns are copies; a "!" line excludes. Paths and globs are matched
+  # at the top level only (no gitignore-style any-depth matching).
+  f="$repo/.worktreeinclude"
+  [[ -f "$f" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%[[:space:]]#*}"
+    [[ "$line" == \#* ]] && continue
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == !* ]]; then
+      line="${line#!}"
+      printf 'exclude\t%s\n' "${line#/}"
+    else
+      printf 'copy\t%s\n' "${line#/}"
+    fi
+  done < "$f"
 }
 
 tree_hash() {
@@ -211,19 +307,24 @@ exclude_bootstrapped() {
 # ignores that path or the line is there.
 add_exclude() {
   local where="$1" pat="$2" excl
-  git -C "$where" check-ignore -q --no-index -- "${pat#/}" 2>/dev/null && return 0
-  excl=$(git -C "$where" rev-parse --path-format=absolute --git-common-dir)/info/exclude
-  mkdir -p "$(dirname "$excl")"
-  touch "$excl"
-  # gitignore has no trailing comments: the marker goes on its own line.
-  grep -qxF "$pat" "$excl" || printf '%s\n%s\n' "$EXCLUDE_MARK" "$pat" >> "$excl"
+  lock_repo "$where"
+  if ! git -C "$where" check-ignore -q --no-index -- "${pat#/}" 2>/dev/null; then
+    excl=$(git -C "$where" rev-parse --path-format=absolute --git-common-dir)/info/exclude
+    mkdir -p "$(dirname "$excl")"
+    touch "$excl"
+    # gitignore has no trailing comments: the marker goes on its own line.
+    grep -qxF "$pat" "$excl" || printf '%s\n%s\n' "$EXCLUDE_MARK" "$pat" >> "$excl"
+  fi
+  unlock_repo
 }
 
 run_init_hook() {
-  local hook="$PRIMARY/.lazy-llm/worktree-init" rc=0
+  local hook="$PRIMARY/.lazy-llm/worktree-init" rc=0 kind
   [[ -x "$hook" ]] || return 0
+  kind=$(wt_kind "$WT" "$BRANCH")
   echo "llm-wt: running $hook in $WT" >&2
-  (cd "$WT" && LAZY_LLM_WORKTREE=1 LAZY_LLM_PRIMARY_DIR="$PRIMARY" LAZY_LLM_BASE_BRANCH="$BASE" "$hook") >&2 || rc=$?
+  (cd "$WT" && LAZY_LLM_WORKTREE=1 LAZY_LLM_WORKTREE_KIND="$kind" LAZY_LLM_PRIMARY_DIR="$PRIMARY" \
+    LAZY_LLM_BASE_BRANCH="$BASE" "$hook") >&2 || rc=$?
   [[ $rc -eq 0 ]] || warn "init hook exited $rc (the pane is created anyway)"
   return 0
 }
@@ -231,10 +332,13 @@ run_init_hook() {
 # ── create ───────────────────────────────────────────────────────────────
 
 # A name usable as both a directory and a branch component: anything outside
-# [A-Za-z0-9._-] becomes "-", with no leading dot or dash.
+# [A-Za-z0-9._-] becomes "-", no ".." (git refuses it in a ref), no leading
+# dot or dash, no trailing dot or ".lock".
 safe_name() {
   local s="${1//[^A-Za-z0-9._-]/-}"
+  while [[ "$s" == *..* ]]; do s="${s//../.}"; done
   while [[ "$s" == [.-]* ]]; do s="${s:1}"; done
+  while [[ "$s" == *. || "$s" == *.lock ]]; do s="${s%.}"; s="${s%.lock}"; done
   printf '%s\n' "$s"
 }
 
@@ -263,6 +367,8 @@ cmd_create() {
   [[ $# -ge 1 && $# -le 2 ]] || die 1 "usage: llm-wt create <dir> [name]"
   local dir="$1" name="${2:-}" repo base branch wt pane_base
   repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || die 1 "$dir is not in a git repository"
+  # Locked from the name probe to the last config write (see lock_repo).
+  lock_repo "$repo"
   if [[ -n "$name" ]]; then
     local asked="$name"
     name=$(safe_name "$name")
@@ -287,9 +393,353 @@ cmd_create() {
   wt=$(cd "$repo" && lazy_llm_setup_worktree "$branch" "$pane_base" "$base" "$name") || die 1 "could not create the worktree"
   git -C "$repo" config "branch.$branch.lazyLlmBase" "$base"
   git -C "$repo" config "branch.$branch.lazyLlmPrimary" "$repo"
+  unlock_repo
 
   cmd_bootstrap "$wt"
   printf '%s\n' "$wt"
+}
+
+# ── Claude Code's worktrees ──────────────────────────────────────────────
+
+claude_base_dir() { printf '%s\n' "${LAZY_LLM_WORKTREE_DIR:-$1/.worktrees}/.claude"; }
+
+# The main directory at the end of a worktree's ownership chain: follow
+# lazyLlmPrimary from pane/Claude worktrees until a directory that isn't one.
+# Not `git worktree list`'s first entry: in a submodule that's the gitdir.
+root_dir() {
+  local dir="$1" b p n=0
+  while [[ $n -lt 16 ]]; do
+    b=$(wt_branch "$dir")
+    [[ -n "$b" ]] || break
+    p=$(git -C "$dir" config "branch.$b.lazyLlmPrimary" 2>/dev/null) || break
+    [[ -n "$p" && -d "$p" && "$p" != "$dir" ]] || break
+    dir="$p"
+    n=$((n + 1))
+  done
+  printf '%s\n' "$dir"
+}
+
+# Create the worktree Claude asked for (WorktreeCreate). <cwd> is the parent
+# session's directory: the worktree starts from its HEAD (never origin's
+# default branch, which is what Claude's own creation uses) and integrates
+# into its branch, in its directory. A parent that's itself in a pane or
+# Claude worktree nests: work flows back one level at a time. The directory
+# goes under the root main directory's .worktrees/, not inside the parent.
+# Stdout: exactly the worktree's path. Everything else goes to stderr.
+claude_create() {
+  local cwd="$1" raw="$2" session="$3" parent base root wt_base name cand n=2 branch wt
+  parent=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || die 1 "not in a git repository: $cwd"
+  base=$(git -C "$parent" branch --show-current 2>/dev/null) || base=""
+  root=$(root_dir "$parent")
+  wt_base=$(claude_base_dir "$root")
+  name=$(safe_name "$raw")
+  [[ -n "$name" ]] || name=claude-wt
+
+  lock_repo "$parent"
+  cand="$name"
+  while git -C "$parent" show-ref --verify --quiet "refs/heads/lazy/$cand" || [[ -e "$wt_base/$cand" ]]; do
+    cand="$name-$n"
+    n=$((n + 1))
+  done
+  name="$cand"
+  branch="lazy/$name"
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || die 1 "invalid branch name: $branch"
+  [[ "$wt_base" == "$root/.worktrees/"* ]] && add_exclude "$root" "/.worktrees/"
+  wt=$(cd "$parent" && lazy_llm_setup_worktree "$branch" "$wt_base" HEAD "$name") || die 1 "could not create the worktree"
+  git -C "$parent" config "branch.$branch.lazyLlmKind" claude
+  [[ -n "$raw" ]] && git -C "$parent" config "branch.$branch.lazyLlmName" "$raw"
+  [[ -n "$session" ]] && git -C "$parent" config "branch.$branch.lazyLlmSession" "$session"
+  [[ -n "${TMUX_PANE:-}" ]] && git -C "$parent" config "branch.$branch.lazyLlmPane" "$TMUX_PANE"
+  if [[ -n "$base" ]]; then
+    git -C "$parent" config "branch.$branch.lazyLlmBase" "$base"
+    git -C "$parent" config "branch.$branch.lazyLlmPrimary" "$parent"
+  fi
+  unlock_repo
+
+  if [[ -n "$base" ]]; then
+    cmd_bootstrap "$wt" >&2
+  else
+    warn "$parent has a detached HEAD: $wt has nothing to integrate into (no bootstrap, no llm-wt integrate)"
+  fi
+  printf '%s\n' "$wt"
+}
+
+# Sets WT BRANCH BASE PRIMARY KIND for an llm-wt worktree containing $1, like
+# load_ctx, but returns 1 instead of exiting: hook handlers must not exit 2,
+# which some hook events treat as "block".
+probe_ctx() {
+  WT=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
+  BRANCH=$(wt_branch "$WT")
+  [[ -n "$BRANCH" ]] || return 1
+  BASE=$(git -C "$WT" config "branch.$BRANCH.lazyLlmBase" 2>/dev/null) || BASE=""
+  PRIMARY=$(git -C "$WT" config "branch.$BRANCH.lazyLlmPrimary" 2>/dev/null) || PRIMARY=""
+  [[ -n "$BASE" && -n "$PRIMARY" ]] || return 1
+  KIND=$(wt_kind "$WT" "$BRANCH")
+}
+
+# The Claude worktree made for subagent <agent_id> (lazyLlmName
+# agent-<agent_id>): <cwd>'s worktree when it's that one, else found by
+# scanning the repo's branches. Prints its path; returns 1 when there's none,
+# i.e. the subagent wasn't isolated.
+find_agent_wt() {
+  local want="agent-$1" cwd="$2" top b repo key val path="" br=""
+  [[ -n "$1" ]] || return 1
+  if top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null); then
+    b=$(wt_branch "$top")
+    if [[ -n "$b" && "$(git -C "$top" config "branch.$b.lazyLlmName" 2>/dev/null)" == "$want" ]]; then
+      printf '%s\n' "$top"
+      return 0
+    fi
+  fi
+  repo="${CLAUDE_PROJECT_DIR:-$cwd}"
+  b=""
+  while read -r key val; do
+    [[ "$val" == "$want" ]] || continue
+    b="${key#branch.}"
+    b="${b%.*}"
+    break
+  done < <(git -C "$repo" config --get-regexp '^branch\..*\.lazyllmname$' 2>/dev/null || true)
+  [[ -n "$b" ]] || return 1
+  while IFS= read -r key; do
+    case "$key" in
+      worktree\ *) path="${key#worktree }" ;;
+      branch\ *) br="${key#branch refs/heads/}"
+        [[ "$br" == "$b" ]] && { printf '%s\n' "$path"; return 0; } ;;
+    esac
+  done < <(git -C "$repo" worktree list --porcelain 2>/dev/null || true)
+  return 1
+}
+
+# ── claude-hook: Claude Code hook handler ───────────────────────────────
+#
+# Wired by lazy-llm's plugin (claude-plugin/hooks/worktree.sh). Events:
+#   WorktreeCreate  claude_create; stdout is the path Claude uses
+#   WorktreeRemove  remove, refusing to lose work (exit 1 says why)
+#   SubagentStart   guidance for an isolated subagent (worktree-subagent.md)
+#   SubagentStop    remove the subagent's worktree when it left nothing in it
+#   PostToolUse     Agent: tell the parent where the work is and how to land
+#                   it (worktree-parent.md); EnterWorktree: worktree-agent.md
+#   SessionStart    worktree-agent.md for a session started in an llm-wt
+#                   worktree of any kind (isolated panes, claude -w)
+# Fields are read with grep/sed, like llm-claude-hook: no jq dependency.
+
+hook_field() {
+  printf '%s' "$HOOK_INPUT" \
+    | grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 \
+    | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true
+}
+
+json_escape() {
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\r'/}
+  s=${s//$'\n'/\\n}
+  printf '%s' "$s"
+}
+
+emit_context() {
+  printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' "$1" "$(json_escape "$2")"
+}
+
+share_dir() {
+  local d
+  for d in "${LAZY_LLM_SHARE_DIR:-}" "$(dirname "$0")/../share/lazy-llm" \
+      "$(dirname "$0")/../../../llm-status-bin/.local/share/lazy-llm"; do
+    [[ -n "$d" && -d "$d" ]] && { printf '%s\n' "$d"; return 0; }
+  done
+  return 1
+}
+
+# A guidance file with {{path}} {{branch}} {{base}} {{primary}} filled from
+# the ctx globals, plus any extra key=value pairs given.
+guidance() {
+  local file text kv
+  file="$(share_dir)/$1" || return 1
+  [[ -f "$file" ]] || return 1
+  text=$(<"$file")
+  text=${text//"{{path}}"/$WT}
+  text=${text//"{{branch}}"/$BRANCH}
+  text=${text//"{{base}}"/$BASE}
+  text=${text//"{{primary}}"/$PRIMARY}
+  shift
+  for kv in "$@"; do
+    text=${text//"{{${kv%%=*}}}"/${kv#*=}}
+  done
+  printf '%s' "$text"
+}
+
+hook_worktree_create() {
+  local cwd
+  cwd=$(hook_field cwd)
+  claude_create "${cwd:-$PWD}" "$(hook_field name)" "$(hook_field session_id)"
+}
+
+hook_worktree_remove() {
+  local path
+  path=$(hook_field worktree_path)
+  [[ -n "$path" ]] || die 1 "WorktreeRemove without a worktree_path"
+  [[ -e "$path" ]] || return 0
+  if probe_ctx "$path"; then
+    cmd_remove "$path" >&2
+  else
+    # Not one of ours (made by the plugin's fallback), or one with nothing to
+    # integrate into: plain removal, which refuses a dirty tree and keeps the
+    # branch, so commits survive either way.
+    git -C "$path" worktree remove "$path" >&2
+  fi
+}
+
+hook_subagent_start() {
+  local wt text
+  wt=$(find_agent_wt "$(hook_field agent_id)" "$(hook_field cwd)") || return 0
+  probe_ctx "$wt" || return 0
+  [[ "$KIND" == claude ]] || return 0
+  text=$(guidance worktree-subagent.md) || return 0
+  emit_context SubagentStart "$text"
+}
+
+hook_subagent_stop() {
+  local wt st
+  wt=$(find_agent_wt "$(hook_field agent_id)" "$(hook_field cwd)") || return 0
+  probe_ctx "$wt" || return 0
+  # Only a worktree Claude made for this subagent; never a pane's.
+  [[ "$KIND" == claude ]] || return 0
+  st=$(cmd_status "$WT" --porcelain) || return 0
+  grep -qE $'^(dirty|untracked|unintegrated|rebasing|copies-changed)\t[1-9]' <<< "$st" && return 0
+  cmd_remove "$WT" >&2 || warn "could not remove the empty worktree $WT"
+  return 0
+}
+
+hook_post_tool_use() {
+  local tool wt status st key val commits=0 dirty=0 untracked=0 name text
+  tool=$(hook_field tool_name)
+  wt=$(hook_field worktreePath)
+  [[ -n "$wt" ]] || return 0
+  case "$tool" in
+    Agent)
+      if [[ ! -e "$wt" ]]; then
+        emit_context PostToolUse "lazy-llm: that subagent changed nothing in its worktree, so it was removed ($wt). Nothing to integrate."
+        return 0
+      fi
+      probe_ctx "$wt" || return 0
+      [[ "$KIND" == claude ]] || return 0
+      status=$(hook_field status)
+      if [[ "$status" != completed ]]; then
+        emit_context PostToolUse "lazy-llm: that subagent runs in its own worktree $WT on branch $BRANCH, which integrates into $BASE in $PRIMARY. When it finishes, run \`llm-wt list\` and land its work with \`llm-wt integrate --remove $WT\` (review it first)."
+        return 0
+      fi
+      st=$(cmd_status "$WT" --porcelain) || return 0
+      while IFS=$'\t' read -r key val; do
+        case "$key" in
+          unintegrated) commits=$val ;;
+          dirty) dirty=$val ;;
+          untracked) untracked=$val ;;
+        esac
+      done <<< "$st"
+      name=$(git -C "$WT" config "branch.$BRANCH.lazyLlmName" 2>/dev/null) || name=""
+      text=$(guidance worktree-parent.md "commits=$commits" "dirty=$dirty" "untracked=$untracked" "name=$name") || return 0
+      emit_context PostToolUse "$text"
+      ;;
+    EnterWorktree)
+      probe_ctx "$wt" || return 0
+      text=$(guidance worktree-agent.md) || return 0
+      emit_context PostToolUse "$text"
+      ;;
+  esac
+}
+
+hook_session_start() {
+  local cwd text
+  cwd=$(hook_field cwd)
+  probe_ctx "${cwd:-$PWD}" || return 0
+  text=$(guidance worktree-agent.md) || return 0
+  emit_context SessionStart "$text"
+}
+
+# Each event runs in a child process of this script, so `set -e` holds inside
+# the handler (a function called as `f || rc=$?` loses it), and the exit
+# status is mapped here: WorktreeCreate's passes through (never 2), a failed
+# WorktreeRemove is 1, and every other event always exits 0 — guidance and
+# cleanup must never break Claude's flow.
+cmd_claude_hook() {
+  local input ev rc=0
+  input=$(cat)
+  HOOK_INPUT="$input"
+  ev=$(hook_field hook_event_name)
+  case "$ev" in
+    WorktreeCreate | WorktreeRemove | SubagentStart | SubagentStop | PostToolUse | SessionStart) ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$input" | "$0" __claude-hook-run "$ev" || rc=$?
+  case "$ev" in
+    WorktreeCreate) [[ $rc -eq 2 ]] && rc=1; return "$rc" ;;
+    WorktreeRemove) [[ $rc -eq 0 ]] || rc=1; return "$rc" ;;
+    *) return 0 ;;
+  esac
+}
+
+cmd_claude_hook_run() {
+  HOOK_INPUT=$(cat)
+  case "$1" in
+    WorktreeCreate) hook_worktree_create ;;
+    WorktreeRemove) hook_worktree_remove ;;
+    SubagentStart) hook_subagent_start ;;
+    SubagentStop) hook_subagent_stop ;;
+    PostToolUse) hook_post_tool_use ;;
+    SessionStart) hook_session_start ;;
+  esac
+}
+
+# ── list ─────────────────────────────────────────────────────────────────
+
+# Claude worktrees that integrate into <dir>'s worktree (default cwd): what a
+# parent session still has to land or drop.
+cmd_list() {
+  local porcelain=false dir="" a top line path="" br="" st key val dirty untracked unintegrated n=0 name
+  for a in "$@"; do
+    case "$a" in --porcelain) porcelain=true ;; *) dir="$a" ;; esac
+  done
+  top=$(git -C "${dir:-$PWD}" rev-parse --show-toplevel 2>/dev/null) || die 1 "${dir:-$PWD} is not in a git repository"
+  local -a rows=()
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *) path="${line#worktree }"; br="" ;;
+      branch\ *) br="${line#branch refs/heads/}" ;;
+      "")
+        if [[ -n "$br" && -n "$path" ]] \
+            && [[ "$(git -C "$top" config "branch.$br.lazyLlmKind" 2>/dev/null)" == claude ]] \
+            && [[ "$(git -C "$top" config "branch.$br.lazyLlmPrimary" 2>/dev/null)" == "$top" ]]; then
+          rows+=("$path"$'\t'"$br")
+        fi
+        path=""; br="" ;;
+    esac
+  done < <(git -C "$top" worktree list --porcelain; echo)
+  for line in ${rows[@]+"${rows[@]}"}; do
+    path="${line%%$'\t'*}"; br="${line#*$'\t'}"
+    st=$(cmd_status "$path" --porcelain 2>/dev/null) || continue
+    dirty=0; untracked=0; unintegrated=0
+    while IFS=$'\t' read -r key val; do
+      case "$key" in
+        dirty) dirty=$val ;;
+        untracked) untracked=$val ;;
+        unintegrated) unintegrated=$val ;;
+      esac
+    done <<< "$st"
+    name=$(git -C "$top" config "branch.$br.lazyLlmName" 2>/dev/null) || name=""
+    n=$((n + 1))
+    if $porcelain; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$br" "$name" "$dirty" "$untracked" "$unintegrated"
+    else
+      printf '%s\n  branch %s  ·  %s commit(s) to integrate  ·  %s uncommitted  ·  %s untracked\n' \
+        "$path" "$br" "$unintegrated" "$dirty" "$untracked"
+    fi
+  done
+  if ! $porcelain && [[ $n -eq 0 ]]; then
+    echo "no Claude worktrees integrate into $top"
+  fi
+  return 0
 }
 
 # ── info / status ────────────────────────────────────────────────────────
@@ -410,6 +860,17 @@ cmd_sync() {
 }
 
 cmd_integrate() {
+  local path="" remove=false a
+  for a in "$@"; do
+    case "$a" in --remove) remove=true ;; *) path="$a" ;; esac
+  done
+  integrate_into_base "$path"
+  # Landed (or nothing to land): --remove drops the worktree and branch. It
+  # still refuses if something would be lost (untracked files, say).
+  if $remove; then cmd_remove "$WT"; fi
+}
+
+integrate_into_base() {
   load_ctx "${1:-}"
   require_clean
   local cur out old
@@ -545,14 +1006,17 @@ cmd_remove() {
     case "$a" in --force) force=yes ;; *) path="$a" ;; esac
   done
   load_ctx "$path"
+  # Locked: deleting the branch rewrites the shared .git/config.
+  lock_repo "$WT"
   if [[ "$force" == no ]]; then
     local st
     st=$(cmd_status "$WT" --porcelain)
     if grep -qE $'^(dirty|untracked|unintegrated|copies-changed)\t[1-9]' <<< "$st"; then
-      die 1 "$WT has work that would be lost (llm-wt status); use --force to remove it anyway"
+      die 1 "$WT has work that would be lost (llm-wt status $WT): integrate it with llm-wt integrate, or use llm-wt remove --force to drop it"
     fi
   fi
   lazy_llm_cleanup_worktree "$WT" yes "$force"
+  unlock_repo
 }
 
 # ── main ─────────────────────────────────────────────────────────────────
@@ -566,6 +1030,9 @@ case "$cmd" in
   status) cmd_status "$@" ;;
   sync) cmd_sync "$@" ;;
   integrate) cmd_integrate "$@" ;;
+  list) cmd_list "$@" ;;
+  claude-hook) cmd_claude_hook "$@" ;;
+  __claude-hook-run) cmd_claude_hook_run "$@" ;;
   create) cmd_create "$@" ;;
   default-name) cmd_default_name "$@" ;;
   bootstrap) cmd_bootstrap "$@" ;;
