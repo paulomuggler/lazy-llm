@@ -58,6 +58,8 @@
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Merge an isolated pane's work back       │ the agent runs llm-wt integrate per unit (rebase, fast-forward); llm-wt status shows what's left │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Land a Claude subagent's worktree        │ the parent session runs llm-wt integrate --remove <path>; llm-wt list shows what's waiting       │
+  ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Edit a file's copy in a pane worktree    │ <leader>llmw toggles the main copy ⇄ the visible AI pane's worktree copy (editable)              │
   ├──────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
   │ Close an isolated pane                   │ K on its row / llm-remove; the last pane in a worktree asks: keep / remove / cancel              │

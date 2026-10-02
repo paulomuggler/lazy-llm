@@ -149,7 +149,18 @@ copy: config/local.yml         # a copy of its own; changes are offered back on 
 !.env.production               # exclude matches of this glob from the entries above
 ```
 
-With neither file, the default list is `.env*`, `.claude/settings.local.json` and `.agents/TODO/.work-state`, all linked. Tracked files are never shadowed. Then `<repo>/.lazy-llm/worktree-init` runs in the new worktree if it's executable, for things like `npm ci`.
+With neither file, the default list is `.env*`, `.claude/settings.local.json` and `.agents/TODO/.work-state`, all linked. Tracked files are never shadowed. Claude Code's `.worktreeinclude` is honored too: its entries are copied, after the lists above. Then `<repo>/.lazy-llm/worktree-init` runs in the new worktree if it's executable, for things like `npm ci`. It gets `LAZY_LLM_WORKTREE_KIND` (`pane` or `claude`), so it can skip slow steps for short-lived subagent worktrees.
+
+### Claude's own worktrees (subagents, `EnterWorktree`)
+
+One Claude session can also fan work out to subagents that each run in their own worktree (`Agent` with `isolation: "worktree"`, e.g. "do these three in parallel, each in an isolated worktree"). lazy-llm's Claude plugin takes over that worktree creation through the `WorktreeCreate` / `WorktreeRemove` hooks, so these are llm-wt worktrees as well:
+
+- **Where:** `.worktrees/.claude/<name>` on branch `lazy/<name>` (`<name>` is Claude's, `agent-<id>` for a subagent), started from the session's **current HEAD**. Claude's own creation would branch from `origin`'s default branch instead. The same untracked-file bootstrap and init hook as isolated panes apply. A session that's itself in an isolated pane nests: its subagents merge into the pane's branch, and the pane merges onward.
+- **The parent session lands the work.** Each subagent is told to commit and to leave merging alone. When it returns, the parent is told where the work is, and lands each worktree in turn with `llm-wt integrate --remove <path>` (rebase, fast-forward, then delete the worktree and branch). `llm-wt list` shows what's still waiting.
+- **Cleanup:** a subagent that changed nothing has its worktree removed as soon as it finishes. Nothing automatic ever force-removes a worktree holding commits or changes: leftovers stay, visible in the Worktrees tab.
+- **`EnterWorktree` / `claude -w`:** the session itself moves into such a worktree. It gets the isolated-pane guidance and integrates for itself.
+- **Everywhere:** the plugin is installed for your user, so this applies to every Claude session, in any repo, in tmux or not. If `llm-wt` is missing or fails, the hook falls back to a plain `git worktree add` from HEAD under `.claude/worktrees/`, so a subagent never fails to start.
+- **Limits:** Claude's `worktree.sparsePaths` and `worktree.symlinkDirectories` settings no longer apply, because they configure the creation this replaces. Use `worktree-files` links instead.
 
 ### AI pane border
 
@@ -326,6 +337,7 @@ Inactive AI panes are held in a hidden tmux window. `tmux swap-pane` atomically 
 |---------|-------------|
 | `llm-add [-t tool] [-i \| -w path]` | Add a new AI pane (default: claude); `-i` in its own worktree, `-w` into an existing pane worktree |
 | `llm-wt status\|sync\|integrate` | An isolated pane's worktree: what's pending, pull in integrated work, merge back (see [Isolated AI panes](#isolated-ai-panes-per-pane-worktrees)) |
+| `llm-wt integrate --remove <path>`, `llm-wt list` | Land a Claude subagent's worktree and delete it; list the ones still waiting (see [Claude's own worktrees](#claudes-own-worktrees-subagents-enterworktree)) |
 | `llm-cycle [next\|prev\|N]` | Cycle between AI panes |
 | `llm-remove [-f] [current\|N]` | Remove an AI pane (`-f` skips confirmation) |
 | `llm-status` | Status line output for tmux (e.g. `[claude●] gemini◐` — glyphs reflect AI pane state) |
