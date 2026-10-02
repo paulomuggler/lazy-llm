@@ -559,13 +559,14 @@ guidance() {
   file="$(share_dir)/$1" || return 1
   [[ -f "$file" ]] || return 1
   text=$(<"$file")
-  text=${text//"{{path}}"/$WT}
-  text=${text//"{{branch}}"/$BRANCH}
-  text=${text//"{{base}}"/$BASE}
-  text=${text//"{{primary}}"/$PRIMARY}
+  # Replacements quoted: bash 5.2 expands an unquoted & to the match.
+  text=${text//"{{path}}"/"$WT"}
+  text=${text//"{{branch}}"/"$BRANCH"}
+  text=${text//"{{base}}"/"$BASE"}
+  text=${text//"{{primary}}"/"$PRIMARY"}
   shift
   for kv in "$@"; do
-    text=${text//"{{${kv%%=*}}}"/${kv#*=}}
+    text=${text//"{{${kv%%=*}}}"/"${kv#*=}"}
   done
   printf '%s' "$text"
 }
@@ -613,36 +614,40 @@ hook_subagent_stop() {
 }
 
 hook_post_tool_use() {
-  local tool wt status st key val commits=0 dirty=0 untracked=0 name text
+  local tool wt status st key val commits=0 dirty=0 untracked=0 intro text
   tool=$(hook_field tool_name)
   wt=$(hook_field worktreePath)
-  [[ -n "$wt" ]] || return 0
   case "$tool" in
     Agent)
+      status=$(hook_field status)
+      # A background launch (status async_launched) carries the agent's id
+      # but no worktreePath, and no hook fires when it finishes: this launch
+      # is the parent's one chance to be told.
+      [[ -n "$wt" ]] || wt=$(find_agent_wt "$(hook_field agentId)" "$(hook_field cwd)") || return 0
       if [[ ! -e "$wt" ]]; then
         emit_context PostToolUse "lazy-llm: that subagent changed nothing in its worktree, so it was removed ($wt). Nothing to integrate."
         return 0
       fi
       probe_ctx "$wt" || return 0
       [[ "$KIND" == claude ]] || return 0
-      status=$(hook_field status)
-      if [[ "$status" != completed ]]; then
-        emit_context PostToolUse "lazy-llm: that subagent runs in its own worktree $WT on branch $BRANCH, which integrates into $BASE in $PRIMARY. When it finishes, run \`llm-wt list\` and land its work with \`llm-wt integrate --remove $WT\` (review it first)."
-        return 0
+      if [[ "$status" == completed ]]; then
+        st=$(cmd_status "$WT" --porcelain) || return 0
+        while IFS=$'\t' read -r key val; do
+          case "$key" in
+            unintegrated) commits=$val ;;
+            dirty) dirty=$val ;;
+            untracked) untracked=$val ;;
+          esac
+        done <<< "$st"
+        intro="that subagent worked in its own worktree \`$WT\`, branch \`$BRANCH\`, split from \`$BASE\`. It has $commits commit(s) to integrate, $dirty uncommitted change(s) and $untracked untracked file(s)."
+      else
+        intro="that subagent is running in the background in its own worktree \`$WT\`, branch \`$BRANCH\`, split from \`$BASE\`. When it finishes (if its worktree is gone by then, it changed nothing):"
       fi
-      st=$(cmd_status "$WT" --porcelain) || return 0
-      while IFS=$'\t' read -r key val; do
-        case "$key" in
-          unintegrated) commits=$val ;;
-          dirty) dirty=$val ;;
-          untracked) untracked=$val ;;
-        esac
-      done <<< "$st"
-      name=$(git -C "$WT" config "branch.$BRANCH.lazyLlmName" 2>/dev/null) || name=""
-      text=$(guidance worktree-parent.md "commits=$commits" "dirty=$dirty" "untracked=$untracked" "name=$name") || return 0
+      text=$(guidance worktree-parent.md "intro=$intro") || return 0
       emit_context PostToolUse "$text"
       ;;
     EnterWorktree)
+      [[ -n "$wt" ]] || return 0
       probe_ctx "$wt" || return 0
       text=$(guidance worktree-agent.md) || return 0
       emit_context PostToolUse "$text"

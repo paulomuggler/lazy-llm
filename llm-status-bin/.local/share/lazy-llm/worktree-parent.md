@@ -1,8 +1,6 @@
 <!-- lazy-llm:worktree-parent -->
-lazy-llm: that subagent worked in its own worktree `{{path}}`, branch
-`{{branch}}`, split from `{{base}}`. It has {{commits}} commit(s) to integrate,
-{{dirty}} uncommitted change(s) and {{untracked}} untracked file(s). Its work
-reaches `{{base}}` here (`{{primary}}`) only when you integrate it:
+lazy-llm: {{intro}} Its work reaches `{{base}}` here (`{{primary}}`) only when
+you integrate it:
 
 1. Review: `git -C {{path}} log --oneline {{base}}..` and
    `git -C {{path}} diff {{base}}...`

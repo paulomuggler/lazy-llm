@@ -253,8 +253,12 @@ assert_has "$c" "$wt" "fills the path"
 assert_has "$c" "lazy/agent-g1" "fills the branch"
 assert_has "$c" "split from \`feature\`" "fills the base"
 assert_lacks "$c" "{{" "no placeholder left"
+assert_has "$c" "land this with llm-wt integrate --remove $wt" "asks for the land line in the final message (reaches a background parent)"
 assert_empty "$(hook "$(p_sstart "$wt" other)")" "agent id mismatch: nothing"
 assert_empty "$(hook "$(p_sstart "$R" nonisolated)")" "a non-isolated subagent (main dir, no worktree for its id): nothing"
+RA="$sandbox/r9&amp"; mk_repo "$RA"
+wa=$(hook "$(p_create "$RA" agent-amp)")
+assert_has "$(ctx "$(hook "$(p_sstart "$wa" amp)")")" "You run in \`$wa\`" "a path with & is filled verbatim (bash 5.2 patsub)"
 
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
@@ -268,6 +272,7 @@ assert_equals "$(ctx_event "$out")" "PostToolUse" "hookEventName PostToolUse"
 c=$(ctx "$out")
 assert_has "$c" "<!-- lazy-llm:worktree-parent -->" "worktree-parent.md marker"
 assert_has "$c" "It has 2 commit(s) to integrate" "commit count"
+assert_has "$c" "worked in its own worktree" "completed: the finished intro"
 assert_has "$c" "1 uncommitted change(s)" "uncommitted count"
 assert_has "$c" "llm-wt integrate --remove $wt" "the land command"
 assert_lacks "$c" "{{" "no placeholder left"
@@ -275,8 +280,16 @@ gone="$sandbox/r9/.worktrees/.claude/agent-gone"
 c=$(ctx "$(hook "$(p_post_agent "$R" completed "$gone")")")
 assert_has "$c" "changed nothing" "removed worktree: the 'changed nothing' line"
 c=$(ctx "$(hook "$(p_post_agent "$R" async_launched "$wt")")")
-assert_has "$c" "When it finishes" "not completed (background): the background line"
-assert_lacks "$c" "lazy-llm:worktree-parent" "...not the full guidance"
+assert_has "$c" "running in the background" "async_launched: the background intro"
+assert_has "$c" "llm-wt integrate --remove $wt" "...with the land procedure"
+assert_lacks "$c" "commit(s) to integrate" "...and no counts (it hasn't finished)"
+# The real async launch payload (spec §2, S11): agentId, no worktreePath.
+async=$(printf '{"session_id":"sess-1","cwd":"%s","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"description":"d","prompt":"p","run_in_background":true,"isolation":"worktree"},"tool_response":{"isAsync":true,"status":"async_launched","agentId":"g1","description":"d","outputFile":"/tmp/x.output"}}' "$R")
+c=$(ctx "$(hook "$async")")
+assert_has "$c" "lazy-llm:worktree-parent" "async launch without worktreePath: found by agentId"
+assert_has "$c" "llm-wt integrate --remove $wt" "...naming its worktree"
+async_none=${async//\"g1\"/\"nosuch\"}
+assert_empty "$(hook "$async_none")" "an agentId with no worktree (not isolated): nothing"
 out=$(hook '{"cwd":"/x","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"prompt":"p"},"tool_response":{"status":"completed"}}')
 assert_empty "$out" "no worktreePath: nothing"
 

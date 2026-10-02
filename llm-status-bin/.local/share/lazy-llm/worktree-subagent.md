@@ -19,4 +19,6 @@ worktrees of their own.
 - Branch hygiene is settled: this branch exists on purpose and the parent
   integrates it. Don't ask about it.
 - Before your final message, run `llm-wt status` and make sure nothing is
-  uncommitted. Name your branch and your commits in the final message.
+  uncommitted. Name your branch and your commits in the final message, and if
+  you committed anything, end it with this line, verbatim:
+  `lazy-llm: land this with llm-wt integrate --remove {{path}}`
