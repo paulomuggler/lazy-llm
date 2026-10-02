@@ -10,7 +10,7 @@ tags: [worktree, claude-plugin, hooks, concurrency]
 spec: ../specs/claude-subagent-worktrees.md
 model: inline
 owner: homelab-zrh-dev-2409537
-commits: [e99b6d0, b86940d, aae105f, f74c8e2, dbe876e, 85b0b98]
+commits: [e99b6d0, b86940d, aae105f, f74c8e2, dbe876e, 85b0b98, 48e11dc]
 ---
 
 # Claude Code's own worktrees go through llm-wt
@@ -396,3 +396,145 @@ fail 4 assertions against the round-1 code).
 - Not taken: a commit racing between remove's status check and `branch -D`. Hooks only remove
   after the agent has stopped, or on Claude's own ExitWorktree.
 - Frontmatter `commits` now lists `dbe876e` and `85b0b98`.
+
+## Verify Report (round 3)
+
+**Date:** 2026-10-02 · verifier: independent agent (round 3) · code at `85b0b98` · sandbox `/tmp/vfy3`
+(GIT_CEILING_DIRECTORIES=/tmp, TMUX/TMUX_PANE unset, private HOME/TMUX_TMPDIR). `dbe876e`'s llm-wt extracted to
+`/tmp/vfy3/old/` for A/B. The lock was tested two ways: through real `llm-wt claude-hook` creates, and through a
+harness that sources a verbatim copy of `lock_repo`/`release_link_lock`/`unlock_repo` (sed-extracted from llm-wt)
+and checks mutual exclusion directly. Each holder writes its pid into a shared file, sleeps 1–5 ms, then reads the
+file back.
+
+### Regression run
+- `tests/test-runner.sh` 24: **177/177**; 22: 129/129; 19: 15/15; 12: 23/23; 14: 16/16 (the runner exits 1 every
+  time: the known `test-runner-exit-status` issue).
+- shellcheck 0.11.0: `llm-wt` and `worktree.sh` are clean. Scenario 24 shows only SC1091×2 and SC2034×3, the same as
+  at `dbe876e`.
+
+### Item 1: rebase in progress → FIXED (all `cmd_remove` paths)
+Matrix (`/tmp/vfy3/matrix.sh`): 13 worktree states × 4 paths (WorktreeRemove hook, `llm-wt remove`, SubagentStop,
+`integrate --remove`). Each run uses a fresh repo and an agent worktree with 2 commits.
+
+| State | `llm-wt status` | WR | remove | SubagentStop | integrate --remove |
+|---|---|---|---|---|---|
+| `rebase -i`, `break` first (HEAD = base): the round-2 repro | unintegrated 2, rebasing 1 | rc 1, kept | rc 1, kept | kept | rc 5, kept |
+| `rebase -i --force-rebase`, `break` after 1st pick | unintegrated 2, rebasing 1 | rc 1 | rc 1 | kept | rc 5 |
+| stopped on conflict, raw / resolved+staged / resolution dropped (clean tree) | rebasing 1 | rc 1 | rc 1 | kept | rc 5 |
+| `rebase --apply` (rebase-apply dir), tree reset clean | rebasing 1 | rc 1 | rc 1 | kept | rc 5 |
+| `edit` stop + a new commit on the detached HEAD | unintegrated 3 | rc 1 | rc 1 | kept | rc 5 |
+| `break`, commit, `reset --hard` to base | unintegrated 2 | rc 1 | rc 1 | kept | rc 5 |
+| base renamed mid-rebase / base deleted mid-rebase | base-missing 1, unintegrated 2 / 3 | rc 1 | rc 1 | kept | rc 5 |
+
+In every refused case, branch `lazy/agent-*` and both commits survive. `integrate --remove` whose own rebase stops on
+a conflict exits 5 and removes nothing, and a WorktreeRemove after that also refuses. With the main directory off the
+base, it exits 4 and removes nothing. Code: `cmd_status` (llm-wt ~867, ~871) counts `HEAD refs/heads/$BRANCH`, and the
+`cmd_remove` grep (~1099) includes `rebasing`.
+
+**A failed `git worktree remove` keeps the branch.** Setup: `git worktree lock` on a clean agent worktree. WR rc 1,
+`llm-wt remove` rc 1, SubagentStop (runs `cmd_remove … || warn`, `set -e` off), and `integrate --remove` after a
+successful integrate (rc 1) all printed "could not remove …; its branch … is kept". In all four, the worktree, branch
+and all 5 config keys are still there (`cmd_remove` ~1110). The `die` exits the process, so `branch -D` never runs,
+with or without `set -e`.
+
+**HEAD detached outside a rebase.** `llm-wt remove` and `integrate --remove` exit 2 ("has no branch checked out"), and
+SubagentStop keeps the worktree (`find_agent_wt` finds no branch). **WorktreeRemove does not keep it: see Failure 1.**
+
+### Item 2: portable symlink lock → PASS (no real defect; theoretical holes listed below)
+- **Round-2 race, real creates (`LAZY_LLM_WT_LOCK=link`):** dead owner (`ln -s 999999`) with 12 parallel creates,
+  30 rounds, then 20 parallel creates, 25 rounds. **0 failures in 650 creates.** Every create exited 0, stdout was its
+  exact path, it got 5 config keys and N+1 worktrees, nothing in stderr mentioned a lock or a shell error, and no lock
+  file was left after a round.
+- **Direct mutual-exclusion harness:** 20 workers × 30 lock/unlock cycles. About 1 in 15 holders `kill -9`s itself
+  while holding the lock, so dead owners keep turning up while 19 others wait. 10 rounds, about 450 dead-owner breaks:
+  **0 overlaps, 0 errors.** The only lock left behind is the last suicide's dead-pid link, which the next caller breaks.
+- **Correctness argument (comment at llm-wt ~87–93):** it holds while the `.break` mutex is really exclusive. A waiter
+  that's slow between its *outer* `readlink` and `mkdir "$brk"` is harmless, because the owner is re-read under the
+  mutex. `ln -s` can't replace an existing link, so no acquirer gets in while a dead owner's link exists. `continue`
+  after a break goes straight back to `ln -s`.
+- **Timed-out waiter:** a live owner (`sleep 300`) held the lock. The create failed after 63 s with "timed out after
+  60s waiting for …lock.l", and the owner's link was untouched (`_LOCK_DIR=""` before `die`, trap not set yet).
+- **EXIT trap only removes our own lock** (`release_link_lock` ~117 compares `readlink` with `$$`):
+  - die under the lock (a stale `config.lock` → "rolled back"): link removed.
+  - link replaced by another pid while held, then die, or a normal `unlock_repo`: the other pid's link stays.
+  - SIGTERM, SIGINT and SIGHUP while holding: link removed. SIGKILL: dead-pid link left, broken by the next waiter.
+  - a waiter TERMed while waiting: the live owner's link stays.
+  - nested lock/unlock: the lock is held until the outer unlock.
+  - `$(…)` and `( … )` subshells of the holder don't run the parent's EXIT trap, so the lock survives them.
+- **Theoretical holes (not counted; each needs a stall of more than 5 s inside a two-command window, or pid reuse):**
+  - **Breaker stalled more than 5 s holding `.break`:** the stale-breaker timeout (`brkwait > 50`, ~102) lets another
+    waiter clear `.break`, break the lock and take it. The stalled breaker then runs its pending `rm -f` and deletes
+    that waiter's live lock. Demonstrated with an injected `sleep 6` between the under-mutex readlink and the `rm`
+    (`/tmp/vfy3/slowbrk.sh`, harness copy): W acquires at +5.6 s, B's late `rm` drops W's link, X acquires at +6.5 s
+    while W still holds it → overlap. B itself then dies under `set -e` at `rmdir "$brk"` (already gone). Needs
+    SIGSTOP or more than 5 s of starvation in a microsecond window. Re-checking `kill -0` under the mutex would not
+    close it. A breaker that holds the mutex for longer than the timeout is the gap.
+  - **Pid reuse:**
+    - The dead owner's pid is recycled by an llm-wt process that acquires inside another breaker's window: that
+      breaker's equality check passes and it removes a live lock.
+    - The pid is recycled by any long-lived process: the lock looks alive, and waiters time out after 60 s (fails
+      safe; WorktreeCreate falls back).
+  - `kill -0` fails with EPERM for another user's live process, so that user's lock would be broken. Only matters
+    for multi-user repos. The mkdir lock had the same issue.
+  - A machine where some processes have `flock` in PATH and others don't (macOS with brew's flock, hooks started
+    from a GUI-launched Claude): the two schemes don't exclude each other. This is the round-1 design, not a
+    regression.
+
+### Bootstrap "exclude before create" → PASS
+- Scenario 22 (pane bootstrap) passes 129/129. Scenario 24 passes too.
+- **Full bootstrap:** 3 links (`.env`, `.claude/settings.local.json`, `.agents/TODO/.work-state`), manifest
+  unchanged, worktree status clean. info/exclude carries one marker+line per path and no duplicates (`/.env` is
+  skipped because `.gitignore` already covers it). SubagentStop removes the empty worktree.
+- **Partial bootstrap** (`worktree-files`: `.env*`, `.claude/settings.local.json`, `copy: secret.key` unreadable,
+  `.agents/TODO/.work-state`):
+  - new code: create rc 0 with a warning, two links made, `git status` clean, `git add -A --dry-run` adds nothing,
+    and SubagentStop now removes it.
+  - `dbe876e`: `?? .claude/`, `add '.claude/settings.local.json'`, and SubagentStop can't remove it. Round 2's low
+    note is resolved.
+
+### Failures
+
+1. **WorktreeRemove deletes a Claude worktree whose detached HEAD holds commits on no branch. The commits become
+   unreachable** (constraint "unintegrated work survives every automatic path"; spec §5.1/S6: Claude's
+   `ExitWorktree` always sends `discard_changes: true` for hook-made worktrees, so this hook is the only guard).
+   **Pre-existing since `e99b6d0`, not introduced by `85b0b98`. Real and deterministic, no timing involved.**
+   Repro (scenario-24 helpers, `/tmp/vfy3/detach.sh`):
+   ```
+   mk_repo d1; W=$(hook "$(p_create d1 agent-d1)")
+   git -C "$W" checkout -q --detach
+   commit_file "$W" det.txt precious; C=$(git -C "$W" rev-parse HEAD)
+   hook "$(p_remove "$W")"              # rc 0, worktree GONE
+   git -C d1 for-each-ref --contains $C # empty; the worktree's HEAD reflog went with it; only fsck finds it
+   ```
+   The plugin shim behaves the same (`LAZY_LLM_WT_BIN=llm-wt worktree.sh`: rc 0, gone, commit unreachable). So does
+   a rebase *started* from a detached HEAD (`head-name` = "detached HEAD") and stopped at a `break`: rc 0, gone, the
+   commit is lost.
+   - Cause: `probe_ctx` fails because `wt_branch` resolves no branch, so `hook_worktree_remove` (llm-wt ~652-657)
+     takes the "not one of ours" branch: plain `git worktree remove`. git refuses only a dirty or untracked tree,
+     never detached commits. The comment there, "commits survive either way", is false for a detached HEAD.
+   - `llm-wt remove` / `integrate --remove` (exit 2) and SubagentStop (kept) are safe in the same state.
+   - Expected: refuse (exit 1) when `git rev-list HEAD --not --branches` is non-empty, or when a rebase is in
+     progress, in that fallback branch too. A detached HEAD at a commit some branch contains can still be removed
+     (checked: the branch survives).
+
+VERDICT: fail (1 item)
+
+## Rework (round 3) and orchestrator acceptance
+
+**Date:** 2026-10-02_19:43
+
+Round 3 confirmed both round-2 fixes: 13 rebase states through all four removal paths; 650
+racing creates on the symlink lock, plus a kill -9 mutual-exclusion harness. It found one
+older defect: WorktreeRemove's fallback (for worktrees llm-wt can't load, a detached HEAD
+among them) dropped commits only the detached HEAD held. That had been there since `e99b6d0`.
+
+Fixed in `48e11dc`. The fallback refuses when `rev-list HEAD --not --branches` is non-empty, or
+during a rebase. Test 23b (scenario 24: 183/183); the previous code fails 4 of its assertions.
+The orchestrator re-ran the verifier's own repro script (`/tmp/vfy3/detach.sh`): D1 and D3 are
+refused and the work kept, D4 (detached at the branch tip) is removed with the branch kept, and
+D5 (SubagentStop) keeps it.
+
+Not sent for a 4th verify round: the protocol's two-round bound was reached; the defect is
+deterministic, the fix is a 4-line guard covered by a regression test, and it was checked with
+the verifier's own repro. The theoretical lock holes round 3 listed (a breaker stalled more than
+5s mid-break, pid reuse) are accepted for the macOS-only fallback lock.
