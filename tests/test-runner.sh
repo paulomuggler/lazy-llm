@@ -64,7 +64,9 @@ reap_orphans_in() {
         read -r ppid age <<<"$(ps -o ppid=,etimes= -p "$pid")" || continue
         [ "${age:-0}" -ge "$min_age" ] || continue
         [ "$ppid" = 1 ] || [ "$(ps -o comm= -p "$ppid")" = systemd ] || continue
-        kill -9 "$pid" 2>/dev/null
+        # It may have exited since pgrep listed it; that's fine, and under
+        # set -e a failed kill would abort the run (or the EXIT trap).
+        kill -9 "$pid" 2>/dev/null || true
     done
     return 0
 }
@@ -72,23 +74,34 @@ reap_orphans_in() {
 # Leftovers of runs that were killed before their cleanup could run.
 reap_orphans_in /tmp/lazy-llm-test- 600
 
+# The EXIT trap: it runs under set -e too, and a command failing in it ends
+# the script with that command's status in place of main's exit code. Hence
+# no `[ ... ] && cmd` here (a failing cmd counts) and `|| true` on anything
+# that may fail harmlessly.
 cleanup_run() {
     if [ -n "${DEBUG:-}" ]; then
         echo "Test tmux server kept (DEBUG): TMUX_TMPDIR=$TEST_TMUX_TMPDIR tmux attach"
     else
         local server_pid="" tree=""
         server_pid=$(tmux display -p '#{pid}' 2>/dev/null) || true
-        [ -n "$server_pid" ] && tree=$(descendants "$server_pid")
+        if [ -n "$server_pid" ]; then
+            tree=$(descendants "$server_pid") || true
+        fi
         tmux kill-server 2>/dev/null || true
         # The killed nvims write their session snapshot on the way out (and
         # mkdir -p would recreate the dirs): let them finish first.
         sleep 1
-        # Anything still up by now isn't exiting on its own.
-        [ -n "$tree" ] && kill -9 $tree 2>/dev/null
+        # Anything still up by now isn't exiting on its own. Usually all of
+        # them have exited, and kill fails on the missing pids.
+        if [ -n "$tree" ]; then
+            kill -9 $tree 2>/dev/null || true
+        fi
         reap_orphans_in "$LAZY_LLM_TEST_WORKROOT" 0
         rm -rf "$TEST_TMUX_TMPDIR" "$LAZY_LLM_TEST_WORKROOT"
     fi
-    [ -n "$OWN_STATE_DIR" ] && rm -rf "$OWN_STATE_DIR"
+    if [ -n "$OWN_STATE_DIR" ]; then
+        rm -rf "$OWN_STATE_DIR"
+    fi
     return 0
 }
 trap cleanup_run EXIT
@@ -139,11 +152,11 @@ run_test() {
     if [ $test_result -eq 0 ]; then
         echo ""
         print_pass "TEST PASSED: $test_name"
-        ((TESTS_PASSED++))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         echo ""
         print_fail "TEST FAILED: $test_name"
-        ((TESTS_FAILED++))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
         FAILED_TESTS+=("$test_name")
 
         # Save artifacts on failure
