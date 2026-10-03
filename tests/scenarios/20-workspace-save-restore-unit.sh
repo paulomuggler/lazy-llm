@@ -360,8 +360,10 @@ rows=$(sbx llm-dashboard --emit-saved-rows 2>/dev/null)
 T set-option -su @lazy_llm_saved_open
 rowG1=$(grep "^saved-pane:$idG:0:1	" <<< "$rows")
 rowG0=$(grep "^saved-pane:$idG:0:0	" <<< "$rows")
-assert_contains "$rowG1" $'\033\\[38;5;75m⎇ g-wt-1\033\\[0m' "Saved tab: the isolated pane's row shows ⎇ g-wt-1, in the worktree blue"
-assert_contains "$rowG1" "↳ claude   .*⎇ g-wt-1"$'\033\\[0m'" · conv conv-g1 · " "...between its name and its conversation"
+# Its name is its worktree's (g-wt-1): a bare ⎇, as in the Workspaces tree.
+assert_contains "$rowG1" $'\033\\[38;5;75m⎇\033\\[0m' "Saved tab: the isolated pane's row shows ⎇, in the worktree blue"
+assert_not_contains "$rowG1" "⎇ g-wt-1" "...bare, since the pane is already named g-wt-1"
+assert_contains "$rowG1" "↳ claude   g-wt-1 .*⎇"$'\033\\[0m'" · conv conv-g1 · " "...between its name and its conversation"
 assert_not_contains "$rowG0" "⎇" "Saved tab: the shared pane's row has no ⎇"
 assert_contains "$rowG0" "↳ claude   .*· (no conversation|conv [^ ]*) · (visible|held)$" "...and is otherwise as before"
 reopen_g() {

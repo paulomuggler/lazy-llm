@@ -934,9 +934,16 @@ _dashboard_build_saved_rows() {
       [[ "$pname" == "-" ]] && pname=""
       [[ "$conv" == "-" ]] && conv="no conversation" || conv="conv ${conv:0:8}"
       # A pane that ran in its own worktree: ⎇ and the worktree's name (its
-      # directory), styled like the Worktrees tab's tags.
+      # directory), styled like the Worktrees tab's tags; a bare ⎇ when the
+      # pane's name already is that name (as the Workspaces tree does).
       wt=""
-      [[ -n "$ago" && "$ago" != "-" ]] && wt=$'\033[38;5;75m⎇ '"${ago##*/}"$'\033[0m '
+      if [[ -n "$ago" && "$ago" != "-" ]]; then
+        if [[ "$pname" == "${ago##*/}" ]]; then
+          wt=$'\033[38;5;75m⎇\033[0m '
+        else
+          wt=$'\033[38;5;75m⎇ '"${ago##*/}"$'\033[0m '
+        fi
+      fi
       printf 'saved-pane:%s:%s:%s\t%s\t      ↳ %s %s%s· %s · %s\n' "$id" "$w" "$p" "$parent_state" \
         "$(_dashboard_pad 8 <<< "$tool")" "${pname:+$(lazy_llm_clamp_label "$pname" 24) }" "$wt" "$conv" "$where"
       continue
