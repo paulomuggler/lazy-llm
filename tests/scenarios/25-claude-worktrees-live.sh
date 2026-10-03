@@ -252,6 +252,20 @@ assert_equals "$(events "$R3" WorktreeRemove '.rc' | grep -c 0)" "0" "no success
 
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
+echo "Test 5: resuming the session (as lazy-llm restore does) reminds it of unlanded work..."
+sid3=$(events "$R3" SessionStart '.p.session_id' | head -1)
+( cd "$R3" && LIVE_LOG="$R3.log" timeout 600 claude -p --model "$MODEL" \
+    --setting-sources project,local --settings "$sandbox/settings.json" \
+    --dangerously-skip-permissions --resume "$sid3" 'Reply with the word OK.' > "$R3.resume.out" 2>&1 )
+rs=$(jq -r 'select(.ev == "SessionStart" and .p.source == "resume") | .p.session_id' "$R3.log" | head -1)
+assert_equals "$rs" "$sid3" "the resumed session keeps its id (SessionStart source resume)"
+rt=$(jq -r 'select(.ev == "SessionStart" and .p.source == "resume") | .p.transcript_path' "$R3.log" | head -1)
+assert_equals "$(injected "$rt" 'still waiting to land')" "1" "the reminder reached the resumed session (hook_additional_context)"
+assert_has "$(jq -r 'select(.ev == "SessionStart" and .p.source == "resume") | .out' "$R3.log")" "$kwt" "...naming the unlanded worktree"
+assert_dir_exists "$kwt" "...and the worktree is still there"
+
+# ──────────────────────────────────────────────────────────────────────────
+echo ""
 echo "Test 4: in a lazy-llm pane — the workspace sees the fan-out while it runs..."
 assert_equals "$(events "$R5" WorktreeCreate '.out' | grep -c .)" "2" "2 WorktreeCreate events from the in-pane session"
 assert_equals "$pane_recorded" "yes" "the worktrees recorded the pane ($PE) as their owner"
