@@ -88,7 +88,12 @@ uses (portable, no jq), and escaped with its `json_escape`. Unknown events: exit
    `HEAD` of the parent's worktree, never `origin/*`). Then git config on the branch:
    `lazyLlmKind=claude`, `lazyLlmName=<payload name>` (raw, for the agent-id match),
    `lazyLlmSession=<session_id>`, `lazyLlmPane=<$TMUX_PANE or unset>`, plus `lazyLlmBase` and
-   `lazyLlmPrimary` (step 2).
+   `lazyLlmPrimary` (step 2). With `TMUX_PANE` set, also
+   `lazyLlmPaneServer=<that server's #{start_time}>`, from
+   `tmux display-message -p -t "$TMUX_PANE" '#{start_time}'` (through the hook's inherited
+   `$TMUX`), unset when that query fails. tmux numbers panes from `%0` again in each new server,
+   so after a restart the pane id alone would name an unrelated pane (§10). All of these are set
+   in one loop: a failed write rolls the worktree back.
 6. Bootstrap (`cmd_bootstrap`), outside the lock except for its `info/exclude` writes. The init
    hook gets `LAZY_LLM_WORKTREE_KIND=claude` (pane worktrees get `pane`), so a slow
    `worktree-init` can skip work for throwaway agent worktrees.
@@ -247,13 +252,23 @@ bootstrap copies or the init hook.
 
 ## 10. Display (task 2)
 
+- **Which pane owns it**: the pane recorded in `lazyLlmPane`, only while the current tmux
+  server's `#{start_time}` equals `lazyLlmPaneServer` (§4 step 5). A mismatch means no pane
+  owns it: a server restart reuses pane ids, so a leftover worktree would otherwise look owned
+  by an unrelated new pane. A worktree without `lazyLlmPaneServer` (made before it was recorded)
+  goes by the pane id alone. All three surfaces below apply this: the Worktrees tab reads
+  `#{start_time}` in its existing single `tmux list-panes -a`, the border gets it from
+  llm-pane-border's existing `display-message` (other callers of
+  `lazy_llm_claude_worktree_owners` ask once, only when some worktree records a server), and
+  `<leader>llmw` asks once, only then.
 - **Worktrees tab**: `_lazy_llm_emit_worktree_row` owner for a claude-kind worktree is
-  `claude:<session>:<pane>` when `lazyLlmPane` is a live pane, else `claude:orphaned`. The row
+  `claude:<session>:<pane>` when `lazyLlmPane` is a live pane of this server, else
+  `claude:orphaned`; a live pane running in it (`@lazy_llm_wt`) still wins. The row
   shows `⎇` and a `claude` tag. Existing actions apply (`Enter` adopts into a pane, `K` cleans
   up through `llm-wt close`/`remove`). New: `I` runs `llm-wt integrate --remove` on the row,
   with the exit code's meaning shown on failure.
 - **Dashboard tree / AI pane border**: an AI pane that owns claude-kind worktrees (`lazyLlmPane`
-  = the pane id) shows `⎇×N` (N = how many still exist) after its existing git segment.
+  = the pane id, of this server) shows `⎇×N` (N = how many still exist) after its existing git segment.
 - **`<leader>llmw`**: when the visible AI pane owns claude-kind worktrees, the toggle offers a
   picker over {main copy, the pane's own worktree if isolated, each claude-kind worktree}. With
   none, it behaves exactly as today.
