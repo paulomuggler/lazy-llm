@@ -241,6 +241,91 @@ assert_equals "$(sbx git -C "$WA" log -1 --format=%s 2>/dev/null)" "sub" "the su
 assert_equals "$(T list-sessions -F '#S' | sort | tr '\n' ' ')" "wsC wsD " "exactly the two workspaces"
 
 echo ""
+echo "Test 7: the adopted pane's worktree mid-rebase: saved with its branch, restored with the env..."
+# What a conflicted `llm-wt integrate` leaves: HEAD detached, the branch
+# only in rebase-merge/head-name.
+for n in 1 2; do
+    echo "r$n" > "$WD/r$n.txt"; sbx git -C "$WD" add "r$n.txt"; sbx git -C "$WD" commit -qm "r$n"
+done
+sbx env GIT_SEQUENCE_EDITOR="sed -i '1i break'" git -C "$WD" rebase -i main >/dev/null 2>&1
+assert_equals "$(sbx git -C "$WD" branch --show-current)" "" "setup: HEAD is detached mid-rebase"
+assert_equals "$([[ -d "$(sbx git -C "$WD" rev-parse --path-format=absolute --git-path rebase-merge)" ]] && echo yes)" "yes" \
+    "setup: a rebase is in progress"
+sbx llm-persist save >/dev/null
+fD=$(entry wsD)
+assert_equals "$(jq -c '.windows[0].panes[1].worktree' "$fD")" "{\"path\":\"$WD\",\"branch\":\"lazy/wise-adopted-d\"}" \
+    "saved with its worktree and the branch being rebased (not null)"
+sbx llm-persist close wsD >/dev/null 2>&1
+: > "$SB/argv.log"
+sbx llm-persist restore wsD >/dev/null 2>&1
+sleep 1
+read -ra RDp <<< "$(wopt wsD @AI_PANES)"
+RQ="${RDp[1]:-}"
+assert_equals "$(T show-option -pqv -t "${RQ:-%none}" @lazy_llm_wt)" "$WD" "the restored pane gets @lazy_llm_wt back"
+assert_has "$(launch_of "$RQ")" "claude --resume conv-d1 PANE=$RQ PWD=$WD WT=1 BASE=$DBASE PRIMARY=$DPRIM" \
+    "...and resumes with the worktree env (LAZY_LLM_WORKTREE, base, primary)"
+assert_equals "$(owner_of "$WD" "$D")" "pane:wsD:$RQ" "Worktrees tab: still listed mid-rebase, owned by the pane"
+sbx git -C "$WD" rebase --abort
+assert_equals "$(sbx git -C "$WD" branch --show-current)" "lazy/wise-adopted-d" "setup: rebase aborted, back on its branch"
+
+echo ""
+echo "Test 8: a pane running in a Claude worktree with no @lazy_llm_wt (claude -w)..."
+CPP=$(wopt wsC @PROMPT_PANE_ID)
+sbx env TMUX_PANE="$CPP" llm-add -t claude >/dev/null 2>&1
+sleep 0.5
+read -ra Cp <<< "$(wopt wsC @AI_PANES)"
+CW="${Cp[1]:-}"
+assert_equals "$([[ -n "$CW" ]] && T show-option -pqv -t "$CW" @lazy_llm_wt)" "" "setup: a second wsC pane, not tagged with a worktree"
+printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"conv-c2"}' \
+    | sbx env TMUX_PANE="$CW" llm-claude-hook
+WW=$(p_create conv-c2 "$C" wise-w-c | hook_from "$CW")
+assert_equals "$WW" "$C/.worktrees/.claude/wise-w-c" "setup: its session made a Claude worktree"
+# Move the pane's foreground into a directory, as `claude -w` moves into its
+# worktree: #{pane_current_path} is the foreground process's cwd.
+pane_cd() {
+    T send-keys -t "$CW" C-c
+    T send-keys -t "$CW" "cd '$1' && clear" Enter
+    for _ in $(seq 30); do
+        [[ "$(T display -p -t "$CW" '#{pane_current_path}')" == "$1" ]] && return 0
+        sleep 0.1
+    done
+}
+# Not a Claude worktree: a plain `git worktree add` (no lazy-llm config).
+PLAIN="$SB/plain-c"
+sbx git -C "$C" worktree add -q -b plain-c "$PLAIN"
+pane_cd "$PLAIN"
+assert_equals "$(T display -p -t "$CW" '#{pane_current_path}')" "$PLAIN" "setup: the pane's cwd is a plain worktree"
+sbx llm-persist save >/dev/null
+fC=$(entry wsC)
+assert_equals "$(jq -c '.windows[0].panes[1].worktree' "$fC")" "null" "a plain worktree isn't saved as the pane's worktree"
+assert_equals "$(jq -r '.windows[0].panes[1].cwd' "$fC")" "$PLAIN" "...only its cwd, as before"
+pane_cd "$WW"
+assert_equals "$(T display -p -t "$CW" '#{pane_current_path}')" "$WW" "setup: the pane's cwd is the Claude worktree"
+sbx llm-persist save >/dev/null
+fC=$(entry wsC)
+assert_equals "$(jq -c '.windows[0].panes[1].worktree' "$fC")" "{\"path\":\"$WW\",\"branch\":\"lazy/wise-w-c\"}" \
+    "saved as running in its Claude worktree"
+assert_equals "$(jq -r '.windows[0].panes[1].conv' "$fC")" "conv-c2" "...with its conversation"
+assert_equals "$(jq -c '.windows[0].panes[0].worktree' "$fC")" "null" "the pane in the main directory: still none"
+WBASE=$(cfg "$C" lazy/wise-w-c lazyLlmBase); WPRIM=$(cfg "$C" lazy/wise-w-c lazyLlmPrimary)
+assert_equals "$WBASE $WPRIM" "main $C" "setup: its base and primary"
+sbx llm-persist close wsC >/dev/null 2>&1
+sbx git -C "$C" worktree remove --force "$WW"
+assert_equals "$([[ -d "$WW" ]] && echo yes || echo no)" "no" "setup: the worktree directory is gone (branch kept)"
+: > "$SB/argv.log"
+sbx llm-persist restore wsC >/dev/null 2>&1
+sleep 1
+read -ra RCp <<< "$(wopt wsC @AI_PANES)"
+RW="${RCp[1]:-}"
+assert_equals "$(sbx git -C "$WW" rev-parse --show-toplevel 2>/dev/null)" "$WW" "recreated at the same .worktrees/.claude/ path"
+assert_equals "$(sbx git -C "$WW" branch --show-current 2>/dev/null)" "lazy/wise-w-c" "...on its branch"
+assert_equals "$(cfg "$C" lazy/wise-w-c lazyLlmKind)" "claude" "...still a Claude worktree"
+assert_equals "$(T show-option -pqv -t "${RW:-%none}" @lazy_llm_wt)" "$WW" "the restored pane runs in it (@lazy_llm_wt)"
+assert_has "$(launch_of "$RW")" "claude --resume conv-c2 PANE=$RW PWD=$WW WT=1 BASE=$WBASE PRIMARY=$WPRIM" \
+    "...resuming with the worktree env"
+assert_equals "$(T list-sessions -F '#S' | sort | tr '\n' ' ')" "wsC wsD " "still exactly the two workspaces"
+
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -300,7 +300,7 @@ window_json() {
   read -ra pane_arr <<< "$(tmux show-option -wqv -t "$target" @AI_PANES)"
   read -ra tool_arr <<< "$(tmux show-option -wqv -t "$target" @AI_TOOLS)"
   read -ra name_arr <<< "$(tmux show-option -wqv -t "$target" @AI_PANE_NAMES)"
-  local i tool pname visible=0 kept=0
+  local i tool pname cwd visible=0 kept=0
   for i in "${!pane_arr[@]}"; do
     p="${pane_arr[$i]}"
     lazy_llm_validate_pane "$p" || continue
@@ -308,12 +308,13 @@ window_json() {
     tool="${tool_arr[$i]:-claude}"
     pname="${name_arr[$i]:-_}"
     [[ "$pname" == "_" ]] && pname=""
+    cwd=$(tmux display-message -t "$p" -p '#{pane_current_path}')
     panes_json+=("$(jq -nc \
       --arg tool "$tool" --arg name "$pname" \
       --arg conv "$(lazy_llm_tool_conv "$tool" "$p")" \
       --arg model "$(lazy_llm_pane_model_raw "$p")" \
-      --arg cwd "$(tmux display-message -t "$p" -p '#{pane_current_path}')" \
-      --argjson worktree "$(pane_worktree_json "$p")" \
+      --arg cwd "$cwd" \
+      --argjson worktree "$(pane_worktree_json "$p" "$cwd" "$dir")" \
       'def n: if . == "" then null else . end;
        {tool: $tool, name: ($name|n), conv: ($conv|n), model: ($model|n), cwd: $cwd}
        + (if $worktree == null then {} else {worktree: $worktree} end)')")
@@ -821,11 +822,30 @@ free_session_name() {
 # An isolated pane's worktree, as manifest JSON ({path, branch}), or null.
 # Base branch and main directory aren't saved: they live in the branch's git
 # config, which is also what restore needs to recreate the worktree.
+# A pane with no @lazy_llm_wt whose tool runs inside one of Claude's own
+# worktrees (`claude -w`: its cwd is a worktree of kind claude, not the
+# workspace dir) is saved as running in it too, so restore brings it back
+# like an isolated pane: recreated from its branch when gone, launched with
+# the worktree env.
+# The branch is rebase-aware: mid-rebase HEAD is detached, and a pane saved
+# with no branch would come back without the worktree env.
+# Args: $1 pane id  $2 pane cwd  $3 workspace dir
 pane_worktree_json() {
-  local wt branch
+  local cwd="${2:-}" dir="${3:-}" wt branch info
   wt=$(tmux show-option -pqv -t "$1" @lazy_llm_wt 2>/dev/null) || wt=""
-  [[ -n "$wt" ]] || { echo null; return 0; }
-  branch=$(git -C "$wt" branch --show-current 2>/dev/null) || branch=""
+  if [[ -n "$wt" ]]; then
+    branch=$(git -C "$wt" branch --show-current 2>/dev/null) || branch=""
+    [[ -n "$branch" ]] || branch=$(lazy_llm_rebase_branch "$wt")
+  else
+    # The common case (the pane in the workspace dir) costs no git call.
+    [[ -n "$cwd" && -n "$dir" && "$cwd" != "$dir" && -d "$cwd" ]] || { echo null; return 0; }
+    wt=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || wt=""
+    [[ -n "$wt" && "$wt" != "$dir" ]] || { echo null; return 0; }
+    info=$("$(llm_wt)" info "$wt" 2>/dev/null) || { echo null; return 0; }
+    branch=$(awk -F'\t' '$1 == "branch" {print $2; exit}' <<< "$info")
+    [[ -n "$branch" && "$(git -C "$wt" config "branch.$branch.lazyLlmKind" 2>/dev/null)" == claude ]] \
+      || { echo null; return 0; }
+  fi
   jq -nc --arg path "$wt" --arg branch "$branch" '{path: $path, branch: ($branch | if . == "" then null else . end)}'
 }
 
