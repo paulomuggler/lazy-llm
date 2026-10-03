@@ -488,6 +488,36 @@ lazy_llm_wt_panes() {
     | awk -F'\t' -v w="$wt" '$3 == w {print $1 "\t" $2}'
 }
 
+# The branch a rebase in worktree <path> is rewriting, or nothing when no
+# rebase is in progress there. Mid-rebase HEAD is detached, so `git worktree
+# list` and %(worktreepath) show no branch; the branch name is in the
+# worktree's own git dir, rebase-merge/head-name or rebase-apply/head-name
+# (as llm-wt's wt_branch reads it). A rebase of a detached HEAD records
+# "detached HEAD" there: no branch. No git call: the git dir is read from
+# <path>/.git (a "gitdir:" file in a linked worktree).
+# Args: $1 worktree path
+lazy_llm_rebase_branch() {
+  local wt="$1" gitdir line f b
+  if [[ -f "$wt/.git" ]]; then
+    IFS= read -r line < "$wt/.git" || [[ -n "$line" ]] || return 0
+    [[ "$line" == "gitdir: "* ]] || return 0
+    gitdir="${line#gitdir: }"
+    [[ "$gitdir" == /* ]] || gitdir="$wt/$gitdir"
+  elif [[ -d "$wt/.git" ]]; then
+    gitdir="$wt/.git"
+  else
+    return 0
+  fi
+  for f in rebase-merge rebase-apply; do
+    [[ -f "$gitdir/$f/head-name" ]] || continue
+    b=$(<"$gitdir/$f/head-name")
+    [[ "$b" == refs/heads/* ]] || continue
+    printf '%s\n' "${b#refs/heads/}"
+    return 0
+  done
+  return 0
+}
+
 # Claude's worktrees (llm-wt claude-hook) in the repo of <dir> that record
 # an owning tmux pane (lazyLlmPane) of THIS tmux server, and whose
 # directories still exist. Pane ids restart at %0 with each server, so a
@@ -498,8 +528,12 @@ lazy_llm_wt_panes() {
 # config is shared by every worktree), plus one `for-each-ref` only when some
 # Claude worktree records a pane, plus one `tmux display-message` for the
 # server's start time only when one records a server and <start_time> isn't
-# given.
+# given, plus one `rev-parse` for the common git dir only when one of those
+# branches is checked out nowhere (mid-rebase, or its worktree removed) and
+# <common> isn't given. A worktree mid-rebase counts for the branch it's
+# rebasing (lazy_llm_rebase_branch).
 # Args: $1 dir  $2 the current server's #{start_time} (optional)
+#       $3 the repo's absolute common git dir (optional)
 # Stdout: "pane_id<TAB>path" per worktree
 lazy_llm_claude_worktree_owners() {
   local dir="$1" now="${2:-}" key val b p
@@ -527,9 +561,34 @@ lazy_llm_claude_worktree_owners() {
     refs+=("refs/heads/$b")
   done
   [[ ${#refs[@]} -gt 0 ]] || return 0
+  local -A unplaced=()
   while IFS=$'\t' read -r b p; do
-    [[ -n "$p" && -d "$p" ]] && printf '%s\t%s\n' "${pane[$b]}" "$p"
+    if [[ -z "$p" ]]; then
+      unplaced[$b]=1
+    elif [[ -d "$p" ]]; then
+      printf '%s\t%s\n' "${pane[$b]}" "$p"
+    fi
   done < <(GIT_OPTIONAL_LOCKS=0 git -C "$dir" for-each-ref --format=$'%(refname:lstrip=2)\t%(worktreepath)' "${refs[@]}" 2>/dev/null)
+  # A branch checked out nowhere may be mid-rebase in a worktree (HEAD
+  # detached, the branch only in its head-name). Found from the worktrees'
+  # admin dirs (<common>/worktrees/<id>/, which hold the rebase state and a
+  # gitdir file naming <worktree>/.git): no git call per worktree, and none
+  # at all when the caller passes <common>.
+  [[ ${#unplaced[@]} -gt 0 ]] || return 0
+  local common="${3:-}" admin line
+  [[ -n "$common" ]] \
+    || common=$(GIT_OPTIONAL_LOCKS=0 git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    || return 0
+  for admin in "$common"/worktrees/*/; do
+    [[ -d "${admin}rebase-merge" || -d "${admin}rebase-apply" ]] || continue
+    line=""
+    { IFS= read -r line < "${admin}gitdir"; } 2>/dev/null || [[ -n "$line" ]] || continue
+    p="${line%/.git}"
+    # worktree.useRelativePaths: relative to the admin dir.
+    [[ "$p" == /* ]] || p=$(cd "$admin$p" 2>/dev/null && pwd -P) || continue
+    b=$(lazy_llm_rebase_branch "$p")
+    [[ -n "$b" && -n "${unplaced[$b]:-}" && -d "$p" ]] && printf '%s\t%s\n' "${pane[$b]}" "$p"
+  done
   return 0
 }
 
@@ -633,9 +692,13 @@ lazy_llm_default_branch() {
   printf 'main\n'
 }
 
-# Internal helper for lazy_llm_gather_worktrees. Skip detached-HEAD worktrees.
+# Internal helper for lazy_llm_gather_worktrees. A detached-HEAD worktree
+# (no branch given) counts as on the branch it's rebasing, if any (what a
+# conflicted `llm-wt integrate` leaves); otherwise it's skipped.
 _lazy_llm_emit_worktree_row() {
   local path="$1" branch="$2" default="$3" is_github="$4" wt_panes="${5:-}"
+  [[ -n "$path" ]] || return 0
+  [[ -n "$branch" ]] || branch=$(lazy_llm_rebase_branch "$path")
   [[ -z "$branch" ]] && return 0
 
   local dirty="" ahead="0" behind="0" session="" pr=""
@@ -701,7 +764,8 @@ _lazy_llm_emit_worktree_row() {
 # "claude:<session>:<pane_id>" (the live pane whose Claude session made it,
 # under this tmux server) or "claude:orphaned" for one of Claude's worktrees,
 # "" for a task worktree.
-# Skips detached-HEAD worktrees.
+# Skips detached-HEAD worktrees, except one mid-rebase (on the branch it's
+# rebasing).
 lazy_llm_gather_worktrees() {
   local repo default has_gh is_github
   repo=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
@@ -1320,7 +1384,7 @@ lazy_llm_git_segment() {
 
   local claude_s="" n
   if [[ -n "$pane_id" ]]; then
-    n=$(lazy_llm_claude_worktree_owners "$dir" "$server_start" | awk -F'\t' -v p="$pane_id" '$1 == p {n++} END {print n + 0}')
+    n=$(lazy_llm_claude_worktree_owners "$dir" "$server_start" "$common" | awk -F'\t' -v p="$pane_id" '$1 == p {n++} END {print n + 0}')
     [[ "$n" -gt 0 ]] && claude_s=" #[fg=${c_wt}]⎇×${n}"
   fi
 

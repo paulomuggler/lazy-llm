@@ -291,6 +291,39 @@ LUA
 assert_equals "$(cat "$sandbox/nvim-out5.txt" 2>/dev/null)" "q=$(printf '%s\n' "$WL" "$WM" | sort | paste -sd'|')" \
     "<leader>llmw candidates: the matching and the legacy one, not the stale one"
 
+# ──────────────────────────────────────────────────────────────────────────
+echo ""
+echo "Test 6: a Claude worktree mid-rebase still shows (Worktrees tab, ⎇×N)..."
+# What a conflicted `llm-wt integrate` leaves: HEAD detached, the branch
+# only in rebase-merge/head-name, so `worktree list` and %(worktreepath)
+# show no branch for it.
+WR=$(claude_wt "$R" agent-rebase "$Q")
+for n in 1 2; do
+    echo "r$n" > "$WR/r$n.txt"; git -C "$WR" add "r$n.txt"; git -C "$WR" commit -qm "r$n"
+done
+assert_equals "$(seg "$R" "$Q")" "main $sha local ⎇×3" "setup: Q owns three before the rebase"
+GIT_SEQUENCE_EDITOR="sed -i '1i break'" git -C "$WR" rebase -i main >/dev/null 2>&1
+assert_equals "$(git -C "$WR" branch --show-current)" "" "setup: HEAD is detached mid-rebase"
+assert_dir_exists "$(git -C "$WR" rev-parse --path-format=absolute --git-path rebase-merge)" "setup: a rebase is in progress"
+assert_equals "$(git -C "$R" for-each-ref --format='%(worktreepath)' refs/heads/lazy/agent-rebase)" "" \
+    "setup: %(worktreepath) is empty for its branch"
+assert_has "$(lazy_llm_claude_worktree_owners "$R")" "$Q"$'\t'"$WR" "owners: the mid-rebase worktree is still Q's"
+assert_equals "$(seg "$R" "$Q")" "main $sha local ⎇×3" "border segment: it still counts (⎇×3)"
+assert_has "$(border "$Q")" "│ main $sha local ⎇×3 " "llm-pane-border: Q's border still ends with ⎇×3"
+row=$( (cd "$R" && lazy_llm_gather_worktrees) | awk -F$'\x1f' -v p="$WR" '$1 == p {print $2 "|" $8}')
+assert_equals "$row" "lazy/agent-rebase|claude:cws:$Q" "Worktrees tab: its row is there, on its branch, owned by Q"
+# Cost: given the common dir (as the segment passes it), the rebase lookup
+# reads files only: the same 4 git calls as with no rebase.
+: > "$sandbox/gitcalls"; PATH="$sandbox/gitshim:$PATH" lazy_llm_git_segment "$R" T D "$Q" >/dev/null
+assert_equals "$(grep -c '' "$sandbox/gitcalls")" "4" "segment mid-rebase: still 4 git calls (none per worktree)"
+# A plain detached HEAD (no rebase) stays skipped, as before.
+git -C "$WR" rebase --abort
+git -C "$WR" checkout -q --detach
+assert_equals "$( (cd "$R" && lazy_llm_gather_worktrees) | awk -F$'\x1f' -v p="$WR" '$1 == p' | grep -c '')" "0" \
+    "a plain detached HEAD: no Worktrees tab row"
+assert_equals "$(seg "$R" "$Q")" "main $sha local ⎇×2" "...and it doesn't count in ⎇×N"
+git -C "$WR" checkout -q lazy/agent-rebase
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"
