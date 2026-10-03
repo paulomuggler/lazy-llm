@@ -482,7 +482,9 @@ claude_create() {
   # %0 again. The server's start time says which server the id belongs to.
   # Asked through the hook's inherited $TMUX; not recorded when that fails.
   local server=""
-  if [[ -n "${TMUX_PANE:-}" ]]; then
+  # Only through the hook's own $TMUX: without it, tmux would ask whatever
+  # server the default socket reaches, which needn't be the pane's.
+  if [[ -n "${TMUX_PANE:-}" && -n "${TMUX:-}" ]]; then
     server=$(tmux display-message -p -t "$TMUX_PANE" '#{start_time}' 2>/dev/null) || server=""
   fi
 

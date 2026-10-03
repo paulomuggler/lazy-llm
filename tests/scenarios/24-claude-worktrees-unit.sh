@@ -115,8 +115,14 @@ assert_equals "$(cfg "$R" $b lazyLlmPaneServer)" "" "no TMUX_PANE: no server sta
 tmux -f /dev/null new-session -d -s t24 "exec sleep 300"
 tp=$(tmux display -t t24 -p '#{pane_id}')
 started=$(tmux display -t t24 -p '#{start_time}')
-printf '%s' "$(p_create "$R" agent-p2)" | TMUX_PANE="$tp" "$LLMWT" claude-hook >/dev/null 2>&1
+# As in a real pane: tmux sets both TMUX (socket,pid,session) and TMUX_PANE.
+tenv=$(tmux display -t t24 -p '#{socket_path},#{pid},0')
+printf '%s' "$(p_create "$R" agent-p2)" | TMUX="$tenv" TMUX_PANE="$tp" "$LLMWT" claude-hook >/dev/null 2>&1
+# TMUX_PANE without TMUX (not a real pane): the server isn't asked, even
+# though the default socket would reach one here.
+printf '%s' "$(p_create "$R" agent-p3)" | TMUX_PANE="$tp" "$LLMWT" claude-hook >/dev/null 2>&1
 env -u TMUX -u TMUX_PANE tmux kill-server 2>/dev/null
+assert_equals "$(cfg "$R" lazy/agent-p3 lazyLlmPaneServer)" "" "TMUX_PANE without TMUX: no server asked, none recorded"
 assert_equals "$(cfg "$R" lazy/agent-p2 lazyLlmPane)" "$tp" "with a server: the pane recorded"
 assert_equals "$([[ "$started" =~ ^[0-9]+$ ]] && echo number)" "number" "setup: the sandbox server reported a start time"
 assert_equals "$(cfg "$R" lazy/agent-p2 lazyLlmPaneServer)" "$started" "...and the server's #{start_time} as lazyLlmPaneServer"
