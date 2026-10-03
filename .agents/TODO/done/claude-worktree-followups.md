@@ -8,7 +8,7 @@ updated: 2026-10-03_20:17
 depends-on: [claude-subagent-worktrees, claude-subagent-worktrees-ui]
 tags: [worktree, claude-plugin, dashboard, tests]
 model: inline
-commits: [414f605, 349b031, d967855, d13b13c, 3554b9c, 5137aaa, 7f28302, 2d825a1, 28bc04b, b7b8b1b, 5141401, 31ee1a4, 232931f, 17d67ee, 132b211, 85b8d9c, 452a38c, e0f4631, 2448d48, 3b9af01, 4441892, 715f74e, 65db253]
+commits: [414f605, 349b031, d967855, d13b13c, 3554b9c, 5137aaa, 7f28302, 2d825a1, 28bc04b, b7b8b1b, 5141401, 31ee1a4, 232931f, 17d67ee, 132b211, 85b8d9c, 452a38c, e0f4631, 2448d48, 3b9af01, 4441892, 715f74e, 65db253, a1c23a9, b9a2ff2]
 ---
 
 # Follow-up pass: Claude's subagent worktrees
@@ -440,3 +440,165 @@ All three failures and most of the gaps from "Verify Report (persistence)":
 - **Not done:** the Saved tab showing a pane's worktree (cosmetic); a repo path containing a
   tab (unsupported).
 - Scenario 24: 231/231 (the pre-rework llm-wt fails 16). Scenarios 26: 67/67, 28: 69/69.
+
+## Verify Report (persistence round 2)
+
+**Date:** 2026-10-03 · verifier, fresh context · commits `e0f4631` `4441892` `715f74e` `65db253` `2448d48` `3b9af01`
+
+All probes ran under `/tmp/lzv.*`. In every probe `TMUX`/`TMUX_PANE` were unset, and each had a private `TMUX_TMPDIR`, a sandbox `HOME`
+and `XDG_STATE_HOME`, `GIT_CEILING_DIRECTORIES=/tmp`, and fake `claude`/`nvim`. The helpers in `h.sh` mirror scenario 28's
+(`sbx`, `hook_from`, `p_create`, `p_sess`, `border`, `cfg`, plus `reg <sid>` to cat a registry). I didn't run scenario 25.
+Afterwards the user's `~/.local/state/lazy-llm/claude-sessions` still doesn't exist, and `git status` is clean.
+
+### The 3 original failures: fixed
+- [x] **F1 (stealing from a live pane):** repro used the full flow: `lazy-llm -s wsC`, `llm-persist save`, then `restore
+  --snapshot`, which gives "as wsC-2 (a copy: wsC is running)". The copy's pane `%3` was launched with `claude --resume S1` and
+  then sent SessionStart(resume). Owner stays `%0`. `border(%0)` keeps ⎇×1 and the copy's border shows none. The copy still
+  gets the reminder. After `kill-session wsC-2`, a compact in the original still leaves it as owner.
+- [x] **F2 (mid-rebase):** a conflicted `git rebase feature` gives `lazy/agent-x []`, then `lazyLlmPane=%99`. A resume from
+  P3 re-stamps the worktree to P3. The JSON is valid. The reminder names the worktree with "1 commit(s) beyond `feature`, 1
+  uncommitted, 0 untracked; a rebase is in progress there". `llm-wt list` lists it, `border(P3)` shows ⎇×1 (the pane's cwd
+  is the repo), and the Worktrees tab's owner is `claude:a:%1`.
+- [x] **F3 (submodule):** used a real `git submodule add`. WorktreeCreate ran with cwd = the submodule and
+  `CLAUDE_PROJECT_DIR=$SUPER`, and the registry lists the worktree. Then the server was killed and a new one started.
+  SessionStart(resume) with cwd = `$SUPER` re-stamped the worktree to the new server (1791053380 → 1791053381) and named it
+  in the reminder. The JSON is valid.
+
+### Other checks that passed
+- [x] **Suite** (`tests/test-runner.sh 14 20 22 24 26 28`, sandbox HOME/XDG_STATE_HOME): runner exit 0. Results: 14 76/76,
+  20 117/117, 22 129/129, 24 231/231, 26 67/67, 28 69/69.
+- [x] **Claim: "the pre-rework llm-wt fails 16".** I ran scenario 24 in a `git archive HEAD` copy with
+  `e0f4631^:llm-wt` and got exactly 16 ✗ (Tests 11b and 11c).
+- [x] **Runner (`2448d48`):** `test-runner.sh 24 nomatchzz` exits 1 and runs nothing.
+- [x] **shellcheck:** `llm-wt` and `llm-persist` have 0 findings. `lazy-llm-lib.sh` has 7 and `test-runner.sh` has 10,
+  the same as before these commits.
+- [x] **Concurrent registry writes:** 24 parallel WorktreeCreates for one session gave 24 worktrees and 24 unique,
+  well-formed registry lines. In 15 rounds of six `/clear`s (prune) racing a WorktreeCreate for a new session, no
+  registry was lost.
+- [x] **Re-owning rule:** a live owner on the same server is kept (F1). An owner whose pane was closed is re-owned (Test
+  11c). A different server is re-owned (F3). An empty server (tmux can't answer) means no write. Config is written only
+  when the pane or server changes.
+- [x] **`worktrees_by_branch`:**
+  - Bare repo (`clone --bare` plus a linked main worktree): `list`, the resume lookup without a registry (cwd = the main
+    worktree or the bare dir), and mid-rebase all work. The `bare` entry is skipped.
+  - Submodule: the first entry is `.git/modules/…` on `main`, which is not of kind claude, so it's harmless.
+  - Rebasing a detached HEAD gives "detached HEAD" as the branch, and the config lookup rejects it.
+- [x] **`/clear` hand-off:**
+  - The new session's registry gets the pane's worktree.
+  - A `/clear` in another pane, or outside tmux, inherits nothing.
+  - After a server restart, resuming the post-`/clear` id re-owns the worktree and reminds the session.
+  - `lazyLlmSession` stays the old id.
+- [x] **JSON validity:** repo paths containing `"`, `\`, spaces or non-ASCII characters gave valid JSON. A path with a
+  control character, or a tab, gives no output (WorktreeCreate itself can't make one there; both were already known).
+- [x] **Border cost:** I counted calls with a `git` wrapper. Both normal and mid-rebase make 4 git calls
+  (rev-parse, status, config, for-each-ref), and so does a branch whose worktree was removed. The claim holds.
+- [x] **`pane_worktree_json`'s claude -w detection:** I moved the AI pane's cwd with `respawn-pane -c` and saved each time.
+  - Saved with `worktree: null`: the workspace dir, a subdir, a submodule, a pane worktree without `@lazy_llm_wt`, and a
+    symlinked path.
+  - Saved with `{path, branch}`: a `claude -w` worktree, including mid-rebase.
+  - An isolated pane mid-rebase is saved with branch `lazy/pw` (this was G3).
+- [x] **Live Test 6 (`3b9af01`), judged from the code:** it uses the runner's XDG_STATE_HOME, so its registry is the
+  sandbox's. Its assertion is about the registry path: the cwd and the project are both the superproject, so the repo
+  scan can't find the worktree.
+
+### Failures (real defects)
+
+**D1. A stale registry entry claims another session's worktree.** A registry path that is now a worktree of kind claude
+skips the session check (`session_worktrees`, `[[ "$sess" == "$sid" || "$listed" == *" $path "* ]]`). That applies to any
+entry, not only one inherited at `/clear`. Entries are never removed while the registry has another live path, or until
+a `/clear`. A path comes back whenever a name is reused after landing: `claude_create` only adds `-2` while the old branch
+or directory exists. Repro:
+```
+WB=$(p_create sess-B "$R" fix-login | hook_from "$PB"); commit in WB; llm-wt integrate --remove "$WB"   # branch gone; reg sess-B still lists the path
+WC=$(p_create sess-C "$R" fix-login | hook_from "$PC")                                       # same path, lazyLlmSession=sess-C
+p_sess sess-B "$R" compact | hook_from "$PB"
+#  -> "this session created the worktree `…/fix-login` with EnterWorktree … this applies:" plus the full worktree-agent.md
+T kill-pane -t "$PC"; p_sess sess-B "$R" resume | hook_from "$PX"
+#  -> lazyLlmPane=%PX (re-owned by B); C resuming later can't take it back while PX is alive
+```
+- Expected: the registry exemption applies only to an entry that was handed over, for the session that made it. For
+  example, store `path<TAB>maker-session` and require `lazyLlmSession == maker`.
+- With an `agent-*` name, the same bug would list C's work as B's "not landed" and offer B `llm-wt remove --force`.
+  Subagent names are random, so that case is unlikely. A user-chosen `claude -w <name>` or EnterWorktree name is a
+  realistic reuse.
+
+**D2. The Lua picker fallback misses a mid-rebase worktree with `worktree.useRelativePaths=true`.** `rebase_branch()` in
+`lazy_llm_worktree.lua` opens `gitdir .. "/rebase-merge/head-name"` as written. With relative paths, the `.git` file holds
+`gitdir: ../../../.git/worktrees/agent-x`, which resolves against nvim's cwd, not the worktree. The bash side handles this
+case (`lazy_llm_rebase_branch` uses `$wt/$gitdir`, and the owners scan uses `cd "$admin$p"`).
+Repro: `git -C "$R" config worktree.useRelativePaths true`, create an agent worktree via the hook, start a conflicting
+rebase in it, then run `M.claude_worktrees(R, P)` headless from a cwd other than the worktree.
+- Observed: `0` worktrees. The border shows ⎇×1, the Worktrees tab shows `claude:a:%0`, and `llm-wt list` lists it.
+- Control: after `useRelativePaths false` plus `worktree repair`, the picker returns 1.
+
+**D3. Each `/clear` costs more than the last while worktrees stay unlanded.** Each `/clear` copies every live worktree the
+pane owns into a new registry. `inherit_pane_worktrees` then walks every live path of every registry (wt_branch plus two
+config reads each), and none of those registries can be pruned while one path lives.
+Measured with 5 unlanded agent worktrees in one pane, SessionStart(clear) took:
+
+| `/clear` # | Registries | Lines | Time |
+|---|---|---|---|
+| 1 | 2 | 10 | 250 ms |
+| 10 | 11 | 55 | 541 ms |
+| 20 | 21 | 105 | 863 ms |
+| 40 | 41 | 205 | 1399 ms |
+
+By comparison, a compact takes 208 ms and an unrelated startup 37 ms. There's no upper bound. Repro: `a3.sh` (40 ×
+`p_sess sess-$k "$R" clear | hook_from "$P"`).
+
+**D4. Claim audit: a follow-up was not filed.** "Not done: the Saved tab showing a pane's worktree (cosmetic)" names no task
+slug, and there is none in `backlog/` or INDEX.md (this is G7 from the previous report).
+
+### Theoretical (not counted)
+- **T1.** An owner with no recorded `lazyLlmPaneServer` is taken even while its pane is alive on this server. That covers
+  worktrees made before item 4, or when tmux didn't answer at creation. The display side honors such ownership (empty
+  server = trust the pane). Repro: unset `lazyLlmPaneServer`, owner `%0` alive, resume from `%1` → owner `%1`. A rule like
+  `[[ -z $osrv || $osrv == $server ]] && pane_alive` would keep it.
+- **T2.** Pruning deletes a registry it can't read (`chmod 000` → deleted, observed). It also deletes one whose worktrees are
+  only temporarily missing (an unmounted volume, a moved repo).
+- **T3.** Two races, neither reproduced in 15 stress rounds:
+  - `registry_add`'s open-then-write leaves a window where a concurrent prune sees an empty file and unlinks it.
+  - A registry removed between the `-f` test and `done < "$f"` would fail the redirection under `set -e`. SessionStart would
+    still return 0, but with no reminder.
+- **T4.** `listed`/`seen` test membership against a space-joined string. That misfires only for paths containing a
+  `" /…"` sequence.
+- **T5.** Server identity is `#{start_time}` (seconds). Two concurrent servers (`-L` sockets) started in the same second
+  compare equal. This is item 4's design.
+- **T6.** The claude -w detection also matches an AI pane whose cwd is a subagent `agent-*` worktree (same kind), and
+  restore then tags that pane `@lazy_llm_wt`. Also, a `claude -w` pane whose worktree and branch were landed now comes back
+  as a fresh conversation (the conv is dropped, "comes back shared"). Before, it got a `claude --resume` attempt from the
+  workspace dir. That matches the isolated-pane policy, but it's a behaviour change.
+- **Nits:**
+  - The reminder's header counts worktrees that `probe_ctx` then skips (no base, from a detached parent): "1 subagent
+    worktree(s)" with no line under it.
+  - Mid-rebase, the commit count double-counts replayed commits (3 instead of 2; `cmd_status`, which predates these
+    commits; `llm-wt list` shows the same).
+  - Registries are pruned only at a `/clear`.
+  - Every compact or resume runs a full `cmd_status` per agent worktree, including `tree_hash` of copied directories.
+
+VERDICT: fail (4 items)
+
+## Rework (persistence round 2) and close
+
+**Date:** 2026-10-03_22:26
+
+All four round-2 failures fixed (`a1c23a9`); each new test fails on the previous code, checked in a
+throwaway worktree:
+- D1, a stale registry entry claimed another session's worktree: entries name the worktree's
+  session. Test: the path is reused by another session.
+- D2, the picker with relative gitdirs: fixed, scenario 26 (the old Lua fails exactly that check).
+- D3, `/clear` cost grew with each clear: a per-pane index. The relative test went 317→1291 ms on
+  the old code and 390→389 ms on the new.
+- D4, the unfiled follow-up: `claude-worktrees-polish` (backlog) gathers it with the theoretical
+  items.
+- Also: a legacy owner (no server recorded) isn't stolen from; unreadable registries are never
+  deleted; dead registries are GC'd past 50.
+- Not sent for a 3rd verify round (the two-round bound): each fix has a test that fails on the old
+  code.
+
+**Incident during this round (2026-10-03 21:07:37):** the user's whole tmux server exited while
+a scenario-24 run was going, with the live `~/.local/bin/llm-wt` swapped to the previous version
+for an old-code check. The swap was restored once the session came back. The root cause isn't
+found yet (investigation follows; see the session notes). Since then every suite run goes through
+a decoy tmux pane, and old-code checks use a throwaway `git worktree`, never a live swap.
+Full suite in the decoy: 28/28, exit 0.

@@ -203,6 +203,27 @@ itself, like an isolated pane, so it gets the existing `worktree-agent.md`:
   (remove `worktree_context` there), so the guidance comes from git config, not env, and works
   outside tmux too. Isolated panes keep getting it, exactly once.
 
+### 7.4 Persistence (`lazy-llm restore`, `claude --resume`, `/clear`)
+
+Established live (2.1.288): `claude --resume` keeps the session id. During an EnterWorktree
+session the pane's cwd stays the main directory, and resuming from there re-enters the worktree.
+A resumed session's SessionStart `cwd` is its launch directory, which for a session that worked
+in a submodule is the superproject. So SessionStart (`hook_session_start`):
+- finds the session's worktrees through a **session registry**
+  (`$XDG_STATE_HOME/lazy-llm/claude-sessions/<id>`, entries `path<TAB>session`, counted only
+  while the worktree there records that session), plus a repo scan of cwd and the project dir;
+- **re-owns** them for the current pane when the recorded owner pane is gone, or belongs to
+  another tmux server. Never from a live pane: `restore --snapshot` and `claude -c` elsewhere
+  steal nothing;
+- after `/clear`, hands the pane's worktrees to the new conversation, read from a per-pane
+  index (`claude-panes/<server>-<pane>`);
+- re-injects the rules for a worktree the session entered, and lists subagent worktrees not
+  landed yet, with commits, uncommitted, untracked and rebase state.
+
+llm-persist saves a pane's worktree branch even mid-rebase, and saves a `claude -w` pane (cwd in
+a Claude worktree) with its worktree, so restore recreates it. Covered by scenario 24 (11b, 11c),
+scenario 28 and live Tests 5 and 6.
+
 ## 8. Plugin wiring, fallback, deploy
 
 `claude-plugin/hooks/hooks.json` gains (alongside the existing entries):
