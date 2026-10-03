@@ -730,6 +730,33 @@ assert_empty "$out" "a finished, non-isolated (foreground) launch: nothing"
 [[ $(( (t1 - t0) / 1000000 )) -lt 800 ]] && r=instant || r="took $(( (t1 - t0) / 1000000 ))ms"
 assert_equals "$r" "instant" "...and no wait for a worktree"
 echo ""
+echo "Test 23e: registry writes wait for the registry lock (a prune can't drop an append)..."
+R="$sandbox/r23e"; mk_repo "$R"
+XR="$sandbox/xs23e"; mkdir -p "$XR/lazy-llm"
+# flock mode: hold the lock 2s from outside; a create's registry append waits.
+( flock 9; sleep 2 ) 9>>"$XR/lazy-llm/registry.lock" &
+holder=$!
+sleep 0.3
+t0=$(date +%s%N)
+w=$(printf '%s' "$(p_create "$R" agent-l23e sess-L)" | XDG_STATE_HOME="$XR" "$LLMWT" claude-hook 2>/dev/null)
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+wait "$holder"
+assert_dir_exists "$w" "the create still succeeds under a held registry lock"
+[[ $ms -ge 1500 ]] && r=waited || r="didn't wait (${ms}ms)"
+assert_equals "$r" "waited" "...after waiting for it (${ms}ms)"
+assert_has "$(cat "$XR/lazy-llm/claude-sessions/sess-L")" "$w" "...and its registry entry is there"
+# Portable (symlink) mode: a lock held by a live process.
+sleep 30 & live=$!
+ln -s "$live" "$XR/lazy-llm/registry.lock.l"
+( sleep 2; rm -f "$XR/lazy-llm/registry.lock.l" ) &
+t0=$(date +%s%N)
+w2=$(printf '%s' "$(p_create "$R" agent-l23e2 sess-L)" | env LAZY_LLM_WT_LOCK=link XDG_STATE_HOME="$XR" "$LLMWT" claude-hook 2>/dev/null)
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+kill "$live" 2>/dev/null; wait 2>/dev/null
+[[ $ms -ge 1500 ]] && r=waited || r="didn't wait (${ms}ms)"
+assert_equals "$r" "waited" "symlink lock: the append waits too (${ms}ms)"
+assert_has "$(cat "$XR/lazy-llm/claude-sessions/sess-L")" "$w2" "...and records its entry"
+echo ""
 echo "Test 24: the portable (symlink) lock..."
 R="$sandbox/r24"; mk_repo "$R"
 common=$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)
