@@ -2,13 +2,13 @@
 slug: claude-worktree-followups
 title: Follow-up pass after Claude's subagent worktrees — runner exit status, project-scope plugin update, Saved tab "no", pane-id reuse, cleanup sweep, full e2e
 priority: P1
-status: done
+status: in-progress
 created: 2026-10-03_03:49
-updated: 2026-10-03_13:16
+updated: 2026-10-03_20:17
 depends-on: [claude-subagent-worktrees, claude-subagent-worktrees-ui]
 tags: [worktree, claude-plugin, dashboard, tests]
 model: inline
-commits: [414f605, 349b031, d967855, d13b13c, 3554b9c, 5137aaa, 7f28302, 2d825a1, 28bc04b, b7b8b1b, 5141401, 31ee1a4]
+commits: [414f605, 349b031, d967855, d13b13c, 3554b9c, 5137aaa, 7f28302, 2d825a1, 28bc04b, b7b8b1b, 5141401, 31ee1a4, 232931f, 17d67ee, 132b211, 85b8d9c, 452a38c, e0f4631, 2448d48, 3b9af01, 4441892, 715f74e, 65db253]
 ---
 
 # Follow-up pass: Claude's subagent worktrees
@@ -217,3 +217,226 @@ fails on the old code. The opt-in log was then switched off (file removed): `tou
   pane (four probes, four isolated fix agents landed with `llm-wt integrate --remove`) and in
   scenario 25 Test 4. The two REVIEW-QUEUE items from the earlier tasks remain for the user's
   own look.
+
+## Reopened: persistence (2026-10-03, user: "is it all working properly with lazy-llm's session persistence features?")
+
+Spike facts (live, headless `claude -p` in a sandbox, Claude Code 2.1.288):
+- P1. `claude --resume <id>` keeps the session id; SessionStart says `source: "resume"`.
+- P2. During an EnterWorktree session the **pane's cwd stays the main directory** (Claude tracks
+  the worktree internally), so `llm-persist save` records the right cwd. `claude --resume`
+  from the main directory **re-enters the worktree itself** (its Bash `pwd` was the worktree).
+- P3. The resumed session's SessionStart `cwd` is the main directory, so the worktree rules
+  weren't re-injected on resume or compaction.
+
+Gaps and fixes:
+- After `lazy-llm restore` (a new server, new pane ids), a session's subagent worktrees showed
+  as orphaned, and the resumed session wasn't reminded of them. An EnterWorktree session lost
+  its rules at the next resume or compact. Fixed in `232931f`: SessionStart finds the session's
+  worktrees by `lazyLlmSession`, re-stamps `lazyLlmPane`/`lazyLlmPaneServer` (so the border,
+  Worktrees tab and picker re-attach), re-injects worktree-agent.md for an entered worktree, and
+  lists subagent worktrees still waiting to land. Scenario 24 Test 11b (the old code fails 8).
+- Scenario 28 (`85b8d9c`, written by an isolated subagent, dogfooding again): a real
+  `llm-persist save` → server killed → `lazy-llm restore` with a mock tool. Covers re-owning on
+  resume (the old llm-wt fails exactly the 9 re-owning checks), a pane adopted into a Claude
+  worktree restored into it (with `LAZY_LLM_WORKTREE=1`, and recreated from its branch when
+  deleted), and nothing leaking. 45/45. No product bug found.
+- Live Test 5 (`17d67ee`, `132b211`): resumes the real session that left an unlanded subagent
+  commit, and checks the reminder reached the model as SessionStart `hook_additional_context`.
+  A real `lazy-llm restore` with live Claude wasn't automated: restored panes run the user's
+  installed status hooks, whose per-pane caches (under the real HOME, keyed by pane id) would
+  collide with the user's own `%0` (backlog `per-pane-cache-cross-server`). The deterministic
+  scenario 28 plus live Test 5 cover the same path.
+- Runner: several patterns now run their union (`452a38c`); before, only the last ran silently.
+
+## Verify Report (persistence)
+
+**Date:** 2026-10-03 · verifier, fresh context · commits `232931f` `85b8d9c` `17d67ee` `132b211` `452a38c`
+
+All probes ran under `/tmp/lzv.*` with `TMUX`/`TMUX_PANE` unset, a private `TMUX_TMPDIR`, a sandbox
+`HOME`, and `GIT_CEILING_DIRECTORIES=/tmp`. Real `claude` was never run.
+
+### Checks that passed
+- [x] **Suite:** `tests/test-runner.sh 20 22 24 26 28` (sandbox HOME) ran all 5 scenarios, each
+  once: 20 117/117, 22 129/129, 24 212/212, 26 55/55, 28 45/45, runner exit 0. This also shows
+  that `452a38c` runs the union of several patterns.
+- [x] **Claims that the tests fail on the old code:** I ran a `git archive HEAD` copy with
+  `232931f^`'s llm-wt. Scenario 24 fails exactly the 8 Test 11b checks, and scenario 28 fails
+  exactly the 9 re-owning checks (border, owner, re-stamp, additionalContext). Both claims hold.
+- [x] **shellcheck:** `llm-wt` is clean. The test files only have the warnings every scenario
+  already has (TEST_NAME, SC1091).
+- [x] **SessionStart exit status and JSON:** `cmd_claude_hook` maps SessionStart to rc 0 whatever
+  the child does. This includes `die` from `lock_repo` (`llm-wt:881-887`). Nothing reaches stdout
+  except the final `emit_context`. A non-git cwd, a missing session_id, a truncated payload and an
+  empty payload all gave rc 0 with no output. Repo paths containing `"` and `\` gave valid JSON.
+- [x] **Lock:** each re-stamp sits in `lock_repo "$path"`/`unlock_repo`, keyed by that worktree's
+  common dir, so a worktree in another repo locks its own repo. With the lock held for 4 s by
+  another process, SessionStart waited 3.7 s, then returned valid JSON with rc 0.
+- [x] **Removed worktree:** if the directory was deleted with `rm -rf` (not pruned), or removed
+  with `git worktree remove`, it is skipped silently (`-d "$path"`, empty `%(worktreepath)`).
+- [x] **Cost:** on a SessionStart(startup) with nothing of this session, the new code adds two
+  `git config --get-regexp` calls. The repo is scanned twice when CLAUDE_PROJECT_DIR is cwd's repo.
+  Measured over 20 runs: non-git cwd 19→23 ms, and a repo with 400 lazyLlmSession entries
+  27→40 ms. Acceptable.
+- [x] **No bad matches:** sessions are matched on exact equality, and the kind must be `claude`.
+  `for-each-ref refs/heads/lazy/<b>` prefix matching can't catch a second branch, because git
+  forbids `lazy/x` and `lazy/x/y` existing together. Session ids colliding across repos isn't a
+  realistic risk (UUIDs, and only two repos are scanned).
+- [x] **Scenario 28's sandbox:** it uses its own server (`TMUX_TMPDIR=$SB`, `env -u TMUX`), its
+  own HOME (bins symlinked as stow lays them out), its own `LAZY_LLM_STATE_DIR`, and a fake claude.
+  It does a real `llm-persist save` → `kill-server` → `llm-persist restore`. The restored pane
+  reuses `%0` with a different start time, which is the case that matters. One limit: the
+  SessionStart(resume) is a synthesized payload, not one fired by a resumed claude. That rests on
+  spike fact P1 and on live Test 5 (the section says so).
+- [x] **Live Test 5 assertion (judged from the code):** the assertion is sound. It counts only
+  transcript attachments with `type == hook_additional_context` and `hookEvent == SessionStart`.
+  I checked real transcripts on this machine: the field is `.attachment.hookEvent`, and SessionStart
+  records carry it. The text it counts is emitted only by `hook_session_start`. The startup
+  SessionStart in `$R3` injects nothing, so a count of 1 means it came from the resume. It can't
+  pass wrongly. It could fail wrongly in two ways:
+  - if Claude doesn't write SessionStart(resume) context as a `hook_additional_context`
+    attachment;
+  - through `assert_dir_exists "$kwt"`. The reminder says "Land each with `llm-wt integrate
+    --remove`". A `--dangerously-skip-permissions` model that obeys it would remove the worktree.
+    So that check depends on the model's behaviour, which the file header says the scenario never
+    does.
+
+### Failures
+
+**F1. Re-stamping takes ownership away from a live pane.** It happens whenever a second pane
+resumes the same conversation, and lazy-llm does exactly that itself: `restore --snapshot` of a
+running workspace makes a copy that resumes the same conversation ids (`restore_snapshot_entry`
+leaves `conv` alone). `hook_session_start` re-stamps without checking that the current owner is
+dead. `llm-claude-hook` has a guard against nested claude runs (`spawned_by_nested_claude`);
+llm-wt has none. So `claude -p -c` or `claude --resume <id>` run from another pane also takes
+ownership. `232931f` introduced this; before it, ownership was fixed when the worktree was made.
+Repro, using the scenario-28 sandbox helpers (`sbx`, `wopt`, `hook_from`, `p_create`, `p_resume`,
+`border`):
+```
+sbx lazy-llm -s wsC -d "$C" -t claude; P=$(wopt wsC @AI_PANE_ID)
+printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"S1"}' | sbx env TMUX_PANE="$P" llm-claude-hook
+p_create S1 "$C" agent-c1 | hook_from "$P"                     # border(P): ⎇×1
+sbx llm-persist save                                           # manual save → snapshot
+sbx llm-persist restore --snapshot "<ts>/<id>"                 # "as wsC-2 (a copy: wsC is running)"
+P2=$(wopt wsC-2 @AI_PANE_ID)                                    # launched: claude --resume S1
+p_resume S1 "$C" | hook_from "$P2"
+```
+- Observed: `lazyLlmPane=%3` (the copy). The original's border has no ⎇×1. After `kill-session
+  -t wsC-2` the owner is still `%3`, so the live original stays without its ⎇ until its next
+  compact or resume.
+- Expected: a pane that is still alive keeps its worktrees. Re-stamp only when the recorded
+  pane/server is dead, or when the owner is already this pane.
+
+**F2. A Claude worktree in the middle of a rebase is neither re-owned nor mentioned in the
+reminder.** `llm-wt integrate` leaves a worktree in this state on a conflict (exit 5).
+`session_worktrees` (`llm-wt:541-563`) gets the path from `%(worktreepath)`, which is empty while
+HEAD is detached for the rebase. llm-wt already has `wt_branch()`, written for exactly this case.
+Repro, in the probe helpers' sandbox:
+```
+W=$(p_create S "$R" agent-x | hook "$P1")                      # R on branch feature
+echo a > "$R/c.txt"; git -C "$R" add c.txt; git -C "$R" commit -qm base-c
+echo b > "$W/c.txt"; git -C "$W" add c.txt; git -C "$W" commit -qm sub-c
+git -C "$W" rebase feature                                     # conflict → rebase in progress
+git -C "$R" for-each-ref --format='%(refname:short) [%(worktreepath)]' refs/heads/lazy/   # "lazy/agent-x []"
+git -C "$R" config branch.lazy/agent-x.lazyLlmPane %99         # stand-in for a dead owner
+p_sess S "$R" resume | hook "$P3"
+```
+- Observed: `lazyLlmPane` stays `%99`, and the hook prints no output.
+- Expected: re-stamped to `$P3`, and listed in the reminder. This is the worktree that most needs
+  the reminder after a restore.
+- Also, `llm-wt list "$R"` says "no Claude worktrees integrate into …" in this state.
+
+**F3. The superproject/submodule layout, which is this user's own setup, is never re-owned.** This
+session was launched in dev-env and works in the lazy-llm submodule. The Work Report (`414f605`)
+observed that WorktreeCreate's cwd is the submodule there. The worktrees therefore live in the
+submodule's repo. On resume, SessionStart's cwd is the launch directory (spike fact P3), and
+CLAUDE_PROJECT_DIR is the superproject. `session_worktrees` scans only those two, so it scans the
+superproject twice and never reaches the submodule. Repro (real `git submodule add`):
+```
+W=$(p_create S "$SUPER/ext/lib" agent-s | CLAUDE_PROJECT_DIR="$SUPER" hook "$P1")
+T kill-server; sleep 1.2; T -f /dev/null new-session -d -s b "exec sleep 300"; P2=...
+p_sess S "$SUPER" resume | CLAUDE_PROJECT_DIR="$SUPER" hook "$P2"
+```
+- Observed: no output, and the stamp is unchanged (old server).
+- Control: the same payload with cwd = the submodule gives the reminder.
+- Premise: the resumed SessionStart cwd is the launch directory, as P3 found for EnterWorktree. A
+  live resume of a submodule session would confirm it.
+- A possible fix: find the session's worktrees with something that doesn't depend on the cwd at
+  resume, for example a per-session index written at WorktreeCreate.
+
+### Persistence gaps worth fixing (not failures of the section's claims)
+- **G1. /clear.** `/clear` starts a new session id. `llm-claude-hook` records it as the pane's
+  conversation, so the next save stores that id. After a later restore, `claude --resume <new id>`
+  never re-owns the worktrees made before the `/clear`: they stay orphaned for good. The new
+  conversation is never reminded of them either (SessionStart(clear) prints nothing). Repro:
+  `p_sess S2 "$R" clear | hook "$P1"` gives no output. Then kill the server, start a new one and
+  run `p_sess S2 "$R" resume | hook "$P3"`: agent-x keeps the old server's start time.
+- **G2. A background subagent running at save time** is killed by the restore. Its worktree can
+  hold uncommitted work and 0 commits. The reminder lists it as "0 commit(s) beyond `feature`" and
+  offers `llm-wt remove --force`, which drops uncommitted work without asking. It never mentions
+  dirty or untracked files. A compact while a background subagent is still running also lists that
+  worktree as "waiting to land". Repro: `echo wip > "$W/wip.txt"`, then
+  `p_sess S "$R" resume | hook "$P"`.
+- **G3. `llm-persist` mid-rebase:** `pane_worktree_json` uses `git branch --show-current`, which
+  saves `"branch": null` during a rebase. On restore, `branch..lazyLlmBase` is empty, so an
+  adopted pane (`llm-add -w`) or an isolated pane comes back with `@lazy_llm_wt` but **without**
+  `LAZY_LLM_WORKTREE`/`BASE`/`PRIMARY`. Observed launch: `claude --resume Sd PWD=<wt> WT= BASE=`.
+  This predates these commits; `wt_branch()` would fix it.
+- **G4. `claude -w` panes.** If Claude chdirs into the `-w` worktree (P2 covered EnterWorktree
+  only, so this is unverified), `pane_current_path` is the worktree. The manifest then saves
+  `cwd=<wt>` with `worktree: null`.
+  - While the worktree exists, restore is `cd '<wt>' && claude --resume 'Sw'`, which is fine.
+  - Once it has been landed and removed, restore is a bare `claude --resume 'Sw'` from the
+    workspace dir. The transcript may be filed under the worktree's project dir, so Claude may not
+    find the conversation.
+  - The worktree is not recreated from its branch, unlike `llm-add -w` panes.
+  Seen with `restore --dry-run` in a sandbox.
+- **G5. The guidance doubles.** Take an isolated pane whose session also entered a Claude
+  worktree. Every resume and compact injects two full copies of worktree-agent.md (about 6.8 KB),
+  one for each worktree, plus the list.
+- **G6. "resuming puts it back there" can be wrong.** The text is used for every non-`agent-*`
+  session worktree that still exists. That includes one the session left with ExitWorktree `keep`,
+  and it is sent on `compact` too, not only on resume. It can tell the model it is somewhere it
+  isn't.
+- **G7. The Saved tab** pane rows (`pane_rows`, dashboard `saved-pane:`) show tool, name and
+  conversation, but not the pane's worktree. A pane that runs in a Claude worktree, or whose
+  worktree is gone, looks like any other.
+- **Nits:**
+  - If tmux can't answer, the re-stamp writes the new pane id but keeps the stale
+    `lazyLlmPaneServer`. Observed `%7` paired with the old start time; it should clear the server
+    or skip the write.
+  - A repo path containing a tab gives no output.
+  - `json_escape` doesn't escape control characters other than `\t`, `\n` and `\r`.
+  - Re-stamps rewrite `.git/config` even when nothing changed.
+  - The runner silently ignores a pattern that matches nothing when another pattern does match.
+
+VERDICT: fail (3 items)
+
+## Rework (persistence round 1)
+
+**Date:** 2026-10-03_20:44
+
+All three failures and most of the gaps from "Verify Report (persistence)":
+1. **No stealing from a live pane** (`e0f4631`): re-owning happens only when the recorded owner
+   is gone, or belongs to another server. Test 11c.1.
+2. **Mid-rebase** (`e0f4631`): `worktrees_by_branch` resolves the branch from the rebase state
+   for the resume lookup and `llm-wt list`. An isolated subagent made the persistence/display
+   side (`4441892`, `715f74e`): llm-persist saves the branch mid-rebase, the Worktrees tab and
+   border ⎇×N keep the worktree, and the llmw picker too (`65db253`). Tests 11c.2, scenario 26
+   Test 6, scenario 28 Test 7.
+3. **Submodule layout** (`e0f4631`): a session registry
+   (`$XDG_STATE_HOME/lazy-llm/claude-sessions/<id>`) lists the worktrees each session made, so
+   the lookup no longer depends on the resumed cwd. Confirmed live: a real session launched in
+   a superproject that `cd`'d into a submodule and left a subagent commit resumed with
+   cwd = the superproject, and its reminder named the submodule's worktree. This is now live
+   Test 6 (`3b9af01`). Unit test 11c.3.
+- **Gaps fixed:** `/clear` inheritance (a registry hand-off; the recorded session is
+  unchanged); the reminder counts uncommitted and untracked work, flags a rebase, and warns
+  about running or cut-off subagents and what `--force` drops; the guidance is de-duplicated;
+  the wording no longer promises a re-enter on compaction; control characters are stripped
+  from the JSON; config is written only when it changes; re-owning is skipped when tmux can't
+  give the server; `claude -w` panes are saved with their worktree (`715f74e`); registries
+  whose worktrees are all gone are pruned at `/clear`; and the runner fails on an unmatched
+  pattern (`2448d48`).
+- **Not done:** the Saved tab showing a pane's worktree (cosmetic); a repo path containing a
+  tab (unsupported).
+- Scenario 24: 231/231 (the pre-rework llm-wt fails 16). Scenarios 26: 67/67, 28: 69/69.
