@@ -179,7 +179,7 @@ run_test() {
 # Usage information
 show_usage() {
     cat << EOF
-Usage: $0 [OPTIONS] [TEST_PATTERN]
+Usage: $0 [OPTIONS] [TEST_PATTERN...]
 
 Run lazy-llm unit tests
 
@@ -192,7 +192,8 @@ OPTIONS:
   -m MODE             Set MOCK_AI_MODE (echo, multiline, truncate, etc.)
 
 ARGUMENTS:
-  TEST_PATTERN        Optional pattern to match test files (e.g., "send" or "01-*")
+  TEST_PATTERN...     Optional patterns to match test files (e.g., "send" or "01-*");
+                      several run the union, each test once
                       If not specified, runs all tests
 
 EXAMPLES:
@@ -238,7 +239,7 @@ list_tests() {
 # Parse command line options
 DEBUG=""
 MOCK_AI_MODE=""
-TEST_PATTERN=""
+TEST_PATTERNS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -269,7 +270,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            TEST_PATTERN="$1"
+            TEST_PATTERNS+=("$1")
             shift
             ;;
     esac
@@ -290,7 +291,7 @@ main() {
     # Find tests to run
     local tests_to_run=()
 
-    if [ -z "$TEST_PATTERN" ]; then
+    if [ ${#TEST_PATTERNS[@]} -eq 0 ]; then
         # Run all tests
         if [ -d "$SCENARIOS_DIR" ]; then
             for test in "$SCENARIOS_DIR"/*.sh; do
@@ -300,25 +301,35 @@ main() {
             done
         fi
     else
-        # Run tests matching pattern
-        # First try exact match
-        if [ -f "$SCENARIOS_DIR/$TEST_PATTERN" ]; then
-            tests_to_run+=("$SCENARIOS_DIR/$TEST_PATTERN")
-        elif [ -f "$SCENARIOS_DIR/${TEST_PATTERN}.sh" ]; then
-            tests_to_run+=("$SCENARIOS_DIR/${TEST_PATTERN}.sh")
-        else
-            # Try pattern matching
-            for test in "$SCENARIOS_DIR"/*${TEST_PATTERN}*.sh; do
-                if [ -f "$test" ]; then
-                    tests_to_run+=("$test")
-                fi
+        # Each pattern: an exact name first, else a substring match. A test
+        # matched by several patterns runs once.
+        local TEST_PATTERN t dup
+        for TEST_PATTERN in "${TEST_PATTERNS[@]}"; do
+            local matched=()
+            if [ -f "$SCENARIOS_DIR/$TEST_PATTERN" ]; then
+                matched=("$SCENARIOS_DIR/$TEST_PATTERN")
+            elif [ -f "$SCENARIOS_DIR/${TEST_PATTERN}.sh" ]; then
+                matched=("$SCENARIOS_DIR/${TEST_PATTERN}.sh")
+            else
+                for test in "$SCENARIOS_DIR"/*${TEST_PATTERN}*.sh; do
+                    if [ -f "$test" ]; then
+                        matched+=("$test")
+                    fi
+                done
+            fi
+            for test in ${matched[@]+"${matched[@]}"}; do
+                dup=false
+                for t in ${tests_to_run[@]+"${tests_to_run[@]}"}; do
+                    if [ "$t" = "$test" ]; then dup=true; fi
+                done
+                if ! $dup; then tests_to_run+=("$test"); fi
             done
-        fi
+        done
     fi
 
     # Check if we found any tests
     if [ ${#tests_to_run[@]} -eq 0 ]; then
-        echo "No tests found matching pattern: $TEST_PATTERN"
+        echo "No tests found matching: ${TEST_PATTERNS[*]}"
         echo ""
         list_tests
         exit 1
