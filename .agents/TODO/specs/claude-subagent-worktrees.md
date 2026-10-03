@@ -315,6 +315,24 @@ bootstrap copies or the init hook.
   Re-check after Claude Code upgrades: this is version-specific.
 - Two plugins that both define `WorktreeCreate` would conflict. Only lazy-llm does, on this
   machine.
+- **Restore edge cases, accepted (2026-10-04, with the user):**
+  - A restored `claude -w` pane whose worktree was landed and removed comes back as a fresh
+    conversation in the workspace dir: its conversation was keyed by the worktree's path, which
+    no longer exists.
+  - A pane cd'd into a subagent's `agent-*` worktree is saved as running in that worktree, and
+    comes back isolated there. A Claude started in it gets the self-integrating rules. If the
+    parent hasn't landed the worktree either, both may integrate, but integrate is a rebase plus
+    fast-forward that refuses on conflict, so the second finds nothing to do. None of it loses
+    work: a landed worktree's pane comes back shared; a missing directory is recreated only
+    while its branch survives (unmerged work); closing the pane asks keep/remove.
+- **The pane-id guard compares the tmux server's start time in whole seconds.** Two servers on
+  different sockets started in the same second, with a leftover worktree from one and a same-id
+  pane on the other, would look like one owner. That takes a multi-server boot script (or test
+  sandboxes, which own no real worktrees); `lazy-llm restore` starts its server long after the
+  old one died. Accepted; recording `#{pid}` as well would close it.
+- Registry rewrites (prune) and appends hold a lock beside the registry, so a prune can't drop a
+  concurrent create's entry. The lock is soft: past 60s the registry write is skipped, never
+  failing a hook.
 - `name` → branch mapping changes if Claude changes its payload. The live scenario (§12.2) is
   the canary. Rerun it after Claude Code upgrades.
 

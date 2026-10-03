@@ -2,11 +2,12 @@
 slug: claude-worktrees-polish
 title: Claude worktrees — remaining polish (Saved tab marker, claude -w restore edge cases, theoretical races)
 priority: P3
-status: backlog
+status: done
 created: 2026-10-03_22:26
-updated: 2026-10-04_00:05
+updated: 2026-10-04_00:22
 depends-on: [claude-worktree-followups]
 tags: [worktree, dashboard, persistence]
+commits: [3860f0d, e45e515, fd72410, a9c543e]
 ---
 
 # Claude worktrees: remaining polish
@@ -57,6 +58,24 @@ None of them loses work.
   touch llm-wt, the lib and the Lua picker, with legacy handling: not worth it now. Spec §11.
 
 ## Acceptance Criteria
-- [ ] 1 done, with a test
-- [ ] 2 and 3 decided (and done or documented)
-- [ ] 4 assessed: fixed or explicitly accepted in spec §11
+- [x] 1 done, with a test
+- [x] 2 and 3 decided (and done or documented)
+- [x] 4 assessed: fixed or explicitly accepted in spec §11
+
+## Work Report
+
+**Date:** 2026-10-04_00:22
+
+- **1 (Saved tab ⎇):** done by an isolated subagent, landed with `llm-wt integrate --remove`.
+  - `e45e515`: llm-persist's pane rows carry the worktree path as a 9th column. The dashboard
+    is its only reader.
+  - `fd72410`: rows show `⎇ <worktree name>`, plus a Help-tab line.
+  - Follow-up commit: a bare `⎇` when the pane is named after its worktree, as the Workspaces
+    tree does.
+  - Scenario 20 checks the listing and the rendered row; the old code fails 4.
+- **2, 3, 4b:** accepted with the user, documented in spec §11.
+- **4a:** `3860f0d`. The registry prune and appends hold a soft lock, the repo lock generalized
+  to `lock_path`. Scenario 24 Test 23e holds the lock from outside in flock and symlink modes
+  and checks the create waits and records its entry; the old code doesn't wait (118 ms).
+- Tests ran through decoy tmux panes: full suite 28/28, exit 0. Old-code checks used throwaway
+  worktrees.
