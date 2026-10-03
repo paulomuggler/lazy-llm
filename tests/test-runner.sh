@@ -317,6 +317,12 @@ main() {
                     fi
                 done
             fi
+            if [ ${#matched[@]} -eq 0 ]; then
+                echo "No tests found matching: $TEST_PATTERN"
+                echo ""
+                list_tests
+                exit 1
+            fi
             for test in ${matched[@]+"${matched[@]}"}; do
                 dup=false
                 for t in ${tests_to_run[@]+"${tests_to_run[@]}"}; do
