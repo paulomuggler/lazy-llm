@@ -196,9 +196,9 @@ assert_has "$(border "$RP")" "⎇×2" "the restored pane's border shows ⎇×2"
 assert_equals "$(owner_of "$WA" "$C")" "claude:wsC:$RP" "Worktrees tab: the subagent worktree is owned by the restored pane"
 assert_equals "$(owner_of "$WE" "$C")" "claude:wsC:$RP" "...and so is the entered one"
 c=$(ctx "$out")
-assert_has "$c" "1 subagent worktree(s) from this session are still waiting to land" "additionalContext: reminded of the subagent worktree"
-assert_has "$c" "\`$WA\` (branch \`lazy/agent-c1\`, 1 commit(s) beyond \`main\`)" "...with its path, branch and commit count"
-assert_has "$c" "entered the worktree \`$WE\` earlier (EnterWorktree)" "...and of the worktree it entered"
+assert_has "$c" "1 subagent worktree(s) from this session aren't landed yet" "additionalContext: reminded of the subagent worktree"
+assert_has "$c" "\`$WA\` (branch \`lazy/agent-c1\`): 1 commit(s) beyond \`main\`, 0 uncommitted, 0 untracked" "...with its path, branch and commit count"
+assert_has "$c" "this session created the worktree \`$WE\` with EnterWorktree" "...and of the worktree it entered"
 assert_has "$c" "<!-- lazy-llm:worktree-agent -->" "...with the worktree-agent rules"
 assert_lacks "$c" "{{" "...no placeholder left"
 

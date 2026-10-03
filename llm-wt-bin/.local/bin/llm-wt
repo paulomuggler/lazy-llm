@@ -517,6 +517,8 @@ claude_create() {
   done
   unlock_repo
 
+  registry_add "$session" "$wt"
+
   if [[ -n "$base" ]]; then
     # In a child process: a bootstrap failure (an unreadable file to copy,
     # say) is reported, but the worktree exists and is what Claude gets.
@@ -535,30 +537,94 @@ pane_server_start() {
   tmux display-message -p -t "$TMUX_PANE" '#{start_time}' 2>/dev/null || true
 }
 
-# The live Claude worktrees made by session <sid>, scanning <cwd>'s repo and
-# the project's: "path<TAB>branch<TAB>name" lines (worktrees that are gone
-# are left out).
-session_worktrees() {
-  local cwd="$1" sid="$2" repo key val b seen=""
+# True when pane <id> is alive on the hook's own tmux server.
+pane_alive() {
+  [[ -n "$1" && -n "${TMUX:-}" ]] || return 1
+  [[ "$(tmux display-message -p -t "$1" '#{pane_id}' 2>/dev/null)" == "$1" ]]
+}
+
+# The session registry: one file per Claude session listing the worktrees it
+# made (or inherited at /clear), so a resumed session finds them whatever its
+# cwd: a session launched in a superproject that worked in a submodule
+# resumes with the superproject as cwd. Best effort: never fails.
+registry_dir() { printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/lazy-llm/claude-sessions"; }
+registry_add() {
+  local sid file
+  sid=$(safe_name "${1:-}")
+  [[ -n "$sid" && -n "${2:-}" ]] || return 0
+  file="$(registry_dir)/$sid"
+  mkdir -p "$(registry_dir)" 2>/dev/null || return 0
+  grep -qxF -- "$2" "$file" 2>/dev/null || printf '%s\n' "$2" >> "$file" 2>/dev/null || true
+  return 0
+}
+registry_has_live() {
+  local path
+  while IFS= read -r path; do
+    [[ -n "$path" && -d "$path" ]] && return 0
+  done < "$1"
+  return 1
+}
+registry_paths() {
+  local sid
+  sid=$(safe_name "${1:-}")
   [[ -n "$sid" ]] || return 0
+  cat "$(registry_dir)/$sid" 2>/dev/null || true
+}
+
+# "branch<TAB>path" for every worktree of <repo>, including one mid-rebase
+# (detached HEAD; its branch read from the rebase state by wt_branch).
+worktrees_by_branch() {
+  local line path="" br="" detached=false
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *) path="${line#worktree }"; br=""; detached=false ;;
+      branch\ *) br="${line#branch refs/heads/}" ;;
+      detached) detached=true ;;
+      "")
+        if [[ -n "$path" ]]; then
+          $detached && br=$(wt_branch "$path")
+          [[ -n "$br" ]] && printf '%s\t%s\n' "$br" "$path"
+        fi
+        path=""; br=""; detached=false ;;
+    esac
+  done < <(git -C "$1" worktree list --porcelain 2>/dev/null; echo)
+}
+
+# The live Claude worktrees of session <sid>: "path<TAB>branch<TAB>name"
+# lines. Candidates come from the session registry and from scanning <cwd>'s
+# repo and the project's for lazyLlmSession; each must still be a worktree's
+# top directory, of kind claude, and either name <sid> as its session or be
+# listed in <sid>'s registry (inherited at /clear).
+session_worktrees() {
+  local cwd="$1" sid="$2" repo key val b path seen="" listed name sess
+  [[ -n "$sid" ]] || return 0
+  local -a cands=()
+  while IFS= read -r path; do [[ -n "$path" ]] && cands+=("$path"); done < <(registry_paths "$sid")
+  listed=" ${cands[*]+${cands[*]}} "
   for repo in "$cwd" "${CLAUDE_PROJECT_DIR:-}"; do
     [[ -n "$repo" && -d "$repo" ]] || continue
-    local -a refs=()
+    local -A want=()
     while read -r key val; do
       [[ "$val" == "$sid" ]] || continue
-      b="${key#branch.}"
-      b="${b%.*}"
-      [[ " $seen " == *" $b "* ]] && continue
-      seen+=" $b"
-      [[ "$(git -C "$repo" config "branch.$b.lazyLlmKind" 2>/dev/null)" == claude ]] && refs+=("refs/heads/$b")
+      b="${key#branch.}"; b="${b%.*}"
+      want[$b]=1
     done < <(git -C "$repo" config --get-regexp '^branch\..*\.lazyllmsession$' 2>/dev/null || true)
-    [[ ${#refs[@]} -gt 0 ]] || continue
-    local path name
+    [[ ${#want[@]} -gt 0 ]] || continue
     while IFS=$'\t' read -r b path; do
-      [[ -n "$path" && -d "$path" ]] || continue
-      name=$(git -C "$repo" config "branch.$b.lazyLlmName" 2>/dev/null) || name=""
-      printf '%s\t%s\t%s\n' "$path" "$b" "$name"
-    done < <(git -C "$repo" for-each-ref --format=$'%(refname:lstrip=2)\t%(worktreepath)' "${refs[@]}" 2>/dev/null || true)
+      [[ -n "${want[$b]:-}" ]] && cands+=("$path")
+    done < <(worktrees_by_branch "$repo")
+  done
+  for path in ${cands[@]+"${cands[@]}"}; do
+    [[ " $seen " == *" $path "* ]] && continue
+    seen+=" $path"
+    [[ -d "$path" && "$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)" == "$path" ]] || continue
+    b=$(wt_branch "$path")
+    [[ -n "$b" ]] || continue
+    [[ "$(git -C "$path" config "branch.$b.lazyLlmKind" 2>/dev/null)" == claude ]] || continue
+    sess=$(git -C "$path" config "branch.$b.lazyLlmSession" 2>/dev/null) || sess=""
+    [[ "$sess" == "$sid" || "$listed" == *" $path "* ]] || continue
+    name=$(git -C "$path" config "branch.$b.lazyLlmName" 2>/dev/null) || name=""
+    printf '%s\t%s\t%s\n' "$path" "$b" "$name"
   done
 }
 
@@ -649,6 +715,8 @@ json_escape() {
   s=${s//$'\t'/\\t}
   s=${s//$'\r'/}
   s=${s//$'\n'/\\n}
+  # Any other control character would make the JSON invalid: drop it.
+  s=${s//[$'\001'-$'\037']/}
   printf '%s' "$s"
 }
 
@@ -801,55 +869,76 @@ hook_post_tool_use() {
 # SessionStart (startup, resume, clear, compact):
 # - a session started in an llm-wt worktree (isolated pane, claude -w) gets
 #   worktree-agent.md, as before;
-# - the worktrees this session made (lazyLlmSession) are re-stamped with the
-#   current pane and tmux server: after `lazy-llm restore` or a resume
-#   elsewhere, the border, Worktrees tab and picker find their owner again;
+# - after /clear, the worktrees this pane's previous conversation made are
+#   handed to the new one (added to its registry), so it's told about them;
+# - the worktrees this session made are re-owned by the current pane when
+#   their recorded owner is gone (a dead server after `lazy-llm restore`, a
+#   closed pane) — never taken from a live pane, so a second pane resuming
+#   the same conversation (restore --snapshot, claude -c) steals nothing;
 # - and the session is reminded of them. A resumed session's cwd is the main
 #   directory even when it had entered a worktree (Claude re-enters it
-#   itself), so the rules for one it entered come back here, and so does
-#   the list of subagent worktrees still waiting to land.
+#   itself), so the rules for one it entered come back here, and so does the
+#   list of subagent worktrees not yet landed.
 hook_session_start() {
-  local cwd sid text="" here="" server line path b name n=0
-  local -a parts=() agents=()
+  local cwd sid src text="" here="" server line path b name owner osrv
+  local -a parts=() agents=() entered=()
   cwd=$(hook_field cwd)
   cwd="${cwd:-$PWD}"
   sid=$(hook_field session_id)
+  src=$(hook_field source)
   if probe_ctx "$cwd"; then
     here="$WT"
     text=$(guidance worktree-agent.md) && parts+=("$text")
   fi
+  server=$(pane_server_start)
+  if [[ "$src" == clear && -n "$sid" && -n "$server" ]]; then
+    inherit_pane_worktrees "$sid" "$server"
+  fi
   local -a mine=()
   while IFS= read -r line; do [[ -n "$line" ]] && mine+=("$line"); done < <(session_worktrees "$cwd" "$sid")
-  if [[ ${#mine[@]} -gt 0 && -n "${TMUX_PANE:-}" && -n "${TMUX:-}" ]]; then
-    server=$(pane_server_start)
-    for line in "${mine[@]}"; do
-      path="${line%%$'\t'*}"; b="${line#*$'\t'}"; b="${b%%$'\t'*}"
-      lock_repo "$path"
-      git -C "$path" config "branch.$b.lazyLlmPane" "$TMUX_PANE" || true
-      if [[ -n "$server" ]]; then
-        git -C "$path" config "branch.$b.lazyLlmPaneServer" "$server" || true
-      fi
-      unlock_repo
-    done
-  fi
   for line in ${mine[@]+"${mine[@]}"}; do
-    path="${line%%$'\t'*}"; name="${line##*$'\t'}"
+    path="${line%%$'\t'*}"; b="${line#*$'\t'}"; b="${b%%$'\t'*}"; name="${line##*$'\t'}"
+    if [[ -n "$server" ]]; then
+      owner=$(git -C "$path" config "branch.$b.lazyLlmPane" 2>/dev/null) || owner=""
+      osrv=$(git -C "$path" config "branch.$b.lazyLlmPaneServer" 2>/dev/null) || osrv=""
+      if [[ "$owner" != "$TMUX_PANE" || "$osrv" != "$server" ]] \
+          && ! { [[ "$osrv" == "$server" ]] && pane_alive "$owner"; }; then
+        lock_repo "$path"
+        git -C "$path" config "branch.$b.lazyLlmPane" "$TMUX_PANE" || true
+        git -C "$path" config "branch.$b.lazyLlmPaneServer" "$server" || true
+        unlock_repo
+      fi
+    fi
     [[ "$path" == "$here" ]] && continue
-    if [[ "$name" == agent-* ]]; then
-      agents+=("$path")
-    elif probe_ctx "$path"; then
+    if [[ "$name" == agent-* ]]; then agents+=("$path"); else entered+=("$path"); fi
+  done
+  local first=true
+  for path in ${entered[@]+"${entered[@]}"}; do
+    probe_ctx "$path" || continue
+    if $first && [[ -z "$here" ]]; then
       text=$(guidance worktree-agent.md) || continue
-      parts+=("lazy-llm: this session entered the worktree \`$WT\` earlier (EnterWorktree); resuming puts it back there. If you're still working in it, this applies:"$'\n\n'"$text")
+      parts+=("lazy-llm: this session created the worktree \`$WT\` with EnterWorktree. If you're working in it (a resumed session goes back into it), this applies:"$'\n\n'"$text")
+      first=false
+    else
+      parts+=("lazy-llm: this session also created the worktree \`$WT\` (branch \`$BRANCH\`) with EnterWorktree; the same rules apply there.")
     fi
   done
   if [[ ${#agents[@]} -gt 0 ]]; then
-    text="lazy-llm: ${#agents[@]} subagent worktree(s) from this session are still waiting to land:"
+    local st key val c d u r
+    text="lazy-llm: ${#agents[@]} subagent worktree(s) from this session aren't landed yet. A subagent may still be running in one, or may have been cut off (a restore kills background agents): check before landing."
     for path in "${agents[@]}"; do
       probe_ctx "$path" || continue
-      n=$(git -C "$WT" rev-list --count "$BASE..HEAD" 2>/dev/null) || n="?"
-      text+=$'\n'"- \`$WT\` (branch \`$BRANCH\`, $n commit(s) beyond \`$BASE\`)"
+      c=0; d=0; u=0; r=0
+      st=$(cmd_status "$WT" --porcelain 2>/dev/null) || st=""
+      while IFS=$'\t' read -r key val; do
+        case "$key" in
+          unintegrated) c=$val ;; dirty) d=$val ;; untracked) u=$val ;; rebasing) r=$val ;;
+        esac
+      done <<< "$st"
+      text+=$'\n'"- \`$WT\` (branch \`$BRANCH\`): $c commit(s) beyond \`$BASE\`, $d uncommitted, $u untracked"
+      [[ $r -eq 1 ]] && text+="; a rebase is in progress there (resolve it, \`git -C $WT rebase --continue\`, then land)"
     done
-    text+=$'\n'"Land each with \`llm-wt integrate --remove <worktree>\` (review it first), or drop it with \`llm-wt remove --force <worktree>\`. \`llm-wt list\` shows them."
+    text+=$'\n'"Land one with \`llm-wt integrate --remove <worktree>\` (uncommitted changes must be committed there first). \`llm-wt remove --force <worktree>\` drops it, uncommitted work included. \`llm-wt list\` shows them."
     parts+=("$text")
   fi
   [[ ${#parts[@]} -gt 0 ]] || return 0
@@ -859,6 +948,29 @@ hook_session_start() {
     joined+="$part"
   done
   emit_context SessionStart "$joined"
+}
+
+# After /clear (a new session id, same pane): add the Claude worktrees this
+# pane owns on this server to the new session's registry. Their recorded
+# session stays the old one, so resuming that conversation still finds them.
+inherit_pane_worktrees() {
+  local sid="$1" server="$2" f path b
+  for f in "$(registry_dir)"/*; do
+    [[ -f "$f" ]] || continue
+    # Prune a registry whose worktrees are all gone.
+    if ! registry_has_live "$f"; then
+      rm -f "$f" 2>/dev/null || true
+      continue
+    fi
+    while IFS= read -r path; do
+      [[ -n "$path" && -d "$path" ]] || continue
+      b=$(wt_branch "$path")
+      [[ -n "$b" ]] || continue
+      [[ "$(git -C "$path" config "branch.$b.lazyLlmPane" 2>/dev/null)" == "$TMUX_PANE" ]] || continue
+      [[ "$(git -C "$path" config "branch.$b.lazyLlmPaneServer" 2>/dev/null)" == "$server" ]] || continue
+      registry_add "$sid" "$path"
+    done < "$f"
+  done
 }
 
 # Each event runs in a child process of this script, so `set -e` holds inside
@@ -917,19 +1029,13 @@ cmd_list() {
   done
   top=$(git -C "${dir:-$PWD}" rev-parse --show-toplevel 2>/dev/null) || die 1 "${dir:-$PWD} is not in a git repository"
   local -a rows=()
-  while IFS= read -r line; do
-    case "$line" in
-      worktree\ *) path="${line#worktree }"; br="" ;;
-      branch\ *) br="${line#branch refs/heads/}" ;;
-      "")
-        if [[ -n "$br" && -n "$path" ]] \
-            && [[ "$(git -C "$top" config "branch.$br.lazyLlmKind" 2>/dev/null)" == claude ]] \
-            && [[ "$(git -C "$top" config "branch.$br.lazyLlmPrimary" 2>/dev/null)" == "$top" ]]; then
-          rows+=("$path"$'\t'"$br")
-        fi
-        path=""; br="" ;;
-    esac
-  done < <(git -C "$top" worktree list --porcelain; echo)
+  # worktrees_by_branch includes one mid-rebase (a conflicted integrate).
+  while IFS=$'\t' read -r br path; do
+    if [[ "$(git -C "$top" config "branch.$br.lazyLlmKind" 2>/dev/null)" == claude ]] \
+        && [[ "$(git -C "$top" config "branch.$br.lazyLlmPrimary" 2>/dev/null)" == "$top" ]]; then
+      rows+=("$path"$'\t'"$br")
+    fi
+  done < <(worktrees_by_branch "$top")
   for line in ${rows[@]+"${rows[@]}"}; do
     path="${line%%$'\t'*}"; br="${line#*$'\t'}"
     st=$(cmd_status "$path" --porcelain 2>/dev/null) || continue

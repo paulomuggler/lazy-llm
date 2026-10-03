@@ -354,9 +354,9 @@ assert_equals "$(cfg "$R" lazy/agent-r11b lazyLlmPane) $(cfg "$R" lazy/agent-r11
 assert_equals "$(cfg "$R" lazy/wise-entered-r11b lazyLlmPaneServer)" "$s2" "...and so is the entered one"
 assert_equals "$(is_json "$out")" "ok" "valid JSON"
 c=$(ctx "$out")
-assert_has "$c" "1 subagent worktree(s) from this session are still waiting to land" "reminded of the subagent worktree"
-assert_has "$c" "\`$sa\` (branch \`lazy/agent-r11b\`, 1 commit(s) beyond \`feature\`)" "...with its path, branch and commits"
-assert_has "$c" "entered the worktree \`$se\` earlier (EnterWorktree)" "reminded of the worktree it entered"
+assert_has "$c" "1 subagent worktree(s) from this session aren't landed yet" "reminded of the subagent worktree"
+assert_has "$c" "\`$sa\` (branch \`lazy/agent-r11b\`): 1 commit(s) beyond \`feature\`, 0 uncommitted, 0 untracked" "...with its path, branch and commits"
+assert_has "$c" "this session created the worktree \`$se\` with EnterWorktree" "reminded of the worktree it entered"
 assert_has "$c" "<!-- lazy-llm:worktree-agent -->" "...with the isolated-worktree rules (resume's cwd is the main dir)"
 assert_lacks "$c" "{{" "no placeholder left"
 out=$(printf '%s' "$(p_sess other-session "$R" resume)" | TMUX="$T2" TMUX_PANE="$P2" "$LLMWT" claude-hook 2>/dev/null)
@@ -364,12 +364,76 @@ assert_empty "$out" "another session: nothing"
 env -u TMUX -u TMUX_PANE tmux kill-server 2>/dev/null
 before=$(cfg "$R" lazy/agent-r11b lazyLlmPane)
 out=$(printf '%s' "$(p_sess sess-R "$R" compact)" | "$LLMWT" claude-hook 2>/dev/null)
-assert_has "$(ctx "$out")" "still waiting to land" "outside tmux (or after a compact): still reminded"
+assert_has "$(ctx "$out")" "aren't landed yet" "outside tmux (or after a compact): still reminded"
 assert_equals "$(cfg "$R" lazy/agent-r11b lazyLlmPane)" "$before" "...but ownership is left alone without a pane"
 out=$(printf '%s' "$(p_sess sess-R "$se" resume)" | "$LLMWT" claude-hook 2>/dev/null)
 c=$(ctx "$out")
 assert_equals "$(grep -o 'lazy-llm:worktree-agent' <<< "$c" | wc -l | tr -d ' ')" "1" "started inside the entered worktree: the rules once, not twice"
-assert_lacks "$c" "entered the worktree \`$se\` earlier" "...without the 'entered earlier' preface"
+assert_lacks "$c" "this session created the worktree \`$se\`" "...without the 'created with EnterWorktree' preface"
+echo ""
+echo "Test 11c: persistence edge cases (verification round on 232931f)..."
+XS="$sandbox/xs11c"; mkdir -p "$XS"
+R="$sandbox/r11c"; mk_repo "$R"
+tmux -f /dev/null new-session -d -s a11c "exec sleep 300"
+PA=$(tmux display -t a11c -p '#{pane_id}'); TA=$(tmux display -t a11c -p '#{socket_path},#{pid},0')
+tmux split-window -d -t a11c "exec sleep 300"
+PB=$(tmux list-panes -t a11c -F '#{pane_id}' | grep -vxF "$PA" | head -1)
+SA=$(tmux display -t a11c -p '#{start_time}')
+hk() { printf '%s' "$1" | XDG_STATE_HOME="$XS" TMUX="$TA" TMUX_PANE="$2" "$LLMWT" claude-hook 2>/dev/null; }
+w1=$(hk "$(p_create "$R" agent-c11 sess-C)" "$PA")
+commit_file "$w1" c1.txt one
+printf 'wip\n' >> "$w1/c1.txt"
+# 1. A second pane resuming the same conversation (restore --snapshot,
+#    claude -c elsewhere) must not take a worktree from the live pane.
+out=$(hk "$(p_sess sess-C "$R" resume)" "$PB")
+assert_equals "$(cfg "$R" lazy/agent-c11 lazyLlmPane)" "$PA" "a second pane resuming: the live owner keeps it"
+c=$(ctx "$out")
+assert_has "$c" "1 commit(s) beyond \`feature\`, 1 uncommitted, 0 untracked" "the reminder counts uncommitted work too"
+assert_has "$c" "may have been cut off" "...and warns a subagent may be cut off or still running"
+# Owner pane gone (closed) on the same server: re-owned.
+tmux kill-pane -t "$PA"
+hk "$(p_sess sess-C "$R" resume)" "$PB" >/dev/null
+assert_equals "$(cfg "$R" lazy/agent-c11 lazyLlmPane)" "$PB" "owner pane closed: re-owned by the resuming pane"
+# 2. Mid-rebase (a conflicted integrate leaves this): still found.
+git -C "$w1" checkout -q -- c1.txt
+commit_file "$w1" c2.txt two
+GIT_SEQUENCE_EDITOR="sed -i '1i break'" git -C "$w1" rebase -q -i feature >/dev/null 2>&1
+assert_equals "$(git -C "$w1" branch --show-current)" "" "setup: detached mid-rebase"
+c=$(ctx "$(hk "$(p_sess sess-C "$R" compact)" "$PB")")
+assert_has "$c" "\`$w1\` (branch \`lazy/agent-c11\`)" "a worktree mid-rebase is still in the reminder"
+assert_has "$c" "a rebase is in progress there" "...saying so"
+assert_has "$(cd "$R" && "$LLMWT" list --porcelain)" "$w1" "...and llm-wt list shows it"
+git -C "$w1" rebase --abort 2>/dev/null
+# 3. Registry: a worktree in another repo than the resumed session's cwd
+#    (launched in a superproject, worked in a submodule) is found.
+SUP="$sandbox/r11c-super"; mk_repo "$SUP"
+c=$(ctx "$(printf '%s' "$(p_sess sess-C "$SUP" resume)" | XDG_STATE_HOME="$XS" CLAUDE_PROJECT_DIR="$SUP" TMUX="$TA" TMUX_PANE="$PB" "$LLMWT" claude-hook 2>/dev/null)")
+assert_has "$c" "\`$w1\`" "cwd and project dir in another repo: found through the session registry"
+c=$(ctx "$(printf '%s' "$(p_sess sess-C "$SUP" resume)" | XDG_STATE_HOME="$sandbox/xs-empty" CLAUDE_PROJECT_DIR="$SUP" "$LLMWT" claude-hook 2>/dev/null)")
+assert_empty "$c" "...(without the registry it can't be: the registry is what finds it)"
+# 4. /clear: the pane's new conversation inherits the pane's worktrees.
+c=$(ctx "$(hk "$(p_sess sess-D "$R" clear)" "$PB")")
+assert_has "$c" "\`$w1\`" "after /clear, the new conversation is told about the pane's worktree"
+assert_equals "$(cfg "$R" lazy/agent-c11 lazyLlmSession)" "sess-C" "...its recorded session stays the old one"
+assert_has "$(ctx "$(hk "$(p_sess sess-C "$R" resume)" "$PB")")" "\`$w1\`" "...so resuming the old conversation still finds it"
+assert_empty "$(ctx "$(hk "$(p_sess sess-E "$R" startup)" "$PB")")" "a new conversation (not /clear) inherits nothing"
+mkdir -p "$XS/lazy-llm/claude-sessions"; printf '%s\n' "$sandbox/gone-wt" > "$XS/lazy-llm/claude-sessions/sess-dead"
+hk "$(p_sess sess-H "$R" clear)" "$PB" >/dev/null
+assert_file_not_exists "$XS/lazy-llm/claude-sessions/sess-dead" "a /clear prunes a registry whose worktrees are all gone"
+assert_file_exists "$XS/lazy-llm/claude-sessions/sess-C" "...and keeps live ones"
+env -u TMUX -u TMUX_PANE tmux kill-server 2>/dev/null
+# 5. An isolated pane whose session also entered a worktree: the rules once.
+pane=$("$LLMWT" create "$R" p11c 2>/dev/null)
+ew=$(printf '%s' "$(p_create "$pane" ent-c11 sess-F)" | XDG_STATE_HOME="$XS" "$LLMWT" claude-hook 2>/dev/null)
+c=$(ctx "$(printf '%s' "$(p_sess sess-F "$pane" resume)" | XDG_STATE_HOME="$XS" "$LLMWT" claude-hook 2>/dev/null)")
+assert_equals "$(grep -o 'lazy-llm:worktree-agent' <<< "$c" | wc -l | tr -d ' ')" "1" "isolated pane + an entered worktree: the rules once"
+assert_has "$c" "also created the worktree \`$ew\`" "...the entered one as a short line"
+# 6. Control characters never break the JSON.
+CR="$sandbox/r11c-ctl$(printf '\001')x"; mk_repo "$CR"
+ws=$(printf '{"session_id":"sess-G","cwd":"%s","hook_event_name":"WorktreeCreate","name":"agent-g"}' "$(printf '%s' "$CR" | sed 's/\x01/\\u0001/')")
+out=$(printf '%s' "$(p_sess sess-G "$CR" resume)" | XDG_STATE_HOME="$XS" "$LLMWT" claude-hook 2>/dev/null)
+if [[ -z "$out" ]]; then r=ok; else r=$(is_json "$out"); fi
+assert_equals "$r" "ok" "a path with a control character: valid JSON (or nothing)"
 echo ""
 echo "Test 12: PostToolUse EnterWorktree..."
 ew=$(hook "$(p_create "$R" wise-exploring-metcalfe)")

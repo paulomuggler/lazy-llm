@@ -261,7 +261,7 @@ rs=$(jq -r 'select(.ev == "SessionStart" and .p.source == "resume") | .p.session
 assert_equals "$rs" "$sid3" "the resumed session keeps its id (SessionStart source resume)"
 rt=$(jq -r 'select(.ev == "SessionStart" and .p.source == "resume") | .p.transcript_path' "$R3.log" | head -1)
 ss_ctx=$(jq -r 'select(.type == "attachment" and .attachment.type == "hook_additional_context" and .attachment.hookEvent == "SessionStart") | .attachment | tostring' "$rt")
-assert_equals "$(grep -c 'subagent worktree(s) from this session are still waiting to land' <<< "$ss_ctx")" "1" "the reminder reached the resumed session (SessionStart hook_additional_context)"
+assert_equals "$(grep -c "subagent worktree(s) from this session aren't landed yet" <<< "$ss_ctx")" "1" "the reminder reached the resumed session (SessionStart hook_additional_context)"
 assert_has "$(jq -r 'select(.ev == "SessionStart" and .p.source == "resume") | .out' "$R3.log")" "$kwt" "...naming the unlanded worktree"
 assert_dir_exists "$kwt" "...and the worktree is still there"
 
