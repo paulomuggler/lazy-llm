@@ -262,9 +262,21 @@ bootstrap copies or the init hook.
 
 - `worktree.sparsePaths` / `worktree.symlinkDirectories` no longer apply (our hook replaces the
   creation they configure). Documented in the README. `.worktreeinclude` is honored (§4).
-- Claude's periodic cleanup sweep (`cleanupPeriodDays`) is not observed. It's believed to act on
-  `.claude/worktrees/` only. Ours live elsewhere, and `cmd_remove` refuses to lose work if it's
-  routed through `WorktreeRemove` anyway.
+- Claude's periodic cleanup sweep (`cleanupPeriodDays`), established 2026-10-03 from the 2.1.288
+  docs, changelog and bundled code (`claude-worktree-followups` item 5). It runs at most once a
+  day after a session starts. It enumerates only `<repo>/.claude/worktrees/` entries whose names
+  match Claude's own patterns (`agent-a<hex>`, `wf_…`, `job-…`, …). It removes one only when it's
+  past the age cutoff, `git status` is clean, and it has no unpushed commits. It removes with
+  `git worktree remove --force` + `git branch -D worktree-<name>`, directly, **never through
+  `WorktreeRemove`**. A second sweep, for background-session jobs, skips hook-created
+  worktrees. Another step unlocks stale worktree locks across all worktrees, but only locks in
+  Claude's own lock format; llm-wt takes none. **Verdict: it can't touch
+  `.worktrees/.claude/`.** The plugin's fallback worktrees (`.claude/worktrees/agent-…`, §8)
+  are in scope, but only once clean with nothing unpushed, so no work is lost.
+  Outside the sweep: deleting a background session with a second ctrl+x in `claude agents`
+  forces removal even if `WorktreeRemove` refuses (an explicit user discard). Session-exit
+  removal falls back to forced git removal only when no `WorktreeRemove` hook is configured.
+  Re-check after Claude Code upgrades: this is version-specific.
 - Two plugins that both define `WorktreeCreate` would conflict. Only lazy-llm does, on this
   machine.
 - `name` → branch mapping changes if Claude changes its payload. The live scenario (§12.2) is
