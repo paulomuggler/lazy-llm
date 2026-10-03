@@ -29,7 +29,8 @@ MODEL="${LAZY_LLM_LIVE_MODEL:-sonnet}"
 unset TMUX TMUX_PANE CLAUDE_PROJECT_DIR LAZY_LLM_WORKTREE_DIR
 
 sandbox=$(mktemp -d /tmp/lazy-llm-test-claudelive-XXXXXX)
-# Kept on failure (logs, transcripts paths, repos) for diagnosis.
+# Kept on failure (logs, transcripts paths, repos) for diagnosis; the trap is
+# extended below once Test 4's tmux server exists.
 trap '[[ "${ASSERTIONS_FAILED:-0}" -eq 0 ]] && rm -rf "$sandbox" || echo "kept for diagnosis: $sandbox"' EXIT
 cd "$sandbox" || exit 1
 export GIT_CEILING_DIRECTORIES=/tmp
@@ -91,6 +92,10 @@ assert_has() {
     if [[ "$1" == *"$2"* ]]; then ((ASSERTIONS_PASSED++)); print_pass "$3"
     else print_fail "$3"; echo "  '$2' not in '${1:0:300}'"; fi
 }
+assert_lacks() {
+    if [[ "$1" != *"$2"* ]]; then ((ASSERTIONS_PASSED++)); print_pass "$3"
+    else print_fail "$3"; echo "  unexpected '$2' in '${1:0:300}'"; fi
+}
 events() { jq -r 'select(.ev == "'"$2"'") | '"$3" "$1.log" 2>/dev/null; }
 
 R1="$sandbox/fanout"; R2="$sandbox/enter"; R3="$sandbox/keep"; R4="$sandbox/background"
@@ -113,10 +118,65 @@ P3='This is an automated integration test; do not ask questions.
 Launch ONE subagent with the Agent tool, subagent_type "general-purpose" and isolation "worktree": it creates the file delta.txt containing "delta", then git add and git commit it with the message "add delta".
 When it returns, do NOT integrate, merge, land or remove anything, whatever any instructions say. Just reply DONE.'
 
-echo "Running four live Claude sessions in parallel (model: $MODEL)..."
+# Test 4's session runs inside a sandbox tmux pane set up as a lazy-llm
+# workspace, so the hooks see that pane as TMUX_PANE (as in real use) and the
+# border / Worktrees tab can be sampled while its subagents run. Its own
+# short-socket tmux server: the user's is never touched ($TMUX is unset).
+R5="$sandbox/inpane"; mk_repo "$R5"
+TM=$(mktemp -d /tmp/lze.XXXX)
+tmx() { env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$TM" tmux "$@"; }
+trap 'tmx kill-server 2>/dev/null; rm -rf "$TM"; [[ "${ASSERTIONS_FAILED:-0}" -eq 0 ]] && rm -rf "$sandbox" || echo "kept for diagnosis: $sandbox"' EXIT
+tmx -f /dev/null new-session -d -s e2e -c "$R5" -x 200 -y 50 "exec sleep 900"
+PE=$(tmx display -t e2e -p '#{pane_id}')
+tmx set-option -t e2e @lazy_llm 1
+tmx set-option -t e2e @lazy_llm_dir "$R5"
+tmx set-option -w -t e2e @AI_PANE_ID "$PE"
+tmx set-option -w -t e2e @AI_PANES "$PE"
+tmx set-option -w -t e2e @AI_TOOLS claude
+# shellcheck disable=SC2016  # literal backticks
+P5='This is an automated integration test; do not ask questions, finish the job.
+In ONE message, launch two subagents in parallel with the Agent tool, each with subagent_type "general-purpose", isolation "worktree" and run_in_background false:
+- Agent A: run `sleep 25`, then create the file pane-a.txt containing "a", git add it and git commit it with the message "add pane-a".
+- Agent B: run `sleep 25`, then create the file pane-b.txt containing "b", git add it and git commit it with the message "add pane-b".
+After both return, follow the integration instructions you were given, one worktree at a time, until nothing is left to integrate. Then reply DONE.'
+printf '%s' "$P5" > "$sandbox/p5.txt"
+cat > "$sandbox/run5.sh" <<EOF
+#!/usr/bin/env bash
+cd "$R5" && LIVE_LOG="$R5.log" timeout 900 claude -p --model "$MODEL" \
+  --setting-sources project,local --settings "$sandbox/settings.json" \
+  --dangerously-skip-permissions "\$(cat "$sandbox/p5.txt")" > "$R5.out" 2>&1
+echo "exit \$?" >> "$R5.out"
+exec sleep 900
+EOF
+chmod +x "$sandbox/run5.sh"
+tmx respawn-pane -k -t "$PE" "$sandbox/run5.sh"
+
+echo "Running five live Claude sessions in parallel (model: $MODEL), one in a sandbox tmux pane..."
 run "$R1" "$P1" & run "$R2" "$P2" & run "$R3" "$P3" & run "$R4" "$P4" &
+
+# Sample the in-pane session's worktrees from outside while it runs.
+BORDER="$REPO_ROOT/lazy-llm-bin/.local/bin/llm-pane-border"
+# The border and gather helpers keep per-pane caches under ~/.cache/lazy-llm
+# keyed by pane id: give them a sandbox HOME so this server's %0 never
+# touches the user's %0 record (HOME stays real only for claude itself).
+BH="$sandbox/border-home"; mkdir -p "$BH"
+benv() { env HOME="$BH" XDG_CACHE_HOME="$BH/.cache" XDG_STATE_HOME="$BH/.state" TMUX_TMPDIR="$TM" "$@"; }
+max_list=0 max_border=0 owner_seen=no pane_recorded=no
+for _ in $(seq 1 600); do
+    grep -q '^exit ' "$R5.out" 2>/dev/null && break
+    n=$("$LLMWT" list "$R5" --porcelain 2>/dev/null | grep -c . || true)
+    [[ $n -gt $max_list ]] && max_list=$n
+    b=$(benv "$BORDER" "$PE" claude 2>/dev/null | grep -o '⎇×[0-9]*' | tr -dc '0-9' || true)
+    [[ -n "$b" && $b -gt $max_border ]] && max_border=$b
+    if (cd "$R5" && benv bash -c 'source "$1"; lazy_llm_gather_worktrees' _ "$REPO_ROOT/llm-send-bin/.local/bin/lazy-llm-lib.sh" 2>/dev/null) \
+        | awk -F$'\x1f' '{print $8}' | grep -qxF "claude:e2e:$PE"; then
+        owner_seen=yes
+    fi
+    git -C "$R5" config --get-regexp '^branch\.lazy/.*\.lazyllmpane$' 2>/dev/null | grep -q " $PE\$" && pane_recorded=yes
+    sleep 1
+done
 wait
-for r in "$R1" "$R2" "$R3" "$R4"; do
+for r in "$R1" "$R2" "$R3" "$R4" "$R5"; do
     echo "--- $(basename "$r"): $(tail -1 "$r.out")"
 done
 
@@ -184,10 +244,27 @@ assert_has "$(git -C "$R3" log --format=%s "$kb" 2>/dev/null)" "add delta" "its 
 assert_not_contains "$(git -C "$R3" log --format=%s feature)" "add delta" "feature doesn't"
 assert_equals "$(events "$R3" WorktreeRemove '.rc' | grep -c 0)" "0" "no successful WorktreeRemove for it"
 
+# ──────────────────────────────────────────────────────────────────────────
+echo ""
+echo "Test 4: in a lazy-llm pane — the workspace sees the fan-out while it runs..."
+assert_equals "$(events "$R5" WorktreeCreate '.out' | grep -c .)" "2" "2 WorktreeCreate events from the in-pane session"
+assert_equals "$pane_recorded" "yes" "the worktrees recorded the pane ($PE) as their owner"
+assert_equals "$max_list" "2" "llm-wt list showed both worktrees waiting while they ran"
+assert_equals "$max_border" "2" "the AI pane border showed ⎇×2"
+assert_equals "$owner_seen" "yes" "the Worktrees tab owner was claude:e2e:$PE"
+log5=$(git -C "$R5" log --format=%s feature)
+[[ "$log5" == *"add pane-a"* && "$log5" == *"add pane-b"* ]] && r=both || r="missing: $log5"
+assert_equals "$r" "both" "afterwards feature has both commits"
+assert_equals "$("$LLMWT" list "$R5" --porcelain | grep -c . || true)" "0" "...llm-wt list is empty"
+bnow=$(benv "$BORDER" "$PE" claude 2>/dev/null || true)
+assert_lacks "$bnow" "⎇×" "...the border's ⎇×N is gone"
+assert_equals "$(git -C "$R5" worktree list | wc -l | tr -d ' ')" "1" "...and no worktree is left"
+
 if [[ "$ASSERTIONS_FAILED" -ne 0 ]]; then
     echo ""
     echo "Session outputs and hook logs (for diagnosis):"
-    for r in "$R1" "$R2" "$R3" "$R4"; do
+    echo "in-pane samples: max_list=$max_list max_border=$max_border owner_seen=$owner_seen pane_recorded=$pane_recorded"
+    for r in "$R1" "$R2" "$R3" "$R4" "$R5"; do
         echo "===== $(basename "$r").out"; tail -30 "$r.out"
         echo "===== $(basename "$r").log events"; jq -c '{ev, rc, out: .out[0:120], tool: .p.tool_name, agent: .p.agent_id}' "$r.log" 2>/dev/null
         echo "===== $(basename "$r").log.err"; tail -20 "$r.log.err" 2>/dev/null
