@@ -489,25 +489,42 @@ lazy_llm_wt_panes() {
 }
 
 # Claude's worktrees (llm-wt claude-hook) in the repo of <dir> that record
-# an owning tmux pane (lazyLlmPane), and whose directories still exist.
+# an owning tmux pane (lazyLlmPane) of THIS tmux server, and whose
+# directories still exist. Pane ids restart at %0 with each server, so a
+# worktree whose lazyLlmPaneServer isn't the current server's #{start_time}
+# has no owner here; one without lazyLlmPaneServer (made before it existed)
+# is trusted on the pane id alone.
 # Cheap enough for a pane border: one `git config` for the whole repo (its
 # config is shared by every worktree), plus one `for-each-ref` only when some
-# Claude worktree records a pane.
+# Claude worktree records a pane, plus one `tmux display-message` for the
+# server's start time only when one records a server and <start_time> isn't
+# given.
+# Args: $1 dir  $2 the current server's #{start_time} (optional)
 # Stdout: "pane_id<TAB>path" per worktree
 lazy_llm_claude_worktree_owners() {
-  local dir="$1" key val b p
+  local dir="$1" now="${2:-}" key val b p
   [[ -n "$dir" && -d "$dir" ]] || return 0
-  local -A kind=() pane=()
+  local -A kind=() pane=() server=()
   while read -r key val; do
     key="${key#branch.}"
     case "$key" in
       *.lazyllmkind) kind[${key%.lazyllmkind}]="$val" ;;
       *.lazyllmpane) pane[${key%.lazyllmpane}]="$val" ;;
+      *.lazyllmpaneserver) server[${key%.lazyllmpaneserver}]="$val" ;;
     esac
-  done < <(GIT_OPTIONAL_LOCKS=0 git -C "$dir" config --get-regexp '^branch\..*\.lazyllm(kind|pane)$' 2>/dev/null)
+  done < <(GIT_OPTIONAL_LOCKS=0 git -C "$dir" config --get-regexp '^branch\..*\.lazyllm(kind|pane|paneserver)$' 2>/dev/null)
   local -a refs=()
   for b in "${!pane[@]}"; do
-    [[ "${kind[$b]:-}" == claude && -n "${pane[$b]}" ]] && refs+=("refs/heads/$b")
+    [[ "${kind[$b]:-}" == claude && -n "${pane[$b]}" ]] || continue
+    if [[ -n "${server[$b]:-}" ]]; then
+      if [[ -z "$now" ]]; then
+        # Asked once; "-" (no server) matches nothing.
+        now=$(tmux display-message -p '#{start_time}' 2>/dev/null) || now=""
+        [[ -n "$now" ]] || now="-"
+      fi
+      [[ "${server[$b]}" == "$now" ]] || continue
+    fi
+    refs+=("refs/heads/$b")
   done
   [[ ${#refs[@]} -gt 0 ]] || return 0
   while IFS=$'\t' read -r b p; do
@@ -640,8 +657,8 @@ _lazy_llm_emit_worktree_row() {
   fi
 
   # Claude's worktrees (llm-wt claude-hook, lazyLlmKind=claude): owned by
-  # the live pane recorded in lazyLlmPane (the session that made them), else
-  # claude:orphaned. Pane worktrees (llm-wt): owned by the live pane tagged
+  # the live pane recorded in lazyLlmPane (the session that made them) when
+  # it's a pane of this tmux server, else claude:orphaned. Pane worktrees (llm-wt): owned by the live pane tagged
   # with this path, else orphaned. Task worktrees have no owner.
   local owner="" base kind pane
   kind=$(git -C "$path" config "branch.$branch.lazyLlmKind" 2>/dev/null) || kind=""
@@ -655,9 +672,16 @@ _lazy_llm_emit_worktree_row() {
   if [[ -n "$owner" ]]; then
     :
   elif [[ "$kind" == claude ]]; then
+    # The recorded pane id is a pane of the server it was made under
+    # (lazyLlmPaneServer, that server's #{start_time}): under another server
+    # the same id is an unrelated pane. No lazyLlmPaneServer (made before it
+    # was recorded): the pane id alone.
+    local server
     pane=$(git -C "$path" config "branch.$branch.lazyLlmPane" 2>/dev/null) || pane=""
+    server=$(git -C "$path" config "branch.$branch.lazyLlmPaneServer" 2>/dev/null) || server=""
     [[ -n "$pane" ]] \
-      && owner=$(awk -F'\t' -v p="$pane" '$3 == p {print "claude:" $2 ":" $3; exit}' <<< "$wt_panes")
+      && owner=$(awk -F'\t' -v p="$pane" -v s="$server" \
+        '$3 == p && (s == "" || $4 == s) {print "claude:" $2 ":" $3; exit}' <<< "$wt_panes")
     [[ -n "$owner" ]] || owner="claude:orphaned"
   elif [[ -n "$base" ]]; then
     owner="orphaned"
@@ -674,8 +698,9 @@ _lazy_llm_emit_worktree_row() {
 # DIRTY: "*" or ""; AHEAD/BEHIND: counts vs origin/<default>; SESSION: lazy-llm
 # session attached; PR_STATE: OPEN/MERGED/CLOSED/"" (only when gh+github remote);
 # OWNER: "pane:<session>:<pane_id>" or "orphaned" for a pane worktree (llm-wt),
-# "claude:<session>:<pane_id>" (the live pane whose Claude session made it) or
-# "claude:orphaned" for one of Claude's worktrees, "" for a task worktree.
+# "claude:<session>:<pane_id>" (the live pane whose Claude session made it,
+# under this tmux server) or "claude:orphaned" for one of Claude's worktrees,
+# "" for a task worktree.
 # Skips detached-HEAD worktrees.
 lazy_llm_gather_worktrees() {
   local repo default has_gh is_github
@@ -690,10 +715,11 @@ lazy_llm_gather_worktrees() {
   fi
 
   # Every pane, with its worktree tag, in one tmux call:
-  # "wt<TAB>session<TAB>pane". All of them, untagged too: a Claude worktree's
-  # owner is looked up by pane id.
+  # "wt<TAB>session<TAB>pane<TAB>server start time". All of them, untagged
+  # too: a Claude worktree's owner is looked up by pane id, and the server's
+  # #{start_time} says whether that id is one of this server's.
   local wt_panes
-  wt_panes=$(tmux list-panes -a -F $'#{@lazy_llm_wt}\t#{session_name}\t#{pane_id}' 2>/dev/null) || wt_panes=""
+  wt_panes=$(tmux list-panes -a -F $'#{@lazy_llm_wt}\t#{session_name}\t#{pane_id}\t#{start_time}' 2>/dev/null) || wt_panes=""
 
   local path="" branch=""
   while IFS= read -r line; do
@@ -1263,12 +1289,15 @@ lazy_llm_clamp_label() {
 #   task worktree    ⎇ feat-x feat/x 1b3dafc origin ↑1
 #   detached HEAD    (detached) 1b3dafc
 # Given a pane id, it ends with ⎇×N when that pane's Claude session owns N
-# Claude worktrees that still exist (lazy_llm_claude_worktree_owners).
+# Claude worktrees that still exist (lazy_llm_claude_worktree_owners). The
+# tmux server's #{start_time} is passed in when the caller has it at hand
+# (llm-pane-border does); otherwise it's asked for once, only when needed.
 # GIT_OPTIONAL_LOCKS=0: a border refresh must never take index.lock while an
 # agent in that tree is committing.
 # Args: $1 dir  $2 text color  $3 dim color  $4 pane id (optional)
+#       $5 the tmux server's #{start_time} (optional)
 lazy_llm_git_segment() {
-  local dir="$1" c_text="$2" c_dim="$3" pane_id="${4:-}"
+  local dir="$1" c_text="$2" c_dim="$3" pane_id="${4:-}" server_start="${5:-}"
   local c_wt="#5fafff" c_ahead="#87d787" c_warn="#ffaf00"
   local out top gitdir common line oid="" head="" upstream="" ab="" dirty=""
   local ahead=0 behind=0 base="" seg=""
@@ -1291,7 +1320,7 @@ lazy_llm_git_segment() {
 
   local claude_s="" n
   if [[ -n "$pane_id" ]]; then
-    n=$(lazy_llm_claude_worktree_owners "$dir" | awk -F'\t' -v p="$pane_id" '$1 == p {n++} END {print n + 0}')
+    n=$(lazy_llm_claude_worktree_owners "$dir" "$server_start" | awk -F'\t' -v p="$pane_id" '$1 == p {n++} END {print n + 0}')
     [[ "$n" -gt 0 ]] && claude_s=" #[fg=${c_wt}]⎇×${n}"
   fi
 

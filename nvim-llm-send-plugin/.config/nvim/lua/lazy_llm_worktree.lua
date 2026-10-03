@@ -91,32 +91,45 @@ function M.visible_pane_worktree()
 end
 
 -- Claude's worktrees (llm-wt claude-hook: lazyLlmKind=claude) whose
--- lazyLlmPane is tmux pane `ai`, in the repo of `dir`, that still exist:
--- { { path, branch }, ... } sorted by path. One git config call for the
--- repo, plus a for-each-ref only when some are found.
+-- lazyLlmPane is tmux pane `ai` of this tmux server, in the repo of `dir`,
+-- that still exist: { { path, branch }, ... } sorted by path. Pane ids
+-- restart at %0 with each server, so one whose lazyLlmPaneServer isn't the
+-- current server's #{start_time} is left out; one without it (made before it
+-- was recorded) goes by the pane id alone. One git config call for the repo,
+-- plus a for-each-ref only when some are found, plus one tmux call for the
+-- start time only when some of them record a server.
 function M.claude_worktrees(dir, ai)
 	if not ai or ai == "" then
 		return {}
 	end
 	local lines = vim.fn.systemlist({
-		"git", "-C", dir, "config", "--get-regexp", [[^branch\..*\.lazyllm(kind|pane)$]],
+		"git", "-C", dir, "config", "--get-regexp", [[^branch\..*\.lazyllm(kind|pane|paneserver)$]],
 	})
 	if vim.v.shell_error ~= 0 then
 		return {}
 	end
-	local kind, pane = {}, {}
+	local kind, pane, server = {}, {}, {}
 	for _, l in ipairs(lines) do
 		local b, k, v = l:match("^branch%.(.+)%.(lazyllm%a+) (.*)$")
 		if k == "lazyllmkind" then
 			kind[b] = v
 		elseif k == "lazyllmpane" then
 			pane[b] = v
+		elseif k == "lazyllmpaneserver" then
+			server[b] = v
 		end
 	end
+	local now
 	local refs = {}
 	for b, p in pairs(pane) do
 		if p == ai and kind[b] == "claude" then
-			table.insert(refs, "refs/heads/" .. b)
+			local s = server[b]
+			if s and s ~= "" and now == nil then
+				now = tmux({ "display-message", "-p", "-t", ai, "#{start_time}" })
+			end
+			if not s or s == "" or s == now then
+				table.insert(refs, "refs/heads/" .. b)
+			end
 		end
 	end
 	if #refs == 0 then

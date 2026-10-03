@@ -38,11 +38,11 @@ glyph=$(lazy_llm_status_glyph "$status")
 # target pane's own id/tool, not its window context.
 # One tmux call for everything this script needs about the pane.
 display_label="$tool"
-workspace="" sw="" pane_dir="" border_git=""
+workspace="" sw="" pane_dir="" border_git="" server_start=""
 # \x1f, not tabs: `read` collapses runs of a whitespace IFS, which would
 # shift every field after an empty one.
-IFS=$'\x1f' read -r workspace sw pane_dir border_git < <(tmux display-message -t "$pane_id" \
-  -p $'#S\x1f#S:#I\x1f#{pane_current_path}\x1f#{@lazy_llm_border_git}' 2>/dev/null) || true
+IFS=$'\x1f' read -r workspace sw pane_dir border_git server_start < <(tmux display-message -t "$pane_id" \
+  -p $'#S\x1f#S:#I\x1f#{pane_current_path}\x1f#{@lazy_llm_border_git}\x1f#{start_time}' 2>/dev/null) || true
 if [ -n "$sw" ]; then
   ai_panes=$(tmux show-option -wv -t "$sw" @AI_PANES 2>/dev/null) || ai_panes=""
   ai_names=$(tmux show-option -wv -t "$sw" @AI_PANE_NAMES 2>/dev/null) || ai_names=""
@@ -88,7 +88,7 @@ summary=$(lazy_llm_render_summary "$C_DIM" "${summary_counts[@]}")
 # global tmux option @lazy_llm_border_git to "off".
 git_seg=""
 if [[ "$border_git" != "off" ]]; then
-  git_seg=$(lazy_llm_git_segment "$pane_dir" "$C_TEXT" "$C_DIM" "$pane_id")
+  git_seg=$(lazy_llm_git_segment "$pane_dir" "$C_TEXT" "$C_DIM" "$pane_id" "$server_start")
   [[ -n "$git_seg" ]] && git_seg="│ ${git_seg}#[default] "
 fi
 

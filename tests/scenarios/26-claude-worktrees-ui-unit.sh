@@ -222,6 +222,69 @@ assert_has "$nv" "lines=5" "...the worktree's own copy"
 assert_has "$nv" "none-stays=$R/src/x.lua" "no Claude worktrees: unchanged (shared pane: stays)"
 assert_has "$nv" "none-note=The AI pane in view shares the main directory" "...with today's message"
 
+# ──────────────────────────────────────────────────────────────────────────
+echo ""
+echo "Test 5: a pane id from another tmux server owns nothing (lazyLlmPaneServer)..."
+# tmux numbers panes from %0 again in each new server: after a restart, a
+# leftover worktree's lazyLlmPane can name an unrelated new pane. Three
+# worktrees recording pane Q: one made under another server (a forged
+# start time), one under this one, one from before lazyLlmPaneServer.
+started=$(tmux display -t cws -p '#{start_time}')
+WS=$(claude_wt "$R" agent-stale "$Q")
+WM=$(claude_wt "$R" agent-match "$Q")
+WL=$(claude_wt "$R" agent-legacy "$Q")
+assert_equals "$(git -C "$R" config branch.lazy/agent-match.lazyLlmPaneServer)" "$started" \
+    "setup: the hook recorded this server's start time"
+git -C "$R" config branch.lazy/agent-stale.lazyLlmPaneServer "$((started - 3600))"
+git -C "$R" config --unset branch.lazy/agent-legacy.lazyLlmPaneServer
+q_owned() { awk -F'\t' -v p="$Q" '$1 == p {print $2}' | sort | tr '\n' ' '; }
+want_q="$(printf '%s\n' "$WL" "$WM" | sort | tr '\n' ' ')"
+assert_equals "$(lazy_llm_claude_worktree_owners "$R" | q_owned)" "$want_q" \
+    "owners: the matching and the legacy one, not the stale one"
+assert_equals "$(lazy_llm_claude_worktree_owners "$R" "$started" | q_owned)" "$want_q" \
+    "...the same with the start time passed in"
+assert_equals "$(lazy_llm_claude_worktree_owners "$R" "1" | q_owned)" "$(printf '%s\n' "$WL" | tr '\n' ' ')" \
+    "...and only the legacy one under a server that started at another time"
+assert_equals "$(seg "$R" "$Q")" "main $sha local ⎇×2" "border segment: the stale one doesn't count"
+assert_equals "$(lazy_llm_git_segment "$R" T D "$Q" "$started" | untag)" "main $sha local ⎇×2" "...nor with the start time passed in"
+assert_has "$(border "$Q")" "│ main $sha local ⎇×2 " "llm-pane-border: Q's border ends with ⎇×2"
+rows=$("$HOME_BIN/llm-dashboard" --emit-rows cws 2>/dev/null | strip)
+assert_has "$(grep "pane:cws:1:$Q" <<< "$rows" | cut -f2)" "⎇×2" "dashboard tree row for Q carries ⎇×2"
+# Border cost: llm-pane-border passes the start time, so no tmux call is
+# added; given only a pane id, at most one.
+mkdir -p "$sandbox/tmuxshim"
+real_tmux=$(command -v tmux)
+printf '#!/bin/sh\necho "$*" >> "%s/tmuxcalls"\nexec "%s" "$@"\n' "$sandbox" "$real_tmux" > "$sandbox/tmuxshim/tmux"
+chmod +x "$sandbox/tmuxshim/tmux"
+: > "$sandbox/tmuxcalls"; PATH="$sandbox/tmuxshim:$PATH" lazy_llm_git_segment "$R" T D "$Q" "$started" >/dev/null
+assert_equals "$(grep -c '' "$sandbox/tmuxcalls")" "0" "segment with the start time passed: no tmux call"
+: > "$sandbox/tmuxcalls"; PATH="$sandbox/tmuxshim:$PATH" lazy_llm_git_segment "$R" T D "$Q" >/dev/null
+assert_equals "$(grep -c '' "$sandbox/tmuxcalls")" "1" "segment without it: one tmux call"
+
+owner_of() { (cd "$R" && lazy_llm_gather_worktrees) | awk -F$'\x1f' -v p="$1" '$1 == p {print $8}'; }
+assert_equals "$(owner_of "$WS")" "claude:orphaned" "Worktrees tab: the stale one is claude:orphaned"
+assert_equals "$(owner_of "$WM")" "claude:cws:$Q" "...the matching one is owned by Q"
+assert_equals "$(owner_of "$WL")" "claude:cws:$Q" "...the legacy one too (pane id alone)"
+assert_equals "$(owner_of "$WA")" "claude:cws:$P" "...and P's still P's"
+tmux split-window -d -t cws -c "$WS" "exec sleep 300"
+P3=$(tmux list-panes -t cws -F '#{pane_id}' | grep -vxF -e "$P" -e "$Q" | head -1)
+tmux set-option -p -t "$P3" @lazy_llm_wt "$WS"
+assert_equals "$(owner_of "$WS")" "pane:cws:$P3" "a live pane running in the stale one still owns it"
+tmux kill-pane -t "$P3"
+
+cat > "$sandbox/nvim-test5.lua" <<LUA
+local M = require("lazy_llm_worktree")
+local out = {}
+for _, c in ipairs(M.claude_worktrees("$R", "$Q")) do table.insert(out, c.path) end
+vim.fn.writefile({ "q=" .. table.concat(out, "|") }, "$sandbox/nvim-out5.txt")
+vim.cmd("qa!")
+LUA
+(cd "$R" && nvim --headless --clean \
+    --cmd "set rtp^=$REPO_ROOT/nvim-llm-send-plugin/.config/nvim" \
+    -c "luafile $sandbox/nvim-test5.lua" >/dev/null 2>&1)
+assert_equals "$(cat "$sandbox/nvim-out5.txt" 2>/dev/null)" "q=$(printf '%s\n' "$WL" "$WM" | sort | paste -sd'|')" \
+    "<leader>llmw candidates: the matching and the legacy one, not the stale one"
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test Summary"
