@@ -2,12 +2,11 @@
 slug: claude-worktree-followups
 title: Follow-up pass after Claude's subagent worktrees — runner exit status, project-scope plugin update, Saved tab "no", pane-id reuse, cleanup sweep, full e2e
 priority: P1
-status: in-progress
+status: done
 created: 2026-10-03_03:49
-updated: 2026-10-03_03:49
+updated: 2026-10-03_13:16
 depends-on: [claude-subagent-worktrees, claude-subagent-worktrees-ui]
 tags: [worktree, claude-plugin, dashboard, tests]
-owner: homelab-zrh-dev-3446176
 model: inline
 commits: [414f605, 349b031, d967855, d13b13c, 3554b9c, 5137aaa, 7f28302, 2d825a1, 28bc04b, b7b8b1b, 5141401, 31ee1a4]
 ---
@@ -52,7 +51,7 @@ real lazy-llm pane and landed with `llm-wt integrate --remove`, which exercises 
 - [x] 4. Pane ownership requires the same tmux server; covered by tests
 - [x] 5. Cleanup sweep finding recorded (and fixed if needed)
 - [x] 6. Full suite green; live scenarios green, including the in-pane e2e
-- [ ] Deployed (install.sh), pushed, dev-env pointer bumped
+- [x] Deployed (install.sh), pushed, dev-env pointer bumped
 
 ## Work Report
 
@@ -204,3 +203,17 @@ Scenario 24: 198/198; the old llm-wt fails exactly the 2 new assertions. Full su
 runner exit 0**. Not sent for another verify round: both deterministic, each with a test that
 fails on the old code. The opt-in log was then switched off (file removed): `touch
 ~/.local/state/lazy-llm/claude-hook.log` re-enables it.
+
+## Deploy
+
+**Date:** 2026-10-03_13:16
+
+- lazy-llm `main` pushed (gitleaks clean). The plugin itself is unchanged (0.4.0); the bins and
+  the nvim plugin are live through stow (nvim needs a restart for the picker change).
+- The real `./install.sh` exercised item 2: "Updated project-scope install in …/dev-env", and
+  "Skipped" for the four entries whose pane worktrees no longer exist.
+- dev-env submodule pointer bumped and pushed.
+- Human validation: not added. The feature was exercised for real in this session's lazy-llm
+  pane (four probes, four isolated fix agents landed with `llm-wt integrate --remove`) and in
+  scenario 25 Test 4. The two REVIEW-QUEUE items from the earlier tasks remain for the user's
+  own look.
