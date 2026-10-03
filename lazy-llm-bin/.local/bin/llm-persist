@@ -670,15 +670,17 @@ entry_file_for_key() {
 }
 
 # The AI panes of an entry, for an expanded row in the Saved tab:
-#   pane id window pane tool name conv visible|held   (tab-separated; "-"
-#   stands in for an empty field, which a tab IFS would otherwise swallow)
+#   pane id window pane tool name conv visible|held worktree   (tab-separated;
+#   "-" stands in for an empty field, which a tab IFS would otherwise
+#   swallow; worktree is the path of the pane's own worktree, if it had one)
 # Args: $1 entry file  $2 row key (printed as the id field)
 pane_rows() {
   jq -r --arg key "$2" '.windows | to_entries[] | .key as $w | .value.visible as $v |
     .value.panes | to_entries[] |
     ["pane", $key, ($w | tostring), (.key | tostring), .value.tool,
      (.value.name // "-"), (.value.conv // "-"),
-     (if .key == $v then "visible" else "held" end)] | @tsv' "$1"
+     (if .key == $v then "visible" else "held" end),
+     (.value.worktree.path // "-")] | @tsv' "$1"
 }
 
 cmd_saved() {
