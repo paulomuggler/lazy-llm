@@ -136,8 +136,8 @@ tmx set-option -w -t e2e @AI_TOOLS claude
 # shellcheck disable=SC2016  # literal backticks
 P5='This is an automated integration test; do not ask questions, finish the job.
 In ONE message, launch two subagents in parallel with the Agent tool, each with subagent_type "general-purpose", isolation "worktree" and run_in_background false:
-- Agent A: run `sleep 25`, then create the file pane-a.txt containing "a", git add it and git commit it with the message "add pane-a".
-- Agent B: run `sleep 25`, then create the file pane-b.txt containing "b", git add it and git commit it with the message "add pane-b".
+- Agent A: run `sleep 15`, then create the file pane-a.txt containing "a", git add it and git commit it with the message "add pane-a".
+- Agent B: run `sleep 15`, then create the file pane-b.txt containing "b", git add it and git commit it with the message "add pane-b".
 After both return, follow the integration instructions you were given, one worktree at a time, until nothing is left to integrate. Then reply DONE.'
 printf '%s' "$P5" > "$sandbox/p5.txt"
 cat > "$sandbox/run5.sh" <<EOF
@@ -294,7 +294,11 @@ assert_has "$(jq -r 'select(.ev == "SessionStart" and .p.source == "resume") | .
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
 echo "Test 4: in a lazy-llm pane — the workspace sees the fan-out while it runs..."
-assert_equals "$(events "$R5" WorktreeCreate '.out' | grep -c .)" "2" "2 WorktreeCreate events from the in-pane session"
+# At least 2: a subagent that returns without working (a refused command,
+# say) gets its empty worktree removed and is relaunched by the parent; the
+# end-state checks below prove nothing was left behind either way.
+n5=$(events "$R5" WorktreeCreate '.out' | grep -c .)
+assert_equals "$([[ $n5 -ge 2 ]] && echo ok || echo "$n5")" "ok" "at least 2 WorktreeCreate events from the in-pane session ($n5)"
 assert_equals "$pane_recorded" "yes" "the worktrees recorded the pane ($PE) as their owner"
 assert_equals "$max_list" "2" "llm-wt list showed both worktrees waiting while they ran"
 assert_equals "$max_border" "2" "the AI pane border showed ⎇×2"
