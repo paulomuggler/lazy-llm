@@ -467,7 +467,9 @@ Detection runs against the AI pane's content via `tmux capture-pane`. Patterns l
 
 **Claude panes get a more reliable signal**, from lazy-llm's own Claude Code plugin
 (`claude-plugin/`, registered by `install.sh` via `claude plugin marketplace add` +
-`claude plugin install lazy-llm@lazy-llm`). Its hooks run `llm-claude-hook`, which:
+`claude plugin install lazy-llm@lazy-llm`; re-running it updates the user install and every
+project-scope install listed in `~/.claude/plugins/installed_plugins.json` whose project
+directory still exists). Its hooks run `llm-claude-hook`, which:
 - writes `working`/`waiting`/`idle` to `~/.cache/lazy-llm/status/<pane_id>` on
   `UserPromptSubmit`, `Notification` and `Stop`, and fires a desktop notification (`notify-send` on Linux, `osascript` on
   macOS) when a pane transitions into `waiting`;

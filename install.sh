@@ -96,6 +96,63 @@ echo "    Symlinks created."
 # home-directory path baked in there breaks on the next machine. The plugin
 # itself is only a shim over the stowed llm-claude-hook, so pulling it from
 # GitHub instead of the local checkout costs nothing in freshness.
+#
+# `claude plugin update` only touches one auto-detected scope (normally user).
+# Projects that enable the plugin in a checked-in .claude/settings.json get
+# project-scope installs, recorded per projectPath in installed_plugins.json,
+# and each one is updated only by running the update from inside that project.
+# Never fails: every problem is a warning, and it always returns 0.
+update_lazy_llm_project_installs() {
+  local plugin="lazy-llm@lazy-llm"
+  local installed="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+  [[ -f "$installed" ]] || return 0
+
+  local paths
+  if command -v jq &>/dev/null; then
+    if ! paths=$(jq -r --arg p "$plugin" '
+        [(.plugins[$p] // [])[]
+         | select(type == "object" and .scope == "project")
+         | .projectPath | strings | select(length > 0)]
+        | unique | .[]' "$installed" 2>/dev/null); then
+      echo -e "    ${YELLOW}Warning: could not parse $installed; project-scope installs not updated.${NC}"
+      return 0
+    fi
+  elif command -v python3 &>/dev/null; then
+    if ! paths=$(python3 - "$installed" "$plugin" 2>/dev/null <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    entries = (json.load(f).get("plugins") or {}).get(sys.argv[2]) or []
+found = set()
+for e in entries:
+    p = e.get("projectPath") if isinstance(e, dict) and e.get("scope") == "project" else None
+    if isinstance(p, str) and p:
+        found.add(p)
+for p in sorted(found):
+    print(p)
+PY
+    ); then
+      echo -e "    ${YELLOW}Warning: could not parse $installed; project-scope installs not updated.${NC}"
+      return 0
+    fi
+  else
+    echo "    Neither jq nor python3 found; project-scope plugin installs not checked."
+    return 0
+  fi
+
+  local path
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    if [[ ! -d "$path" ]]; then
+      echo "    Skipped project-scope install in $path (directory no longer exists)."
+    elif (cd "$path" && claude plugin update "$plugin" --scope project) >/dev/null 2>&1; then
+      echo "    Updated project-scope install in $path"
+    else
+      echo -e "    ${YELLOW}Warning: could not update the project-scope install in $path.${NC}"
+    fi
+  done <<<"$paths"
+  return 0
+}
+
 echo "--> Setting up the Claude Code plugin..."
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MARKETPLACE_SOURCE="$REPO_DIR"
@@ -121,6 +178,7 @@ else
       || echo -e "    ${YELLOW}Warning: could not install the lazy-llm plugin.${NC}"
   fi
   echo "    Plugin lazy-llm@lazy-llm installed (takes effect in new Claude sessions)."
+  update_lazy_llm_project_installs || true
 fi
 
 # --- 5. Final Instructions ---
