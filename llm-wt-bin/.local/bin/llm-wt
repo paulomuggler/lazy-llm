@@ -482,11 +482,7 @@ claude_create() {
   # %0 again. The server's start time says which server the id belongs to.
   # Asked through the hook's inherited $TMUX; not recorded when that fails.
   local server=""
-  # Only through the hook's own $TMUX: without it, tmux would ask whatever
-  # server the default socket reaches, which needn't be the pane's.
-  if [[ -n "${TMUX_PANE:-}" && -n "${TMUX:-}" ]]; then
-    server=$(tmux display-message -p -t "$TMUX_PANE" '#{start_time}' 2>/dev/null) || server=""
-  fi
+  server=$(pane_server_start)
 
   lock_repo "$parent"
   cand="$name"
@@ -529,6 +525,41 @@ claude_create() {
     warn "$parent has a detached HEAD: $wt has nothing to integrate into (no bootstrap, no llm-wt integrate)"
   fi
   printf '%s\n' "$wt"
+}
+
+# The start time of the tmux server the hook's pane ($TMUX_PANE) lives on, or
+# nothing. Only through the hook's own $TMUX: without it, tmux would ask
+# whatever server the default socket reaches, which needn't be the pane's.
+pane_server_start() {
+  [[ -n "${TMUX_PANE:-}" && -n "${TMUX:-}" ]] || return 0
+  tmux display-message -p -t "$TMUX_PANE" '#{start_time}' 2>/dev/null || true
+}
+
+# The live Claude worktrees made by session <sid>, scanning <cwd>'s repo and
+# the project's: "path<TAB>branch<TAB>name" lines (worktrees that are gone
+# are left out).
+session_worktrees() {
+  local cwd="$1" sid="$2" repo key val b seen=""
+  [[ -n "$sid" ]] || return 0
+  for repo in "$cwd" "${CLAUDE_PROJECT_DIR:-}"; do
+    [[ -n "$repo" && -d "$repo" ]] || continue
+    local -a refs=()
+    while read -r key val; do
+      [[ "$val" == "$sid" ]] || continue
+      b="${key#branch.}"
+      b="${b%.*}"
+      [[ " $seen " == *" $b "* ]] && continue
+      seen+=" $b"
+      [[ "$(git -C "$repo" config "branch.$b.lazyLlmKind" 2>/dev/null)" == claude ]] && refs+=("refs/heads/$b")
+    done < <(git -C "$repo" config --get-regexp '^branch\..*\.lazyllmsession$' 2>/dev/null || true)
+    [[ ${#refs[@]} -gt 0 ]] || continue
+    local path name
+    while IFS=$'\t' read -r b path; do
+      [[ -n "$path" && -d "$path" ]] || continue
+      name=$(git -C "$repo" config "branch.$b.lazyLlmName" 2>/dev/null) || name=""
+      printf '%s\t%s\t%s\n' "$path" "$b" "$name"
+    done < <(git -C "$repo" for-each-ref --format=$'%(refname:lstrip=2)\t%(worktreepath)' "${refs[@]}" 2>/dev/null || true)
+  done
 }
 
 # Sets WT BRANCH BASE PRIMARY KIND for an llm-wt worktree containing $1, like
@@ -767,12 +798,67 @@ hook_post_tool_use() {
   esac
 }
 
+# SessionStart (startup, resume, clear, compact):
+# - a session started in an llm-wt worktree (isolated pane, claude -w) gets
+#   worktree-agent.md, as before;
+# - the worktrees this session made (lazyLlmSession) are re-stamped with the
+#   current pane and tmux server: after `lazy-llm restore` or a resume
+#   elsewhere, the border, Worktrees tab and picker find their owner again;
+# - and the session is reminded of them. A resumed session's cwd is the main
+#   directory even when it had entered a worktree (Claude re-enters it
+#   itself), so the rules for one it entered come back here, and so does
+#   the list of subagent worktrees still waiting to land.
 hook_session_start() {
-  local cwd text
+  local cwd sid text="" here="" server line path b name n=0
+  local -a parts=() agents=()
   cwd=$(hook_field cwd)
-  probe_ctx "${cwd:-$PWD}" || return 0
-  text=$(guidance worktree-agent.md) || return 0
-  emit_context SessionStart "$text"
+  cwd="${cwd:-$PWD}"
+  sid=$(hook_field session_id)
+  if probe_ctx "$cwd"; then
+    here="$WT"
+    text=$(guidance worktree-agent.md) && parts+=("$text")
+  fi
+  local -a mine=()
+  while IFS= read -r line; do [[ -n "$line" ]] && mine+=("$line"); done < <(session_worktrees "$cwd" "$sid")
+  if [[ ${#mine[@]} -gt 0 && -n "${TMUX_PANE:-}" && -n "${TMUX:-}" ]]; then
+    server=$(pane_server_start)
+    for line in "${mine[@]}"; do
+      path="${line%%$'\t'*}"; b="${line#*$'\t'}"; b="${b%%$'\t'*}"
+      lock_repo "$path"
+      git -C "$path" config "branch.$b.lazyLlmPane" "$TMUX_PANE" || true
+      if [[ -n "$server" ]]; then
+        git -C "$path" config "branch.$b.lazyLlmPaneServer" "$server" || true
+      fi
+      unlock_repo
+    done
+  fi
+  for line in ${mine[@]+"${mine[@]}"}; do
+    path="${line%%$'\t'*}"; name="${line##*$'\t'}"
+    [[ "$path" == "$here" ]] && continue
+    if [[ "$name" == agent-* ]]; then
+      agents+=("$path")
+    elif probe_ctx "$path"; then
+      text=$(guidance worktree-agent.md) || continue
+      parts+=("lazy-llm: this session entered the worktree \`$WT\` earlier (EnterWorktree); resuming puts it back there. If you're still working in it, this applies:"$'\n\n'"$text")
+    fi
+  done
+  if [[ ${#agents[@]} -gt 0 ]]; then
+    text="lazy-llm: ${#agents[@]} subagent worktree(s) from this session are still waiting to land:"
+    for path in "${agents[@]}"; do
+      probe_ctx "$path" || continue
+      n=$(git -C "$WT" rev-list --count "$BASE..HEAD" 2>/dev/null) || n="?"
+      text+=$'\n'"- \`$WT\` (branch \`$BRANCH\`, $n commit(s) beyond \`$BASE\`)"
+    done
+    text+=$'\n'"Land each with \`llm-wt integrate --remove <worktree>\` (review it first), or drop it with \`llm-wt remove --force <worktree>\`. \`llm-wt list\` shows them."
+    parts+=("$text")
+  fi
+  [[ ${#parts[@]} -gt 0 ]] || return 0
+  local joined="" part
+  for part in "${parts[@]}"; do
+    [[ -n "$joined" ]] && joined+=$'\n\n'
+    joined+="$part"
+  done
+  emit_context SessionStart "$joined"
 }
 
 # Each event runs in a child process of this script, so `set -e` holds inside

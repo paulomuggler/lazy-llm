@@ -326,11 +326,50 @@ assert_has "$c" "branch \`lazy/p11\`" "...filled"
 assert_lacks "$c" "{{" "...no placeholder left"
 c=$(ctx "$(hook "$(p_sessstart "$cw")")")
 assert_has "$c" "<!-- lazy-llm:worktree-agent -->" "claude worktree (claude -w): worktree-agent.md"
-assert_empty "$(hook "$(p_sessstart "$R")")" "main dir: nothing"
+assert_empty "$(hook "$(printf '{"session_id":"fresh-session","cwd":"%s","hook_event_name":"SessionStart","source":"startup"}' "$R")")" "main dir, a new session: nothing"
 out=$(cd "$pane" && printf '%s' "$(p_sessstart "$pane")" | TMUX_PANE=%1 LAZY_LLM_WORKTREE=1 bash "$CLAUDE_HOOK" 2>/dev/null)
 assert_lacks "$out" "additionalContext" "llm-claude-hook no longer prints the guidance (no duplicate)"
 
 # ──────────────────────────────────────────────────────────────────────────
+echo ""
+echo "Test 11b: a resumed session (lazy-llm restore) re-owns and is reminded of its worktrees..."
+R="$sandbox/r11b"; mk_repo "$R"
+p_sess() { printf '{"session_id":"%s","cwd":"%s","hook_event_name":"SessionStart","source":"%s"}' "$1" "$2" "$3"; }
+# The original pane, on a first tmux server.
+tmux -f /dev/null new-session -d -s orig "exec sleep 300"
+P1=$(tmux display -t orig -p '#{pane_id}'); T1=$(tmux display -t orig -p '#{socket_path},#{pid},0')
+mk() { printf '%s' "$(p_create "$R" "$1" sess-R)" | TMUX="$T1" TMUX_PANE="$P1" "$LLMWT" claude-hook 2>/dev/null; }
+sa=$(mk agent-r11b); commit_file "$sa" s.txt sub
+se=$(mk wise-entered-r11b)
+s1=$(cfg "$R" lazy/agent-r11b lazyLlmPaneServer)
+env -u TMUX -u TMUX_PANE tmux kill-server 2>/dev/null
+sleep 1.1   # a new server's start time (seconds) must differ
+# lazy-llm restore: a new server, a new pane, `claude --resume` → SessionStart(resume)
+tmux -f /dev/null new-session -d -s restored "exec sleep 300"
+P2=$(tmux display -t restored -p '#{pane_id}'); T2=$(tmux display -t restored -p '#{socket_path},#{pid},0')
+s2=$(tmux display -t restored -p '#{start_time}')
+out=$(printf '%s' "$(p_sess sess-R "$R" resume)" | TMUX="$T2" TMUX_PANE="$P2" "$LLMWT" claude-hook 2>/dev/null)
+assert_equals "$([[ "$s1" != "$s2" ]] && echo differ)" "differ" "setup: the restored server has another start time"
+assert_equals "$(cfg "$R" lazy/agent-r11b lazyLlmPane) $(cfg "$R" lazy/agent-r11b lazyLlmPaneServer)" "$P2 $s2" "the subagent worktree is re-stamped with the restored pane and server"
+assert_equals "$(cfg "$R" lazy/wise-entered-r11b lazyLlmPaneServer)" "$s2" "...and so is the entered one"
+assert_equals "$(is_json "$out")" "ok" "valid JSON"
+c=$(ctx "$out")
+assert_has "$c" "1 subagent worktree(s) from this session are still waiting to land" "reminded of the subagent worktree"
+assert_has "$c" "\`$sa\` (branch \`lazy/agent-r11b\`, 1 commit(s) beyond \`feature\`)" "...with its path, branch and commits"
+assert_has "$c" "entered the worktree \`$se\` earlier (EnterWorktree)" "reminded of the worktree it entered"
+assert_has "$c" "<!-- lazy-llm:worktree-agent -->" "...with the isolated-worktree rules (resume's cwd is the main dir)"
+assert_lacks "$c" "{{" "no placeholder left"
+out=$(printf '%s' "$(p_sess other-session "$R" resume)" | TMUX="$T2" TMUX_PANE="$P2" "$LLMWT" claude-hook 2>/dev/null)
+assert_empty "$out" "another session: nothing"
+env -u TMUX -u TMUX_PANE tmux kill-server 2>/dev/null
+before=$(cfg "$R" lazy/agent-r11b lazyLlmPane)
+out=$(printf '%s' "$(p_sess sess-R "$R" compact)" | "$LLMWT" claude-hook 2>/dev/null)
+assert_has "$(ctx "$out")" "still waiting to land" "outside tmux (or after a compact): still reminded"
+assert_equals "$(cfg "$R" lazy/agent-r11b lazyLlmPane)" "$before" "...but ownership is left alone without a pane"
+out=$(printf '%s' "$(p_sess sess-R "$se" resume)" | "$LLMWT" claude-hook 2>/dev/null)
+c=$(ctx "$out")
+assert_equals "$(grep -o 'lazy-llm:worktree-agent' <<< "$c" | wc -l | tr -d ' ')" "1" "started inside the entered worktree: the rules once, not twice"
+assert_lacks "$c" "entered the worktree \`$se\` earlier" "...without the 'entered earlier' preface"
 echo ""
 echo "Test 12: PostToolUse EnterWorktree..."
 ew=$(hook "$(p_create "$R" wise-exploring-metcalfe)")
