@@ -1168,8 +1168,14 @@ dispatch_action() {
       local sid="${action#action:saved-*:}" sname
       sname=$(tmux list-sessions -F '#{session_name}	#{@lazy_llm_ws_id}' 2>/dev/null \
         | awk -F'\t' -v id="$sid" '$2 == id {print $1; exit}') || sname=""
-      [[ -n "$sname" ]] && _dashboard_close_or_kill "$sname" \
-        "$([[ "$action" == action:saved-close:* ]] && echo close || echo kill)"
+      # An if, not `&&` (here and in the other Saved-tab arms): a false test
+      # ending an arm is dispatch_action's status, and set -e would close the
+      # dashboard on a "no", or here when the workspace stopped running after
+      # the tab was drawn.
+      if [[ -n "$sname" ]]; then
+        _dashboard_close_or_kill "$sname" \
+          "$([[ "$action" == action:saved-close:* ]] && echo close || echo kill)"
+      fi
       ;;
     action:saved-hint:*)
       tmux display-message "${action#action:saved-hint:}"
@@ -1194,7 +1200,9 @@ dispatch_action() {
       confirm=$(printf 'no\nyes' | fzf \
         --height=100% --reverse --border=rounded --header="$question" \
         --prompt="confirm> " || echo no)
-      [[ "$confirm" == "yes" ]] && { "$HOME/.local/bin/llm-persist" forget --snapshot "$skey" >/dev/null 2>&1 || true; }
+      if [[ "$confirm" == "yes" ]]; then
+        "$HOME/.local/bin/llm-persist" forget --snapshot "$skey" >/dev/null 2>&1 || true
+      fi
       ;;
     action:rename:*)
       local name="${action#action:rename:}"
@@ -1299,7 +1307,9 @@ dispatch_action() {
       local sid="${action#action:saved-switch:}" sname
       sname=$(tmux list-sessions -F '#{session_name}	#{@lazy_llm_ws_id}' 2>/dev/null \
         | awk -F'\t' -v id="$sid" '$2 == id {print $1; exit}') || sname=""
-      [[ -n "$sname" ]] && tmux switch-client -t "=$sname" 2>/dev/null
+      if [[ -n "$sname" ]]; then
+        tmux switch-client -t "=$sname" 2>/dev/null || true
+      fi
       ;;
     action:saved-forget:*)
       local rest="${action#action:saved-forget:}" state sid question confirm
@@ -1310,7 +1320,9 @@ dispatch_action() {
       confirm=$(printf 'no\nyes' | fzf \
         --height=100% --reverse --border=rounded --header="$question" \
         --prompt="confirm> " || echo no)
-      [[ "$confirm" == "yes" ]] && { "$HOME/.local/bin/llm-persist" forget --id "$sid" >/dev/null 2>&1 || true; }
+      if [[ "$confirm" == "yes" ]]; then
+        "$HOME/.local/bin/llm-persist" forget --id "$sid" >/dev/null 2>&1 || true
+      fi
       ;;
     action:pane-add|action:pane-add-isolated)
       local tool
