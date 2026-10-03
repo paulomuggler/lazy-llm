@@ -2,9 +2,9 @@
 slug: claude-worktree-followups
 title: Follow-up pass after Claude's subagent worktrees — runner exit status, project-scope plugin update, Saved tab "no", pane-id reuse, cleanup sweep, full e2e
 priority: P1
-status: in-progress
+status: done
 created: 2026-10-03_03:49
-updated: 2026-10-03_20:17
+updated: 2026-10-03_22:27
 depends-on: [claude-subagent-worktrees, claude-subagent-worktrees-ui]
 tags: [worktree, claude-plugin, dashboard, tests]
 model: inline
@@ -602,3 +602,7 @@ for an old-code check. The swap was restored once the session came back. The roo
 found yet (investigation follows; see the session notes). Since then every suite run goes through
 a decoy tmux pane, and old-code checks use a throwaway `git worktree`, never a live swap.
 Full suite in the decoy: 28/28, exit 0.
+
+**Final (2026-10-03_22:27):** full suite 28/28 and live scenario 47/47, both run inside decoy tmux panes. Pushed,
+and the dev-env pointer bumped. No plugin change since 0.4.0 (the hooks are unchanged; llm-wt is
+live through stow).

@@ -1,15 +1,12 @@
 # TODO Index
 > Auto-generated. Run `/todo lint` to regenerate.
 
-## In Progress (1)
-
-- [~] [claude-worktree-followups](done/claude-worktree-followups.md) - Follow-up pass after Claude's subagent worktrees — runner exit status, project-scope plugin update, Saved tab "no", pane-id reuse, cleanup sweep, full e2e
-
-## Done (9)
+## Done (10)
 
 - [x] [status-unread-state-and-aggregate-counts](done/status-unread-state-and-aggregate-counts.md) - Unread" pane status (finished, not yet looked at) + per-status aggregate counts in status bars
 - [x] [workspace-save-restore](done/workspace-save-restore.md) - Save lazy-llm workspaces to a manifest and rebuild them after the tmux server dies (lazy-llm restore)
 - [x] [claude-subagent-worktrees](done/claude-subagent-worktrees.md) - Claude Code's subagent / EnterWorktree worktrees go through llm-wt (hooks, parent integration, guidance)
+- [x] [claude-worktree-followups](done/claude-worktree-followups.md) - Follow-up pass after Claude's subagent worktrees — runner exit status, project-scope plugin update, Saved tab "no", pane-id reuse, cleanup sweep, full e2e
 - [x] [dashboard-manual-list-reordering](done/dashboard-manual-list-reordering.md) - Manual reordering of dashboard tree rows (Ctrl+Up/Down), scoped per tree level
 - [x] [dashboard-reload-avoid-full-redraw](done/dashboard-reload-avoid-full-redraw.md) - Use fzf's reload() to avoid a full fzf relaunch on fold/toggle/refresh
 - [x] [pane-border-identity-suffixes](done/pane-border-identity-suffixes.md) - AI pane border shows workspace - pane name - harness - model
