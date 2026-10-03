@@ -312,6 +312,19 @@ assert_equals "$(seg "$R" "$Q")" "main $sha local ⎇×3" "border segment: it st
 assert_has "$(border "$Q")" "│ main $sha local ⎇×3 " "llm-pane-border: Q's border still ends with ⎇×3"
 row=$( (cd "$R" && lazy_llm_gather_worktrees) | awk -F$'\x1f' -v p="$WR" '$1 == p {print $2 "|" $8}')
 assert_equals "$row" "lazy/agent-rebase|claude:cws:$Q" "Worktrees tab: its row is there, on its branch, owned by Q"
+# The nvim <leader>llmw picker lists it too (%(worktreepath) is empty).
+cat > "$sandbox/nvim-rebase.lua" <<LUA
+local M = require("lazy_llm_worktree")
+local found = "no"
+for _, w in ipairs(M.claude_worktrees("$R", "$Q")) do
+  if w.path == "$WR" and w.branch == "lazy/agent-rebase" then found = "yes" end
+end
+local f = io.open("$sandbox/nvim-rebase.out", "w"); f:write(found); f:close()
+LUA
+(cd "$R" && nvim --headless --clean \
+    --cmd "set rtp^=$REPO_ROOT/nvim-llm-send-plugin/.config/nvim" \
+    -c "luafile $sandbox/nvim-rebase.lua" -c "qa!" >/dev/null 2>&1)
+assert_equals "$(cat "$sandbox/nvim-rebase.out" 2>/dev/null)" "yes" "the llmw picker still lists it, on its branch"
 # Cost: given the common dir (as the segment passes it), the rebase lookup
 # reads files only: the same 4 git calls as with no rebase.
 : > "$sandbox/gitcalls"; PATH="$sandbox/gitshim:$PATH" lazy_llm_git_segment "$R" T D "$Q" >/dev/null

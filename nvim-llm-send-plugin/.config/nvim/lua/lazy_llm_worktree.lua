@@ -139,11 +139,58 @@ function M.claude_worktrees(dir, ai)
 		"git", "-C", dir, "for-each-ref", "--format=%(refname:lstrip=2)%09%(worktreepath)",
 	}, refs))
 	local wts = {}
+	local missing = {}
 	for _, l in ipairs(out) do
 		local b, path = l:match("^(.-)\t(.*)$")
 		if path and path ~= "" and vim.fn.isdirectory(path) == 1 then
 			table.insert(wts, { path = path, branch = b })
+		elseif b then
+			missing[b] = true
 		end
+	end
+	-- A worktree mid-rebase (a conflicted llm-wt integrate) has a detached
+	-- HEAD, so for-each-ref gives it no path: find it among the detached
+	-- worktrees by the branch its rebase is on.
+	if next(missing) then
+		local function rebase_branch(wt)
+			local f = io.open(wt .. "/.git")
+			if not f then
+				return nil
+			end
+			local line = f:read("*l")
+			f:close()
+			local gitdir = line and line:match("^gitdir: (.*)$")
+			if not gitdir then
+				return nil
+			end
+			for _, sub in ipairs({ "rebase-merge", "rebase-apply" }) do
+				local h = io.open(gitdir .. "/" .. sub .. "/head-name")
+				if h then
+					local head = h:read("*l")
+					h:close()
+					return head and head:match("^refs/heads/(.+)$")
+				end
+			end
+			return nil
+		end
+		local cur, detached = nil, false
+		local function consider()
+			if cur and detached then
+				local b = rebase_branch(cur)
+				if b and missing[b] then
+					table.insert(wts, { path = cur, branch = b })
+				end
+			end
+		end
+		for _, l in ipairs(vim.fn.systemlist({ "git", "-C", dir, "worktree", "list", "--porcelain" })) do
+			if l:match("^worktree ") then
+				consider()
+				cur, detached = l:sub(10), false
+			elseif l == "detached" then
+				detached = true
+			end
+		end
+		consider()
 	end
 	table.sort(wts, function(a, b)
 		return a.path < b.path
