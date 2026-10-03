@@ -163,6 +163,10 @@ function M.claude_worktrees(dir, ai)
 			if not gitdir then
 				return nil
 			end
+			-- worktree.useRelativePaths: the gitdir is relative to the worktree.
+			if gitdir:sub(1, 1) ~= "/" then
+				gitdir = wt .. "/" .. gitdir
+			end
 			for _, sub in ipairs({ "rebase-merge", "rebase-apply" }) do
 				local h = io.open(gitdir .. "/" .. sub .. "/head-name")
 				if h then

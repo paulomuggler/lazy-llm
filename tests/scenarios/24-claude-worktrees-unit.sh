@@ -417,10 +417,28 @@ assert_has "$c" "\`$w1\`" "after /clear, the new conversation is told about the 
 assert_equals "$(cfg "$R" lazy/agent-c11 lazyLlmSession)" "sess-C" "...its recorded session stays the old one"
 assert_has "$(ctx "$(hk "$(p_sess sess-C "$R" resume)" "$PB")")" "\`$w1\`" "...so resuming the old conversation still finds it"
 assert_empty "$(ctx "$(hk "$(p_sess sess-E "$R" startup)" "$PB")")" "a new conversation (not /clear) inherits nothing"
-mkdir -p "$XS/lazy-llm/claude-sessions"; printf '%s\n' "$sandbox/gone-wt" > "$XS/lazy-llm/claude-sessions/sess-dead"
-hk "$(p_sess sess-H "$R" clear)" "$PB" >/dev/null
-assert_file_not_exists "$XS/lazy-llm/claude-sessions/sess-dead" "a /clear prunes a registry whose worktrees are all gone"
-assert_file_exists "$XS/lazy-llm/claude-sessions/sess-C" "...and keeps live ones"
+mkdir -p "$XS/lazy-llm/claude-sessions"
+for i in $(seq 1 51); do printf '%s\tsess-dead%s\n' "$sandbox/gone-wt$i" "$i" > "$XS/lazy-llm/claude-sessions/sess-dead$i"; done
+hk "$(p_sess sess-H "$R" startup)" "$PB" >/dev/null
+assert_equals "$(find "$XS/lazy-llm/claude-sessions" -name 'sess-dead*' | wc -l | tr -d ' ')" "0" "over 50 registries: those whose worktrees are all gone are dropped"
+assert_file_exists "$XS/lazy-llm/claude-sessions/sess-C" "...live ones are kept"
+# A path reused after a landing by another session's worktree isn't claimed
+# through a stale registry entry (verification round 2, D1).
+wr=$(hk "$(p_create "$R" reuse-c11 sess-J)" "$PB")
+"$LLMWT" remove "$wr" >/dev/null 2>&1
+wr2=$(hk "$(p_create "$R" reuse-c11 sess-K)" "$PB")
+assert_equals "$wr2" "$wr" "setup: the second session's worktree reuses the path"
+assert_lacks "$(ctx "$(hk "$(p_sess sess-J "$R" compact)" "$PB")")" "$wr" "the first session isn't told about the second's worktree at that path"
+assert_has "$(ctx "$(hk "$(p_sess sess-K "$R" compact)" "$PB")")" "$wr" "...the second session is"
+# /clear cost stays flat: it reads the pane's index, not every registry (each
+# /clear adds one: the cost grew with every clear, verification round 2 D3).
+for i in 1 2 3 4; do hk "$(p_create "$R" "agent-flat$i" sess-F0)" "$PB" >/dev/null; done
+clear_ms() { local t0 t1; t0=$(date +%s%N); hk "$(p_sess "$1" "$R" clear)" "$PB" >/dev/null; t1=$(date +%s%N); echo $(( (t1 - t0) / 1000000 )); }
+first=$(clear_ms sess-flat0)
+for i in $(seq 1 25); do hk "$(p_sess "sess-flat$i" "$R" clear)" "$PB" >/dev/null; done
+last=$(clear_ms sess-flat26)
+[[ $last -lt $((2 * first + 150)) ]] && r=flat || r="grew: first ${first}ms, 27th ${last}ms"
+assert_equals "$r" "flat" "/clear cost doesn't grow with each clear (first ${first}ms, 27th ${last}ms)"
 env -u TMUX -u TMUX_PANE tmux kill-server 2>/dev/null
 # 5. An isolated pane whose session also entered a worktree: the rules once.
 pane=$("$LLMWT" create "$R" p11c 2>/dev/null)

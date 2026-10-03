@@ -325,6 +325,21 @@ LUA
     --cmd "set rtp^=$REPO_ROOT/nvim-llm-send-plugin/.config/nvim" \
     -c "luafile $sandbox/nvim-rebase.lua" -c "qa!" >/dev/null 2>&1)
 assert_equals "$(cat "$sandbox/nvim-rebase.out" 2>/dev/null)" "yes" "the llmw picker still lists it, on its branch"
+# ...also when git writes relative worktree paths (worktree.useRelativePaths):
+# the .git file's gitdir is then relative to the worktree (verify round 2, D2).
+git -C "$R" config worktree.useRelativePaths true
+WRR=$(claude_wt "$R" agent-relrebase "$Q")
+git -C "$R" config --unset worktree.useRelativePaths
+for n in 1 2; do echo "rr$n" > "$WRR/rr$n.txt"; git -C "$WRR" add "rr$n.txt"; git -C "$WRR" commit -qm "rr$n"; done
+GIT_SEQUENCE_EDITOR="sed -i '1i break'" git -C "$WRR" rebase -i main >/dev/null 2>&1
+assert_has "$(head -1 "$WRR/.git")" "gitdir: ../" "setup: a relative gitdir"
+sed -i "s|$WR|$WRR|; s|lazy/agent-rebase|lazy/agent-relrebase|" "$sandbox/nvim-rebase.lua"
+(cd "$R" && nvim --headless --clean \
+    --cmd "set rtp^=$REPO_ROOT/nvim-llm-send-plugin/.config/nvim" \
+    -c "luafile $sandbox/nvim-rebase.lua" -c "qa!" >/dev/null 2>&1)
+assert_equals "$(cat "$sandbox/nvim-rebase.out" 2>/dev/null)" "yes" "...and with a relative gitdir"
+git -C "$WRR" rebase --abort
+"$LLMWT" remove --force "$WRR" >/dev/null 2>&1   # out of the later ⎇×N counts
 # Cost: given the common dir (as the segment passes it), the rebase lookup
 # reads files only: the same 4 git calls as with no rebase.
 : > "$sandbox/gitcalls"; PATH="$sandbox/gitshim:$PATH" lazy_llm_git_segment "$R" T D "$Q" >/dev/null

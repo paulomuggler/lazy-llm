@@ -518,6 +518,7 @@ claude_create() {
   unlock_repo
 
   registry_add "$session" "$wt"
+  [[ -n "$server" && -n "${TMUX_PANE:-}" ]] && pane_index_add "$server" "$TMUX_PANE" "$wt" "$session"
 
   if [[ -n "$base" ]]; then
     # In a child process: a bootstrap failure (an unreadable file to copy,
@@ -546,29 +547,93 @@ pane_alive() {
 # The session registry: one file per Claude session listing the worktrees it
 # made (or inherited at /clear), so a resumed session finds them whatever its
 # cwd: a session launched in a superproject that worked in a submodule
-# resumes with the superproject as cwd. Best effort: never fails.
-registry_dir() { printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/lazy-llm/claude-sessions"; }
-registry_add() {
-  local sid file
-  sid=$(safe_name "${1:-}")
-  [[ -n "$sid" && -n "${2:-}" ]] || return 0
-  file="$(registry_dir)/$sid"
-  mkdir -p "$(registry_dir)" 2>/dev/null || return 0
-  grep -qxF -- "$2" "$file" 2>/dev/null || printf '%s\n' "$2" >> "$file" 2>/dev/null || true
+# resumes with the superproject as cwd. Entries are "path<TAB>session": the
+# session the worktree itself records (lazyLlmSession). An entry only counts
+# while the worktree at that path still records that session, so a path
+# reused by another session's worktree after a landing isn't claimed.
+# Best effort throughout: never fails the hook.
+registry_root() { printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/lazy-llm"; }
+registry_dir() { printf '%s\n' "$(registry_root)/claude-sessions"; }
+# Per-pane index ("<server start>-<pane>"): the worktrees a pane owns, so a
+# /clear finds its pane's worktrees without walking every registry.
+pane_index_file() {
+  [[ -n "${1:-}" && -n "${2:-}" ]] || return 1
+  printf '%s\n' "$(registry_root)/claude-panes/$(safe_name "$1-${2#%}")"
+}
+_registry_append() {  # file path session
+  [[ -n "$1" && -n "$2" && -n "$3" ]] || return 0
+  mkdir -p "$(dirname "$1")" 2>/dev/null || return 0
+  grep -qxF -- "$2"$'\t'"$3" "$1" 2>/dev/null || printf '%s\t%s\n' "$2" "$3" >> "$1" 2>/dev/null || true
   return 0
 }
-registry_has_live() {
-  local path
-  while IFS= read -r path; do
-    [[ -n "$path" && -d "$path" ]] && return 0
-  done < "$1"
-  return 1
-}
-registry_paths() {
+registry_add() {  # sid path [the worktree's own session, default sid]
   local sid
   sid=$(safe_name "${1:-}")
-  [[ -n "$sid" ]] || return 0
-  cat "$(registry_dir)/$sid" 2>/dev/null || true
+  [[ -n "$sid" && -n "${2:-}" ]] || return 0
+  _registry_append "$(registry_dir)/$sid" "$2" "${3:-$1}"
+}
+pane_index_add() {  # server pane path session
+  local f
+  f=$(pane_index_file "$1" "$2") || return 0
+  _registry_append "$f" "$3" "$4"
+}
+# "path<TAB>session" lines of a registry or index file. Lines written before
+# entries carried a session ("path" alone) belong to <default session>.
+_registry_read() {  # file default-session
+  local path sess
+  [[ -r "$1" ]] || return 0
+  while IFS=$'\t' read -r path sess; do
+    [[ -n "$path" ]] && printf '%s\t%s\n' "$path" "${sess:-$2}"
+  done < "$1"
+}
+registry_entries() { local sid; sid=$(safe_name "${1:-}"); [[ -n "$sid" ]] && _registry_read "$(registry_dir)/$sid" "$1"; return 0; }
+# True when the worktree at <path> is a live Claude worktree recording
+# session <sess>.
+entry_live() {
+  local b
+  [[ -d "$1" && "$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" == "$1" ]] || return 1
+  b=$(wt_branch "$1")
+  [[ -n "$b" ]] || return 1
+  [[ "$(git -C "$1" config "branch.$b.lazyLlmKind" 2>/dev/null)" == claude ]] || return 1
+  [[ "$(git -C "$1" config "branch.$b.lazyLlmSession" 2>/dev/null)" == "$2" ]]
+}
+# Registries of sessions that are never resumed would pile up: once there are
+# more than 50, drop the ones whose worktrees are all gone (directory checks
+# only, no git). Unreadable files are left alone.
+registry_gc() {
+  local d f path live n=0
+  for d in "$(registry_dir)" "$(registry_root)/claude-panes"; do
+    [[ -d "$d" ]] || continue
+    n=$(find "$d" -maxdepth 1 -type f 2>/dev/null | wc -l)
+    [[ $n -gt 50 ]] || continue
+    for f in "$d"/*; do
+      [[ -f "$f" && -r "$f" && -w "$f" ]] || continue
+      live=false
+      while IFS=$'\t' read -r path _; do
+        [[ -n "$path" && -d "$path" ]] && { live=true; break; }
+      done < "$f"
+      $live || rm -f "$f" 2>/dev/null || true
+    done
+  done
+  return 0
+}
+
+# Rewrite a registry/index file keeping only its live entries; remove it when
+# none are left. A file that can't be read and written is left alone.
+registry_prune() {  # file default-session
+  local f="$1" path sess kept=""
+  [[ -f "$f" && -r "$f" && -w "$f" ]] || return 0
+  while IFS=$'\t' read -r path sess; do
+    entry_live "$path" "$sess" && kept+="$path"$'\t'"$sess"$'\n'
+  done < <(_registry_read "$f" "$2")
+  if [[ -z "$kept" ]]; then
+    rm -f "$f" 2>/dev/null || true
+  else
+    if ! { printf '%s' "$kept" > "$f.tmp.$$" && mv -f "$f.tmp.$$" "$f"; } 2>/dev/null; then
+      rm -f "$f.tmp.$$" 2>/dev/null || true
+    fi
+  fi
+  return 0
 }
 
 # "branch<TAB>path" for every worktree of <repo>, including one mid-rebase
@@ -596,11 +661,14 @@ worktrees_by_branch() {
 # top directory, of kind claude, and either name <sid> as its session or be
 # listed in <sid>'s registry (inherited at /clear).
 session_worktrees() {
-  local cwd="$1" sid="$2" repo key val b path seen="" listed name sess
+  local cwd="$1" sid="$2" repo key val b path seen="" name sess
   [[ -n "$sid" ]] || return 0
   local -a cands=()
-  while IFS= read -r path; do [[ -n "$path" ]] && cands+=("$path"); done < <(registry_paths "$sid")
-  listed=" ${cands[*]+${cands[*]}} "
+  local -A esess=()
+  while IFS=$'\t' read -r path sess; do
+    [[ -n "$path" ]] || continue
+    cands+=("$path"); esess[$path]="$sess"
+  done < <(registry_entries "$sid")
   for repo in "$cwd" "${CLAUDE_PROJECT_DIR:-}"; do
     [[ -n "$repo" && -d "$repo" ]] || continue
     local -A want=()
@@ -622,7 +690,9 @@ session_worktrees() {
     [[ -n "$b" ]] || continue
     [[ "$(git -C "$path" config "branch.$b.lazyLlmKind" 2>/dev/null)" == claude ]] || continue
     sess=$(git -C "$path" config "branch.$b.lazyLlmSession" 2>/dev/null) || sess=""
-    [[ "$sess" == "$sid" || "$listed" == *" $path "* ]] || continue
+    # Its own session, or the one its registry entry names (inherited at
+    # /clear) — and that entry must match what the worktree records.
+    [[ "$sess" == "$sid" || ( -n "${esess[$path]:-}" && "$sess" == "${esess[$path]}" ) ]] || continue
     name=$(git -C "$path" config "branch.$b.lazyLlmName" 2>/dev/null) || name=""
     printf '%s\t%s\t%s\n' "$path" "$b" "$name"
   done
@@ -894,6 +964,8 @@ hook_session_start() {
   if [[ "$src" == clear && -n "$sid" && -n "$server" ]]; then
     inherit_pane_worktrees "$sid" "$server"
   fi
+  [[ -n "$sid" ]] && registry_prune "$(registry_dir)/$(safe_name "$sid")" "$sid"
+  registry_gc
   local -a mine=()
   while IFS= read -r line; do [[ -n "$line" ]] && mine+=("$line"); done < <(session_worktrees "$cwd" "$sid")
   for line in ${mine[@]+"${mine[@]}"}; do
@@ -901,12 +973,15 @@ hook_session_start() {
     if [[ -n "$server" ]]; then
       owner=$(git -C "$path" config "branch.$b.lazyLlmPane" 2>/dev/null) || owner=""
       osrv=$(git -C "$path" config "branch.$b.lazyLlmPaneServer" 2>/dev/null) || osrv=""
+      # A live owner keeps it: on this server, or with no server recorded
+      # (a worktree from before servers were recorded) and alive here.
       if [[ "$owner" != "$TMUX_PANE" || "$osrv" != "$server" ]] \
-          && ! { [[ "$osrv" == "$server" ]] && pane_alive "$owner"; }; then
+          && ! { [[ "$osrv" == "$server" || -z "$osrv" ]] && pane_alive "$owner"; }; then
         lock_repo "$path"
         git -C "$path" config "branch.$b.lazyLlmPane" "$TMUX_PANE" || true
         git -C "$path" config "branch.$b.lazyLlmPaneServer" "$server" || true
         unlock_repo
+        pane_index_add "$server" "$TMUX_PANE" "$path" "$(git -C "$path" config "branch.$b.lazyLlmSession" 2>/dev/null)"
       fi
     fi
     [[ "$path" == "$here" ]] && continue
@@ -951,26 +1026,22 @@ hook_session_start() {
 }
 
 # After /clear (a new session id, same pane): add the Claude worktrees this
-# pane owns on this server to the new session's registry. Their recorded
-# session stays the old one, so resuming that conversation still finds them.
+# pane owns on this server to the new session's registry, from the pane's
+# index (not by walking every registry: each /clear would add one). Their
+# recorded session stays the old one, so resuming that conversation still
+# finds them, and the entry names it, so only that worktree matches.
 inherit_pane_worktrees() {
-  local sid="$1" server="$2" f path b
-  for f in "$(registry_dir)"/*; do
-    [[ -f "$f" ]] || continue
-    # Prune a registry whose worktrees are all gone.
-    if ! registry_has_live "$f"; then
-      rm -f "$f" 2>/dev/null || true
-      continue
-    fi
-    while IFS= read -r path; do
-      [[ -n "$path" && -d "$path" ]] || continue
-      b=$(wt_branch "$path")
-      [[ -n "$b" ]] || continue
-      [[ "$(git -C "$path" config "branch.$b.lazyLlmPane" 2>/dev/null)" == "$TMUX_PANE" ]] || continue
-      [[ "$(git -C "$path" config "branch.$b.lazyLlmPaneServer" 2>/dev/null)" == "$server" ]] || continue
-      registry_add "$sid" "$path"
-    done < "$f"
-  done
+  local sid="$1" server="$2" f path sess b
+  f=$(pane_index_file "$server" "$TMUX_PANE") || return 0
+  registry_prune "$f" ""
+  while IFS=$'\t' read -r path sess; do
+    [[ -n "$path" && -n "$sess" ]] || continue
+    entry_live "$path" "$sess" || continue
+    b=$(wt_branch "$path")
+    [[ "$(git -C "$path" config "branch.$b.lazyLlmPane" 2>/dev/null)" == "$TMUX_PANE" ]] || continue
+    [[ "$(git -C "$path" config "branch.$b.lazyLlmPaneServer" 2>/dev/null)" == "$server" ]] || continue
+    registry_add "$sid" "$path" "$sess"
+  done < <(_registry_read "$f" "")
 }
 
 # Each event runs in a child process of this script, so `set -e` holds inside
