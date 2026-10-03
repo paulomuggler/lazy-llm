@@ -155,11 +155,16 @@ echo "Running five live Claude sessions in parallel (model: $MODEL), one in a sa
 run "$R1" "$P1" & run "$R2" "$P2" & run "$R3" "$P3" & run "$R4" "$P4" &
 
 # Sample the in-pane session's worktrees from outside while it runs.
-BORDER="$REPO_ROOT/lazy-llm-bin/.local/bin/llm-pane-border"
 # The border and gather helpers keep per-pane caches under ~/.cache/lazy-llm
 # keyed by pane id: give them a sandbox HOME so this server's %0 never
 # touches the user's %0 record (HOME stays real only for claude itself).
-BH="$sandbox/border-home"; mkdir -p "$BH"
+# llm-pane-border sources lazy-llm-lib.sh from its own directory, as stowed:
+# link both (and llm-wt) side by side, as in ~/.local/bin.
+BH="$sandbox/border-home"; mkdir -p "$BH/bin"
+for f in lazy-llm-bin/.local/bin/llm-pane-border llm-send-bin/.local/bin/lazy-llm-lib.sh llm-wt-bin/.local/bin/llm-wt; do
+    ln -s "$REPO_ROOT/$f" "$BH/bin/${f##*/}"
+done
+BORDER="$BH/bin/llm-pane-border"
 benv() { env HOME="$BH" XDG_CACHE_HOME="$BH/.cache" XDG_STATE_HOME="$BH/.state" TMUX_TMPDIR="$TM" "$@"; }
 max_list=0 max_border=0 owner_seen=no pane_recorded=no
 for _ in $(seq 1 600); do
@@ -168,6 +173,7 @@ for _ in $(seq 1 600); do
     [[ $n -gt $max_list ]] && max_list=$n
     b=$(benv "$BORDER" "$PE" claude 2>/dev/null | grep -o '⎇×[0-9]*' | tr -dc '0-9' || true)
     [[ -n "$b" && $b -gt $max_border ]] && max_border=$b
+    # shellcheck disable=SC2016  # $1 expands in the inner bash
     if (cd "$R5" && benv bash -c 'source "$1"; lazy_llm_gather_worktrees' _ "$REPO_ROOT/llm-send-bin/.local/bin/lazy-llm-lib.sh" 2>/dev/null) \
         | awk -F$'\x1f' '{print $8}' | grep -qxF "claude:e2e:$PE"; then
         owner_seen=yes
@@ -256,7 +262,8 @@ log5=$(git -C "$R5" log --format=%s feature)
 [[ "$log5" == *"add pane-a"* && "$log5" == *"add pane-b"* ]] && r=both || r="missing: $log5"
 assert_equals "$r" "both" "afterwards feature has both commits"
 assert_equals "$("$LLMWT" list "$R5" --porcelain | grep -c . || true)" "0" "...llm-wt list is empty"
-bnow=$(benv "$BORDER" "$PE" claude 2>/dev/null || true)
+bnow=$(benv "$BORDER" "$PE" claude 2>&1 || true)
+assert_has "$bnow" "local" "...the border still renders (its git segment)"
 assert_lacks "$bnow" "⎇×" "...the border's ⎇×N is gone"
 assert_equals "$(git -C "$R5" worktree list | wc -l | tr -d ' ')" "1" "...and no worktree is left"
 
