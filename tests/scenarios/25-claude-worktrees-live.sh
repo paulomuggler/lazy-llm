@@ -267,6 +267,32 @@ assert_dir_exists "$kwt" "...and the worktree is still there"
 
 # ──────────────────────────────────────────────────────────────────────────
 echo ""
+echo "Test 6: launched in a superproject, working in a submodule; resumed from the superproject..."
+# The layout dev-env + external/lazy-llm has: the resumed session's cwd is
+# the superproject, the worktree is the submodule's; the session registry is
+# what finds it (verification found the repo scan alone never would).
+git init -q -b main "$sandbox/inner"
+git -C "$sandbox/inner" -c user.email=t@t -c user.name=t commit -q --allow-empty -m inner
+SUPR="$sandbox/super"; git init -q -b main "$SUPR"
+git -C "$SUPR" config user.email test@test; git -C "$SUPR" config user.name test
+git -C "$SUPR" -c protocol.file.allow=always submodule add -q "$sandbox/inner" sub
+git -C "$SUPR" commit -qm "add sub"
+git -C "$SUPR/sub" checkout -q main
+git -C "$SUPR/sub" config user.email test@test; git -C "$SUPR/sub" config user.name test
+# shellcheck disable=SC2016  # literal backticks
+P6='This is an automated integration test; do not ask questions. First run `cd sub` with Bash and stay there. Then launch ONE subagent with the Agent tool, subagent_type "general-purpose", isolation "worktree", run_in_background false: it creates s.txt containing "s", git adds and commits it with the message "add s". When it returns, do NOT integrate, land or remove anything. Reply DONE.'
+run "$SUPR" "$P6"
+sid6=$(events "$SUPR" SessionStart '.p.session_id' | head -1)
+w6=$(events "$SUPR" WorktreeCreate '.out' | head -1)
+assert_has "$w6" "$SUPR/sub/.worktrees/.claude/agent-" "the worktree is the submodule's"
+( cd "$SUPR" && LIVE_LOG="$SUPR.log" timeout 600 claude -p --model "$MODEL" \
+    --setting-sources project,local --settings "$sandbox/settings.json" \
+    --dangerously-skip-permissions --resume "$sid6" 'Reply with the word OK.' > "$SUPR.resume.out" 2>&1 )
+assert_equals "$(jq -r 'select(.ev == "SessionStart" and .p.source == "resume") | .p.cwd' "$SUPR.log" | head -1)" "$SUPR" "the resumed session's cwd is the superproject"
+assert_has "$(jq -r 'select(.ev == "SessionStart" and .p.source == "resume") | .out' "$SUPR.log")" "$w6" "...and its reminder names the submodule's worktree (found through the registry)"
+
+# ──────────────────────────────────────────────────────────────────────────
+echo ""
 echo "Test 4: in a lazy-llm pane — the workspace sees the fan-out while it runs..."
 assert_equals "$(events "$R5" WorktreeCreate '.out' | grep -c .)" "2" "2 WorktreeCreate events from the in-pane session"
 assert_equals "$pane_recorded" "yes" "the worktrees recorded the pane ($PE) as their owner"
@@ -286,7 +312,8 @@ if [[ "$ASSERTIONS_FAILED" -ne 0 ]]; then
     echo ""
     echo "Session outputs and hook logs (for diagnosis):"
     echo "in-pane samples: max_list=$max_list max_border=$max_border owner_seen=$owner_seen pane_recorded=$pane_recorded"
-    for r in "$R1" "$R2" "$R3" "$R4" "$R5"; do
+    for r in "$R1" "$R2" "$R3" "$R4" "$R5" "${SUPR:-}"; do
+        [[ -n "$r" ]] || continue
         echo "===== $(basename "$r").out"; tail -30 "$r.out"
         echo "===== $(basename "$r").log events"; jq -c '{ev, rc, out: .out[0:120], tool: .p.tool_name, agent: .p.agent_id}' "$r.log" 2>/dev/null
         echo "===== $(basename "$r").log.err"; tail -20 "$r.log.err" 2>/dev/null
