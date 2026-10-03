@@ -141,7 +141,9 @@ run_test() {
 
     # Run test and capture result
     local test_result=0
-    if bash "$test_file"; then
+    # No terminal on stdin: run from an interactive shell, a scenario's
+    # `lazy-llm -s …` would end in `tmux attach-session` and block forever.
+    if bash "$test_file" < /dev/null; then
         test_result=0
     else
         test_result=$?
