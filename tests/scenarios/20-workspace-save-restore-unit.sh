@@ -347,6 +347,23 @@ printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"conv-
 sbx llm-persist save >/dev/null
 assert_equals "$(jq -c '.windows[0].panes[1].worktree' "$(entry wsG)")" "{\"path\":\"$WTG\",\"branch\":\"lazy/g-wt-1\"}" "the manifest records the pane's worktree"
 assert_equals "$(jq -c '.windows[0].panes[0].worktree' "$(entry wsG)")" "null" "a shared pane has none"
+# The Saved tab's pane rows: the listing's last column is the worktree path
+# ("-" for none), and the rendered row shows ⎇ <worktree name>.
+idG=$(jq -r .id "$(entry wsG)")
+out=$(sbx llm-persist saved --tsv --expand "$idG")
+assert_equals "$(awk -F'\t' -v id="$idG" '$1 == "pane" && $2 == id && $4 == 1 {print $9}' <<< "$out")" "$WTG" \
+    "Saved listing: the isolated pane's row ends with its worktree"
+assert_equals "$(awk -F'\t' -v id="$idG" '$1 == "pane" && $2 == id && $4 == 0 {print NF "/" $9}' <<< "$out")" "9/-" \
+    "Saved listing: the shared pane's row has '-' there"
+T set-option -s @lazy_llm_saved_open "$idG"
+rows=$(sbx llm-dashboard --emit-saved-rows 2>/dev/null)
+T set-option -su @lazy_llm_saved_open
+rowG1=$(grep "^saved-pane:$idG:0:1	" <<< "$rows")
+rowG0=$(grep "^saved-pane:$idG:0:0	" <<< "$rows")
+assert_contains "$rowG1" $'\033\\[38;5;75m⎇ g-wt-1\033\\[0m' "Saved tab: the isolated pane's row shows ⎇ g-wt-1, in the worktree blue"
+assert_contains "$rowG1" "↳ claude   .*⎇ g-wt-1"$'\033\\[0m'" · conv conv-g1 · " "...between its name and its conversation"
+assert_not_contains "$rowG0" "⎇" "Saved tab: the shared pane's row has no ⎇"
+assert_contains "$rowG0" "↳ claude   .*· (no conversation|conv [^ ]*) · (visible|held)$" "...and is otherwise as before"
 reopen_g() {
     sbx llm-persist restore wsG >/dev/null 2>&1
     sleep 1

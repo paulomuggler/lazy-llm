@@ -920,7 +920,7 @@ _dashboard_pad() {
 # an fzf transform() subprocess (see --saved-fold-transform).
 _dashboard_build_saved_rows() {
   local flag="${1:-}" state id name _dir panes _held convs _saved ago glyph color open fold
-  local parent_state="" w p tool pname conv where
+  local parent_state="" w p tool pname conv where wt
   open=" $(tmux show-option -sqv @lazy_llm_saved_open 2>/dev/null) "
   local -a args=(saved --tsv --expand "$open")
   [[ "$flag" == "--dropped" ]] && args+=(--dropped)
@@ -929,12 +929,16 @@ _dashboard_build_saved_rows() {
   while IFS=$'\t' read -r state id name _dir panes _held convs _saved ago; do
     [[ -n "$id" ]] || continue
     if [[ "$state" == pane ]]; then
-      # pane <id> <window> <pane> <tool> <name> <conv> <visible|held>
+      # pane <id> <window> <pane> <tool> <name> <conv> <visible|held> <worktree>
       w="$name"; p="$_dir"; tool="$panes"; pname="$_held"; conv="$convs"; where="$_saved"
       [[ "$pname" == "-" ]] && pname=""
       [[ "$conv" == "-" ]] && conv="no conversation" || conv="conv ${conv:0:8}"
-      printf 'saved-pane:%s:%s:%s\t%s\t      ↳ %s %s· %s · %s\n' "$id" "$w" "$p" "$parent_state" \
-        "$(_dashboard_pad 8 <<< "$tool")" "${pname:+$(lazy_llm_clamp_label "$pname" 24) }" "$conv" "$where"
+      # A pane that ran in its own worktree: ⎇ and the worktree's name (its
+      # directory), styled like the Worktrees tab's tags.
+      wt=""
+      [[ -n "$ago" && "$ago" != "-" ]] && wt=$'\033[38;5;75m⎇ '"${ago##*/}"$'\033[0m '
+      printf 'saved-pane:%s:%s:%s\t%s\t      ↳ %s %s%s· %s · %s\n' "$id" "$w" "$p" "$parent_state" \
+        "$(_dashboard_pad 8 <<< "$tool")" "${pname:+$(lazy_llm_clamp_label "$pname" 24) }" "$wt" "$conv" "$where"
       continue
     fi
     if [[ "$state" == snaphdr ]]; then
@@ -1623,6 +1627,7 @@ render_help_tab() {
     "SAVED  ●live ◌died ◇closed ✕dropped"
     " Enter  restore (switch if live)"
     " z      show/hide its panes"
+    "        (⎇ name: in its own worktree)"
     " c      close a live one, keep it"
     " K      live: kill · else: drop"
     " A      restore all in this section"
