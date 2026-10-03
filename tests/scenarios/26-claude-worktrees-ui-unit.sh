@@ -43,9 +43,15 @@ done
 source "$LIB_FILE"
 
 # Claude's WorktreeCreate as the plugin runs it; $3 = the owning pane.
+# The TMUX a process in pane $1 gets (socket,pid,session) — llm-wt asks the
+# pane's server only through it. Empty for no pane or one that doesn't exist.
+_pane_tmux_env() {
+    [[ -n "$1" ]] || return 0
+    tmux display -p -t "$1" '#{socket_path},#{pid},0' 2>/dev/null || true
+}
 claude_wt() {
     printf '{"session_id":"s1","cwd":"%s","hook_event_name":"WorktreeCreate","name":"%s"}' "$1" "$2" \
-        | TMUX_PANE="$3" "$LLMWT" claude-hook 2>/dev/null
+        | TMUX="$(_pane_tmux_env "$3")" TMUX_PANE="$3" "$LLMWT" claude-hook 2>/dev/null
 }
 untag() { sed 's/#\[[^]]*\]//g'; }
 strip() { sed 's/\x1b\[[0-9;]*m//g'; }
