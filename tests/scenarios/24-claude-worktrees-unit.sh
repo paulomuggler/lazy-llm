@@ -14,14 +14,15 @@ LLMWT="$REPO_ROOT/llm-wt-bin/.local/bin/llm-wt"
 SHIM="$REPO_ROOT/claude-plugin/hooks/worktree.sh"
 CLAUDE_HOOK="$REPO_ROOT/llm-status-bin/.local/bin/llm-claude-hook"
 
-# No tmux server here. llm-claude-hook (test 11) calls tmux: with $TMUX unset
-# and a private TMUX_TMPDIR, those calls find no server instead of the user's.
+# No tmux server here (test 1 starts a private one briefly, and stops it).
+# llm-claude-hook (test 11) calls tmux: with $TMUX unset and a private
+# TMUX_TMPDIR, those calls find no server instead of the user's.
 unset TMUX TMUX_PANE CLAUDE_PROJECT_DIR LAZY_LLM_WORKTREE_DIR
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required for this test"; exit 1; }
 
 sandbox=$(mktemp -d /tmp/lazy-llm-test-claudewt-XXXXXX)
-trap 'rm -rf "$sandbox"' EXIT
+trap 'env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$sandbox/tmux" tmux kill-server 2>/dev/null; rm -rf "$sandbox"' EXIT
 # Work from inside the sandbox: an empty path given to `git -C` means the
 # current directory, which must never be the lazy-llm checkout.
 cd "$sandbox" || exit 1
@@ -105,6 +106,20 @@ assert_equals "$(git -C "$R" status --porcelain)" "" "main directory left clean 
 assert_equals "$("$LLMWT" info "$out" | awk -F'\t' '$1=="base"{print $2}')" "feature" "llm-wt info sees it as an llm-wt worktree"
 out_pane=$(printf '%s' "$(p_create "$R" agent-p1)" | TMUX_PANE=%42 "$LLMWT" claude-hook 2>/dev/null)
 assert_equals "$(cfg "$R" lazy/agent-p1 lazyLlmPane)" "%42" "TMUX_PANE recorded as the owning pane"
+assert_equals "$(cfg "$R" lazy/agent-p1 lazyLlmPaneServer)" "" "no tmux server to ask: no server start time recorded"
+assert_equals "$(cfg "$R" $b lazyLlmPaneServer)" "" "no TMUX_PANE: no server start time either"
+# With a tmux server (a private one, stopped right after: later tests expect
+# none), its #{start_time} is recorded next to the pane: pane ids restart at
+# %0 with each server, so the id alone can't tell this server's pane from a
+# later one's.
+tmux -f /dev/null new-session -d -s t24 "exec sleep 300"
+tp=$(tmux display -t t24 -p '#{pane_id}')
+started=$(tmux display -t t24 -p '#{start_time}')
+printf '%s' "$(p_create "$R" agent-p2)" | TMUX_PANE="$tp" "$LLMWT" claude-hook >/dev/null 2>&1
+env -u TMUX -u TMUX_PANE tmux kill-server 2>/dev/null
+assert_equals "$(cfg "$R" lazy/agent-p2 lazyLlmPane)" "$tp" "with a server: the pane recorded"
+assert_equals "$([[ "$started" =~ ^[0-9]+$ ]] && echo number)" "number" "setup: the sandbox server reported a start time"
+assert_equals "$(cfg "$R" lazy/agent-p2 lazyLlmPaneServer)" "$started" "...and the server's #{start_time} as lazyLlmPaneServer"
 
 # ──────────────────────────────────────────────────────────────────────────
 echo ""

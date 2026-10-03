@@ -13,7 +13,11 @@
 # are made here too, by `claude-hook` on WorktreeCreate: directory
 # .worktrees/.claude/<name>, branch lazy/<name>, from the parent's HEAD. They
 # carry the same two keys plus lazyLlmKind=claude, lazyLlmName (Claude's name
-# for it: agent-<agentId> for a subagent), lazyLlmSession and lazyLlmPane. A
+# for it: agent-<agentId> for a subagent), lazyLlmSession, lazyLlmPane (the
+# hook's $TMUX_PANE) and lazyLlmPaneServer (that tmux server's #{start_time}).
+# tmux numbers panes from %0 again in each new server, so a recorded pane owns
+# the worktree only while the current server's start time matches; one made
+# before lazyLlmPaneServer existed is trusted on the pane id alone. A
 # subagent's worktree is integrated by its parent session (integrate --remove).
 #
 # Usage:
@@ -474,6 +478,13 @@ claude_create() {
   wt_base=$(claude_base_dir "$root")
   name=$(safe_name "$raw")
   [[ -n "$name" ]] || name=claude-wt
+  # The pane id alone is ambiguous: a new tmux server numbers its panes from
+  # %0 again. The server's start time says which server the id belongs to.
+  # Asked through the hook's inherited $TMUX; not recorded when that fails.
+  local server=""
+  if [[ -n "${TMUX_PANE:-}" ]]; then
+    server=$(tmux display-message -p -t "$TMUX_PANE" '#{start_time}' 2>/dev/null) || server=""
+  fi
 
   lock_repo "$parent"
   cand="$name"
@@ -493,7 +504,10 @@ claude_create() {
   local -a kv=("lazyLlmKind=claude")
   [[ -n "$raw" ]] && kv+=("lazyLlmName=$raw")
   [[ -n "$session" ]] && kv+=("lazyLlmSession=$session")
-  [[ -n "${TMUX_PANE:-}" ]] && kv+=("lazyLlmPane=$TMUX_PANE")
+  if [[ -n "${TMUX_PANE:-}" ]]; then
+    kv+=("lazyLlmPane=$TMUX_PANE")
+    [[ -n "$server" ]] && kv+=("lazyLlmPaneServer=$server")
+  fi
   [[ -n "$base" ]] && kv+=("lazyLlmBase=$base" "lazyLlmPrimary=$parent")
   local e
   for e in "${kv[@]}"; do
