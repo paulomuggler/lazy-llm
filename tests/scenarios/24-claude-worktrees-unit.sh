@@ -593,6 +593,22 @@ assert_empty "$out" "a non-isolated background launch: nothing"
 [[ $elapsed -lt 4 ]] && r=quick || r="took ${elapsed}s"
 assert_equals "$r" "quick" "...without waiting long"
 echo ""
+echo "Test 23d: the opt-in hook log never changes output or exit status..."
+R="$sandbox/r23d"; mk_repo "$R"
+XS="$sandbox/xstate"; mkdir -p "$XS/lazy-llm"; : > "$XS/lazy-llm/claude-hook.log"
+out=$(printf '%s' "$(p_create "$R" agent-log1)" | XDG_STATE_HOME="$XS" "$LLMWT" claude-hook 2>/dev/null); rc=$?
+assert_equals "rc=$rc out=$out" "rc=0 out=$R/.worktrees/.claude/agent-log1" "writable log: same stdout and status"
+assert_has "$(cat "$XS/lazy-llm/claude-hook.log")" "WorktreeCreate rc=0" "...and the event is logged"
+chmod 0444 "$XS/lazy-llm/claude-hook.log"
+out=$(printf '%s' "$(p_create "$R" agent-log2)" | XDG_STATE_HOME="$XS" "$LLMWT" claude-hook 2>/dev/null); rc=$?
+chmod 0644 "$XS/lazy-llm/claude-hook.log"
+assert_equals "rc=$rc out=$out" "rc=0 out=$R/.worktrees/.claude/agent-log2" "unwritable log (verify finding): still the path and rc 0"
+fg=$(printf '{"session_id":"s","cwd":"%s","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"description":"d","prompt":"p"},"tool_response":{"status":"completed","agentId":"fg1"}}' "$R")
+t0=$(date +%s%N); out=$(hook "$fg"); t1=$(date +%s%N)
+assert_empty "$out" "a finished, non-isolated (foreground) launch: nothing"
+[[ $(( (t1 - t0) / 1000000 )) -lt 800 ]] && r=instant || r="took $(( (t1 - t0) / 1000000 ))ms"
+assert_equals "$r" "instant" "...and no wait for a worktree"
+echo ""
 echo "Test 24: the portable (symlink) lock..."
 R="$sandbox/r24"; mk_repo "$R"
 common=$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)

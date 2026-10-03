@@ -722,6 +722,9 @@ hook_post_tool_use() {
       # doesn't say so here). The hook's timeout is 30s.
       if [[ -z "$wt" ]]; then
         local id cwd tries=5 i
+        # A finished (foreground) launch without a worktreePath wasn't
+        # isolated: nothing to wait for.
+        [[ "$status" == completed ]] && return 0
         id=$(hook_field agentId)
         cwd=$(hook_field cwd)
         [[ -n "$id" ]] || return 0
@@ -788,10 +791,12 @@ cmd_claude_hook() {
   esac
   # Debugging aid: when this file exists (touch it), every payload is logged
   # with the handler's stdout and exit status, one JSON-ish block per event.
+  # A log that can't be written is skipped: logging must never change what
+  # the hook prints or how it exits.
   local log="${XDG_STATE_HOME:-$HOME/.local/state}/lazy-llm/claude-hook.log" out
-  if [[ -f "$log" ]]; then
-    out=$(printf '%s' "$input" | "$0" __claude-hook-run "$ev" 2> >(tee -a "$log" >&2)) || rc=$?
-    printf '=== %s %s rc=%s\n%s\n--- out\n%s\n' "$(date +%T)" "$ev" "$rc" "$input" "$out" >> "$log"
+  if [[ -f "$log" && -w "$log" ]]; then
+    out=$(printf '%s' "$input" | "$0" __claude-hook-run "$ev" 2> >(tee -a "$log" >&2 2>/dev/null)) || rc=$?
+    printf '=== %s %s rc=%s\n%s\n--- out\n%s\n' "$(date +%T)" "$ev" "$rc" "$input" "$out" >> "$log" 2>/dev/null || true
     [[ -n "$out" ]] && printf '%s\n' "$out"
   else
     printf '%s' "$input" | "$0" __claude-hook-run "$ev" || rc=$?

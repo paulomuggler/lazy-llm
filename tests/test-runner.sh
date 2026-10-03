@@ -32,6 +32,10 @@ tmux set-option -g default-size 220x80
 # Where tests' throwaway workspace dirs go; removed with the run.
 LAZY_LLM_TEST_WORKROOT=$(mktemp -d /tmp/lazy-llm-test-work-XXXXXX)
 export LAZY_LLM_TEST_WORKROOT
+# State that tools keep under XDG_STATE_HOME (e.g. llm-wt's opt-in hook log)
+# goes to the run's own dir, never the user's.
+export XDG_STATE_HOME="$LAZY_LLM_TEST_WORKROOT/xdg-state"
+mkdir -p "$XDG_STATE_HOME"
 
 # Scenarios check for this (tests/lib/assertions.sh) and refuse to run
 # without it: only a run isolated as above is safe for them.
