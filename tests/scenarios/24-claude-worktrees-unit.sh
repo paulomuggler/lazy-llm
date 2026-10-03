@@ -29,7 +29,7 @@ export GIT_CEILING_DIRECTORIES=/tmp
 export HOME="$sandbox/home"
 export TMUX_TMPDIR="$sandbox/tmux" LAZY_LLM_STATE_DIR="$sandbox/state"
 mkdir -p "$HOME" "$TMUX_TMPDIR"
-unset XDG_CONFIG_HOME GIT_DIR GIT_WORK_TREE
+unset XDG_CONFIG_HOME XDG_STATE_HOME GIT_DIR GIT_WORK_TREE
 git config --global user.email test@test
 git config --global user.name test
 git config --global init.defaultBranch main
@@ -548,6 +548,29 @@ git -C "$w" checkout -q --detach lazy/agent-d23
 hook "$(p_remove "$w")" >/dev/null; rc=$?
 assert_equals "$rc" "0" "detached HEAD whose commits a branch has: removed"
 assert_file_not_exists "$w" "...gone"
+echo ""
+echo "Test 23c: background launch in a submodule-like layout, while WorktreeCreate is still running..."
+# Found live (2026-10-03): the session's cwd was the lazy-llm submodule and
+# CLAUDE_PROJECT_DIR the superproject, so the agentId lookup scanned the wrong
+# repo; and the async launch's PostToolUse fires as WorktreeCreate runs.
+R="$sandbox/r23c"; mk_repo "$R"
+SUPER="$sandbox/r23c-super"; mk_repo "$SUPER"
+async_payload() { printf '{"session_id":"s","cwd":"%s","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"description":"d","prompt":"p","isolation":"%s"},"tool_response":{"isAsync":true,"status":"async_launched","agentId":"%s"}}' "$1" "$2" "$3"; }
+w=$(hook "$(p_create "$R" agent-sub1)")
+out=$(printf '%s' "$(async_payload "$R" worktree sub1)" | CLAUDE_PROJECT_DIR="$SUPER" "$LLMWT" claude-hook 2>/dev/null)
+assert_has "$(ctx "$out")" "running in the background in its own worktree \`$w\`" "cwd's repo is scanned even when CLAUDE_PROJECT_DIR is another repo"
+( printf '%s' "$(async_payload "$R" worktree late1)" | CLAUDE_PROJECT_DIR="$SUPER" "$LLMWT" claude-hook > "$sandbox/late.out" 2>/dev/null ) &
+bg=$!
+sleep 1.5
+wl=$(hook "$(p_create "$R" agent-late1)")
+wait "$bg"
+assert_has "$(ctx "$(cat "$sandbox/late.out")")" "\`$wl\`" "a launch hook that fires before the worktree exists waits for it"
+start=$(date +%s)
+out=$(hook "$(async_payload "$R" "" nosuchagent)")
+elapsed=$(( $(date +%s) - start ))
+assert_empty "$out" "a non-isolated background launch: nothing"
+[[ $elapsed -lt 4 ]] && r=quick || r="took ${elapsed}s"
+assert_equals "$r" "quick" "...without waiting long"
 echo ""
 echo "Test 24: the portable (symlink) lock..."
 R="$sandbox/r24"; mk_repo "$R"
